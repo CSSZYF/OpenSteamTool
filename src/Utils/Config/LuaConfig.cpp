@@ -1656,4 +1656,15 @@ namespace LuaConfig{
         return {};
     }
 
+    std::vector<AppId_t> GetConfiguredAppIds() {
+        std::shared_lock lock(g_configSharedMutex);
+        std::unordered_set<AppId_t> appIds;
+        for (const auto& [filePath, depots] : g_fileDepots) {
+            for (AppId_t id : depots) {
+                appIds.insert(id);
+            }
+        }
+        return std::vector<AppId_t>(appIds.begin(), appIds.end());
+    }
+
 }

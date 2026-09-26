@@ -39,6 +39,9 @@ namespace LuaConfig{
     // or empty string if not tracked.
     std::string FindLuaFileForAppId(AppId_t appId);
 
+    // Returns a list of all distinct AppIds configured across all loaded Lua files.
+    std::vector<AppId_t> GetConfiguredAppIds();
+
     // Resolves the Steam\depotcache directory (always points to Steam install path, even in portable mode).
     std::string GetSteamDepotcacheDir();
     // Recursively copies all *.manifest files from directory into Steam\depotcache (skipping duplicates).

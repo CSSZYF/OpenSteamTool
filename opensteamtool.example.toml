@@ -67,6 +67,19 @@ timeout_recv_ms    = 10000
 # true          → 即使账号拥有该游戏，也生效 Lua 中的清单锁定（适合想在授权号上也冻结游戏版本的用户）。
 lock_owned_games = false
 
+# Whether to automatically synchronize .lua and manifest mirrors when an owned game finishes updating in Steam (without having to launch the game).
+# PREREQUISITE: The current logged-in account must hold genuine authorization/ownership, AND a .lua file configuring addappid must already exist locally for this game.
+#               If not logged into an authorized account or no .lua file configuring addappid exists locally, OST will NEVER take over, generate or touch files.
+# true (default)  -> Automatically synchronize in the background as soon as Steam completes the update download.
+# false           -> Synchronize only when the game is launched ("Play" button).
+#
+# 【前提条件：登入拥有授权的账号，且本地已放置该游戏的 .lua 配置文件（配置了 addappid）】
+# 当登入拥有授权的账号且本地已存在对应 .lua 配置文件（配置了 addappid）时，该游戏在 Steam 中完成更新后，无需点击“开始游戏”，自动在后台静默将最新的清单和 Lua 文件同步好。
+# 注意：若未登入拥有授权的账号，或本地尚无配置了 addappid 的 .lua 配置文件，OST 不会接管该游戏，绝不会自动生成或触碰磁盘。
+# true (默认)   -> 游戏下载更新完毕后，立即在后台自动静默同步。
+# false         -> 仅在点击“开始游戏”时同步。
+auto_sync_on_update = true
+
 [stats]
 # Automatically query https://stats.opensteamtool.com/{appid} for a recommended
 # SteamID when no Lua setStat(appid, "steamid") override exists.
@@ -113,31 +126,3 @@ enabled = false
 #
 # url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
 # url_template = "https://fast.jsdelivr.net/gh/mmxlyo/steam-monitor@{channel}/{component}/{sha256}.toml"
-
-[denuvo]
-# Whether to lock depot manifests in <AppId>.lua (setManifestid) when synchronizing
-# offline authorization on an authorized account or with -d+.
-# true  (default) -> Writes active setManifestid to lock installed GIDs, protecting Denuvo offline tokens.
-# false           -> Writes setManifestid as comments (-- setManifestid) and skips manifest mirroring,
-#                    allowing Steam to detect and download official updates normally.
-# (Tip: You can pass `-nodenuvo` or `-forcedenuvo` in Steam launch options, or specify `noDenuvo(appid)` /
-#  `forcedenuvo(appid)` in Lua to control Denuvo processing per-game.)
-#
-# 切号授权或使用 -d+ 同步时，是否在 <AppId>.lua 中激活 setManifestid 锁定清单。
-# true  (默认)  → 写入活跃的 setManifestid 锁定已安装版本 GID，防止 Steam 静默更新破坏 Denuvo 离线授权。
-# false         → 所有 setManifestid 以注释态 (-- setManifestid) 写入并跳过清单镜像，
-#                 允许 Steam 客户端正常检测并自动下载官方更新补丁。
-# （提示：亦可在 Steam 游戏属性中加入启动参数 `-nodenuvo` 或 `-forcedenuvo`，或在 Lua 中配置 `noDenuvo(appid)` /
-#  `forcedenuvo(appid)` 来单独控制某个游戏的 Denuvo 处理逻辑。）
-#
-# Determina si se bloquean los manifiestos en <AppId>.lua (setManifestid) al sincronizar la autorización offline
-# en una cuenta autorizada o con -d+.
-# true  (por defecto) -> Bloquea los GID instalados para evitar que las actualizaciones silenciosas de Steam
-#                        invaliden los tokens offline de Denuvo.
-# false               -> Escribe setManifestid como comentarios (-- setManifestid) y omite el espejado de manifiestos,
-#                        permitiendo que Steam detecte y descargue actualizaciones oficiales normalmente.
-# (Consejo: También puedes pasar `-nodenuvo` o `-forcedenuvo` en las opciones de lanzamiento de Steam, o especificar
-#  `noDenuvo(appid)` / `forcedenuvo(appid)` en Lua para controlar el procesamiento de Denuvo por juego.)
-lock_manifest = true
-
-

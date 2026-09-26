@@ -60,7 +60,7 @@
 - **SteamStub**: Suplantación de AppID mediante tickets locales de ConfigStore sin inyectar en el juego
 - **Tickets explícitos**: Gestión exclusivamente en memoria mediante `setAppTicket` / `setETicket` en Lua; no genera archivos `.bin` en disco
 - **Autorización offline por cambio de cuenta**: Sincroniza automáticamente las credenciales directamente en `<AppId>.lua` (mediante `setAppTicket`) tras ejecutar en una cuenta poseedora; cambia a cuentas sin el juego para jugar offline
-- **Bloqueo de manifiestos y actualizaciones**: Por defecto activa `setManifestid` para proteger la autorización offline; establece `lock_manifest = false` o pasa `-nodenuvo` (o `nodenuvo(appid)`) para permitir parches oficiales
+- **Bloqueo de manifiestos y actualizaciones**: Por defecto activa `setManifestid` para proteger la autorización offline. En cuentas autorizadas, OST permite automáticamente las actualizaciones oficiales y sincroniza los manifiestos silenciosamente (configurable mediante `[manifest] lock_owned_games` y `auto_sync_on_update`); pasa `-nodenuvo` o configura `nodenuvo(appid)` en Lua para omitir el procesamiento de Denuvo por completo
 - **Parámetros auxiliares**:
   - `-d+`: Parámetro de lanzamiento en cuentas propietarias para generar automáticamente `<AppId>.lua` y bloquear manifiestos
   - `-forcedenuvo`: Fuerza el tratamiento de un juego como protegido por Denuvo (o `forcedenuvo(appid)`)
@@ -169,10 +169,6 @@ all_games = false
 [remote]
 # Espejo opcional de patrones (por defecto GitHub con respaldo en jsDelivr)
 # url_template = "https://tu.servidor/{channel}/{component}/{sha256}.toml"
-
-[denuvo]
-# Bloquear manifiestos al cambiar de cuenta o con -d+ (predeterminado true)
-lock_manifest = true
 ```
 
 ### Inyección de DLL de terceros

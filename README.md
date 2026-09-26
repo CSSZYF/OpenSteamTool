@@ -60,7 +60,7 @@
 - **SteamStub**: AppID spoofing via local ConfigStore tickets without game process injection
 - **Explicit Tickets**: Memory-only management via `setAppTicket` / `setETicket` in Lua; no disk `.bin` files generated
 - **Account Switching Offline Auth**: Auto-syncs credentials directly into `<AppId>.lua` (via `setAppTicket`) after running on a genuine account; switch to unowned accounts for offline play
-- **Manifest Locking & Updates**: Defaults to active `setManifestid` to lock versions; set `lock_manifest = false` in config or pass `-nodenuvo` (or `nodenuvo(appid)`) to allow official updates
+- **Manifest Locking & Updates**: Defaults to active `setManifestid` to lock versions for offline authorization. On authorized accounts, OST automatically permits official updates and syncs manifests (configurable via `[manifest] lock_owned_games` and `auto_sync_on_update`); pass `-nodenuvo` or set `nodenuvo(appid)` in Lua to bypass Denuvo handling entirely
 - **Helper Flags**:
   - `-d+`: Steam launch option on genuine accounts to auto-generate `<AppId>.lua` and lock manifests
   - `-forcedenuvo`: Force treat game as Denuvo-protected (or `forcedenuvo(appid)`)
@@ -169,10 +169,6 @@ all_games = false
 [remote]
 # Optional pattern metadata mirror (default GitHub with jsDelivr fallback)
 # url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
-
-[denuvo]
-# Lock manifests on account switching or -d+ (default true)
-lock_manifest = true
 ```
 
 ### Third-party DLL injection

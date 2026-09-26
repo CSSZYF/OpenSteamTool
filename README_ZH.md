@@ -60,7 +60,7 @@
 - **SteamStub**：无需配置票据，自动通过本地 ConfigStore 伪造 AppID
 - **显式票据**：在 Lua 中通过 `setAppTicket` / `setETicket` 注入，直接在内存中管理，无需生成磁盘 bin 文件
 - **切号离线授权**：正版账号运行后自动将凭据同步至 `<AppId>.lua`（自动写入 `setAppTicket`），切换无游戏账号即可离线游玩
-- **清单锁定与更新控制**：默认写入活跃的 `setManifestid` 锁定已安装版本；若需允许正版更新，可在配置中设 `lock_manifest = false`，或在启动项中加入 `-nodenuvo`（Lua 中配置 `nodenuvo(appid)`）
+- **清单锁定与更新控制**：默认写入活跃的 `setManifestid` 锁定已安装版本以保护离线授权。在已授权的账号上，OST 会自动放行官方更新并自动静默同步最新清单（亦可通过 `[manifest] lock_owned_games` 与 `auto_sync_on_update` 配置）；若需完全跳过某游戏的 Denuvo 处理，可传入 `-nodenuvo` 或在 Lua 中配置 `nodenuvo(appid)`。
 - **辅助参数**：
   - `-d+`：正版账号启动项参数，一键自动生成该游戏的 `<AppId>.lua` 并锁定清单版本
   - `-forcedenuvo`：强制将游戏按 Denuvo 保护处理（Lua 中配置 `forcedenuvo(appid)`）
@@ -169,10 +169,6 @@ all_games = false
 [remote]
 # 可选特征码元数据镜像（默认优先 GitHub，自动回退 jsDelivr）
 # url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
-
-[denuvo]
-# 切号授权或 -d+ 时是否锁定清单（默认 true）
-lock_manifest = true
 ```
 
 ### 第三方 DLL 注入说明

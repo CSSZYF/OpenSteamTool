@@ -22,8 +22,8 @@ namespace {
         bool statsEnableApi = true;
         std::vector<InjectDll> injectDlls;
         CloudSettings cloud;
-        bool denuvoLockManifest = true;
         bool manifestLockOwnedGames = false;
+        bool manifestAutoSyncOnUpdate = true;
     };
 
     std::mutex g_mutex;
@@ -41,8 +41,8 @@ namespace {
     std::vector<InjectDll> injectDlls;
     bool cloudEnabled = false;
     std::string cloudLibrary;
-    bool denuvoLockManifest = true;
     bool manifestLockOwnedGames = false;
+    bool manifestAutoSyncOnUpdate = true;
 
     const char* ToString(LogLevel level) {
         switch (level) {
@@ -81,8 +81,8 @@ namespace {
         injectDlls             = snapshot.injectDlls;
         cloudEnabled           = snapshot.cloud.enabled;
         cloudLibrary           = snapshot.cloud.library;
-        denuvoLockManifest     = snapshot.denuvoLockManifest;
         manifestLockOwnedGames = snapshot.manifestLockOwnedGames;
+        manifestAutoSyncOnUpdate = snapshot.manifestAutoSyncOnUpdate;
     }
 
     void ApplyManifestProvider(const std::string& provider) {
@@ -138,6 +138,8 @@ namespace {
                     snapshot.manifestTimeouts.recv = static_cast<uint32_t>(*val);
                 if (auto val = (*manifest)["lock_owned_games"].value<bool>())
                     snapshot.manifestLockOwnedGames = *val;
+                if (auto val = (*manifest)["auto_sync_on_update"].value<bool>())
+                    snapshot.manifestAutoSyncOnUpdate = *val;
             }
 
             // [log]
@@ -240,23 +242,13 @@ namespace {
                     snapshot.cloud.library = *val;
             }
 
-            // [denuvo]
-            if (auto denuvo = tbl["denuvo"].as_table()) {
-                if (auto val = (*denuvo)["lock_manifest"].value<bool>()) {
-                    snapshot.denuvoLockManifest = *val;
-                } else if (auto val2 = (*denuvo)["lock_manifests"].value<bool>()) {
-                    snapshot.denuvoLockManifest = *val2;
-                }
-            }
-
             ApplyManifestProvider(snapshot.manifestProvider);
             LoadResult result = ApplySnapshotLocked(snapshot);
-            LOG_INFO("Config loaded: manifest.url={} log.level={} lua.paths={} stats.enable_api={} denuvo.lock_manifest={} remote.url_template={}",
+            LOG_INFO("Config loaded: manifest.url={} log.level={} lua.paths={} stats.enable_api={} remote.url_template={}",
                      ManifestClient::ActiveProviderName(),
                      ToString(snapshot.logLevel),
                      (uint32_t)snapshot.luaPaths.size(),
                      snapshot.statsEnableApi,
-                     snapshot.denuvoLockManifest,
                      snapshot.remoteUrlTemplate.empty() ? "<default>" : snapshot.remoteUrlTemplate);
             return result;
 
@@ -329,14 +321,14 @@ namespace {
         return injectDlls;
     }
 
-    bool GetDenuvoLockManifest() {
-        std::lock_guard lock(g_mutex);
-        return denuvoLockManifest;
-    }
-
     bool GetManifestLockOwnedGames() {
         std::lock_guard lock(g_mutex);
         return manifestLockOwnedGames;
+    }
+
+    bool GetManifestAutoSyncOnUpdate() {
+        std::lock_guard lock(g_mutex);
+        return manifestAutoSyncOnUpdate;
     }
 
 }

@@ -3,6 +3,10 @@
 #include "dllmain.h"
 #include "steam_messages.pb.h"
 #include "Utils/HookSupport/VehCommon.h"
+#include "Utils/Config/Config.h"
+#include "Utils/Config/LuaConfig.h"
+#include "Hook/Hooks_Package.h"
+#include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -207,6 +211,52 @@ namespace
     std::vector<AppId_t> g_pendingAdditions;
     std::unordered_set<AppId_t> g_removedAppIds;
 
+    constexpr uint32_t k_EAppStateUpdatingMask =
+        k_EAppStateDownloading         | // 0x00800000
+        k_EAppStateStaging             | // 0x01000000
+        k_EAppStateCommitting          | // 0x02000000
+        k_EAppStateVerifyingStaged     | // 0x04000000
+        k_EAppStateVerifyingInstalled  | // 0x00200000
+        k_EAppStatePreallocating       | // 0x00400000
+        k_EAppStateUpdateRunning       | // 0x00000100
+        k_EAppStateUpdatePaused        | // 0x00000200
+        k_EAppStateUpdateStarted       | // 0x00000400
+        k_EAppStateUpdateRequired;       // 0x00000002
+
+    struct AppStateTracker {
+        std::unordered_map<AppId_t, uint32_t> lastStates;
+        std::unordered_set<AppId_t> inFlightSyncs;
+        std::mutex mutex;
+    };
+    static AppStateTracker g_appStateTracker;
+
+    static void DispatchAutoSyncWorker(AppId_t appId) {
+        std::thread([appId]() {
+            // 500ms debounce to allow Steam to finish flushing ACF and closing file handles
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+            // Prerequisite check: Must be genuine owner / authorized account
+            if (!Hooks_Package::IsAppTrulyOwned(appId)) {
+                LOG_STEAMUI_DEBUG("AutoSync: appId={} is not genuinely owned by current account — skipping background sync", appId);
+                std::lock_guard lock(g_appStateTracker.mutex);
+                g_appStateTracker.inFlightSyncs.erase(appId);
+                return;
+            }
+
+            LOG_STEAMUI_INFO("AutoSync: detected update completion for owned appId={}, triggering background sync", appId);
+            try {
+                PipeManager::DenuvoAuth::SyncOrGenerate(appId, "", false);
+            } catch (const std::exception& ex) {
+                LOG_STEAMUI_ERROR("AutoSync: exception during SyncOrGenerate for appId={}: {}", appId, ex.what());
+            } catch (...) {
+                LOG_STEAMUI_ERROR("AutoSync: unknown exception during SyncOrGenerate for appId={}", appId);
+            }
+
+            std::lock_guard lock(g_appStateTracker.mutex);
+            g_appStateTracker.inFlightSyncs.erase(appId);
+        }).detach();
+    }
+
     HOOK_FUNC(FillInAppOverview, void *, void *pThis, void *pAppOverview, CSteamApp *pApp)
     {
         if (pApp)
@@ -380,6 +430,47 @@ namespace
                 }
             }
         }
+
+        if (Config::GetManifestAutoSyncOnUpdate() && CAPTURE_READY(GetAppByID)) {
+            static auto s_lastAutoSyncCheck = std::chrono::steady_clock::now();
+            auto now = std::chrono::steady_clock::now();
+            if (now - s_lastAutoSyncCheck >= std::chrono::milliseconds(250)) {
+                s_lastAutoSyncCheck = now;
+                const auto configuredAppIds = LuaConfig::GetConfiguredAppIds();
+                std::lock_guard lock(g_appStateTracker.mutex);
+                for (AppId_t appId : configuredAppIds) {
+                    if (appId == 0 || appId == k_uAppIdInvalid) continue;
+                    CSteamApp* pApp = oGetAppByID(pController ? pController : g_pController, appId, false);
+                    if (!pApp) continue;
+                    // Skip DLC/child apps; state tracking and manifest syncing are anchored on the base game
+                    if (pApp->ParentAppID != 0 && pApp->ParentAppID != k_uAppIdInvalid) continue;
+
+                    const uint32_t currentState = static_cast<uint32_t>(pApp->AppStateFlags);
+                    auto it = g_appStateTracker.lastStates.find(appId);
+                    if (it == g_appStateTracker.lastStates.end()) {
+                        // Cold-start baseline initialization: record baseline and skip to prevent spurious startup sync
+                        g_appStateTracker.lastStates[appId] = currentState;
+                        continue;
+                    }
+
+                    const uint32_t lastState = it->second;
+                    const bool wasUpdating = (lastState & k_EAppStateUpdatingMask) != 0;
+                    const bool isNowFullyInstalled = ((currentState & k_EAppStateUpdatingMask) == 0) &&
+                                                     ((currentState & k_EAppStateFullyInstalled) != 0);
+
+                    if (wasUpdating && isNowFullyInstalled) {
+                        // Immediately update baseline to prevent duplicate triggers across subsequent frames
+                        it->second = currentState;
+                        if (g_appStateTracker.inFlightSyncs.insert(appId).second) {
+                            DispatchAutoSyncWorker(appId);
+                        }
+                    } else if (currentState != lastState) {
+                        it->second = currentState;
+                    }
+                }
+            }
+        }
+
         return oCSteamUIAppControllerRunFrame(pController);
     }
 }
