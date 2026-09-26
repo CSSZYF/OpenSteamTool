@@ -116,8 +116,8 @@ namespace {
     }
 
     HOOK_FUNC(CheckAppOwnership, bool, void* pObj, AppId_t appId, AppOwnership* pOwn) {
-        if (!g_pCUser.load(std::memory_order_relaxed)) {
-            g_pCUser.store(pObj, std::memory_order_relaxed);
+        if (!g_pCUser.load(std::memory_order_acquire)) {
+            g_pCUser.store(pObj, std::memory_order_release);
             LOG_PACKAGE_DEBUG("CheckAppOwnership: captured CUser {}", pObj);
         }
 
@@ -281,5 +281,29 @@ namespace Hooks_Package {
         }
         LOG_PACKAGE_DEBUG("NotifyLicenseChanged: queued {} UI removals, skipped {} transient removals",
                           queuedRemovalCount, removals.size() - queuedRemovalCount);
+    }
+
+    bool IsAppTrulyOwned(AppId_t appId) {
+        if (appId == 0 || appId == k_uAppIdInvalid) return false;
+        if (LuaConfig::IsOwned(appId)) return true;
+
+        void* pUser = g_pCUser.load(std::memory_order_acquire);
+        if (!pUser || !oCheckAppOwnership) return false;
+
+        AppOwnership own{};
+        bool result = oCheckAppOwnership(pUser, appId, &own);
+        const bool isTrulyOwned = result &&
+                                  (own.PackageId != kInjectedPackageId) &&
+                                  (own.PackageId != 0) &&
+                                  (own.ExistInPackageNums >= 1) &&
+                                  own.bOwnsLicense &&
+                                  !own.bLicenseExpired &&
+                                  !own.bFamilyShared &&
+                                  !own.bBorrowed;
+        if (isTrulyOwned) {
+            LuaConfig::MarkOwned(appId);
+            return true;
+        }
+        return false;
     }
 }

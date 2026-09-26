@@ -8,6 +8,7 @@
 #include "Steam/Structs.h"
 #include "Steam/Enums.h"
 #include "Utils/Config/Config.h"
+#include "Hook/Hooks_Package.h"
 #include "dllmain.h"
 
 #include <algorithm>
@@ -56,6 +57,12 @@ namespace PipeManager::DenuvoAuth {
         return cmdLine && (HasCmdLineArg(cmdLine, "-forcedenuvo") ||
                            HasCmdLineArg(cmdLine, "-force-denuvo") ||
                            HasCmdLineArg(cmdLine, "-force_denuvo"));
+    }
+
+    bool HasLuaArg(const char* cmdLine) {
+        return cmdLine && (HasCmdLineArg(cmdLine, "-lua") ||
+                           HasCmdLineArg(cmdLine, "--lua") ||
+                           HasCmdLineArg(cmdLine, "-d+"));
     }
 
 namespace {
@@ -419,6 +426,76 @@ namespace {
         }
     }
 
+    void CleanObsoleteManifestMirrors(const std::filesystem::path& targetDir, const std::map<uint32_t, std::string>& installedDepots) {
+        std::error_code ec;
+        if (!std::filesystem::exists(targetDir, ec) || !std::filesystem::is_directory(targetDir, ec)) {
+            return;
+        }
+
+        // Safety Defense 1: Reject any path that contains "depotcache"
+        std::string dirLower = OSTPlatform::Encoding::PathToUtf8(targetDir);
+        std::transform(dirLower.begin(), dirLower.end(), dirLower.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        });
+        if (dirLower.find("depotcache") != std::string::npos) {
+            LOG_ERROR("DenuvoSync: CleanObsoleteManifestMirrors REFUSING directory containing depotcache: {}", dirLower);
+            return;
+        }
+
+        // Safety Defense 2: targetDir must not be the root lua directory itself
+        std::filesystem::path luaBaseDir;
+        if (LuaDir[0] != '\0') {
+            luaBaseDir = OSTPlatform::Encoding::PathFromUtf8(LuaDir);
+        } else if (SteamInstallPath[0] != '\0') {
+            luaBaseDir = std::filesystem::path(OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath)) / "config" / "lua";
+        }
+        if (!luaBaseDir.empty() && std::filesystem::equivalent(targetDir, luaBaseDir, ec)) {
+            LOG_ERROR("DenuvoSync: CleanObsoleteManifestMirrors REFUSING root lua directory: {}", dirLower);
+            return;
+        }
+        ec.clear();
+
+        // Safety Defense 3: Only delete manifests within targetDir whose depotId matches an installed depot
+        // but whose GID does NOT match the latest GID from ACF.
+        try {
+            for (const auto& entry : std::filesystem::directory_iterator(targetDir, std::filesystem::directory_options::skip_permission_denied, ec)) {
+                if (ec) break;
+                if (!entry.is_regular_file(ec)) continue;
+
+                auto fn = entry.path().filename().string();
+                // Expected format: <depotId>_<gid>.manifest
+                if (!fn.ends_with(".manifest")) continue;
+
+                size_t underscore = fn.find('_');
+                size_t dot = fn.rfind(".manifest");
+                if (underscore == std::string::npos || dot == std::string::npos || dot <= underscore) continue;
+
+                std::string_view depotStr = std::string_view(fn).substr(0, underscore);
+                std::string_view gidStr = std::string_view(fn).substr(underscore + 1, dot - underscore - 1);
+
+                uint32_t depotId = 0;
+                auto [p, parseEc] = std::from_chars(depotStr.data(), depotStr.data() + depotStr.size(), depotId);
+                if (parseEc != std::errc{} || depotId == 0) continue;
+
+                auto it = installedDepots.find(depotId);
+                if (it != installedDepots.end()) {
+                    // If depot is installed, and the file's GID does NOT match the latest active GID
+                    if (!it->second.empty() && it->second != "0" && gidStr != it->second) {
+                        const std::string entryPathUtf8 = OSTPlatform::Encoding::PathToUtf8(entry.path());
+                        LOG_INFO("DenuvoSync: removing obsolete manifest mirror in lua dir: {}", entryPathUtf8);
+                        std::error_code removeEc;
+                        if (!std::filesystem::remove(entry.path(), removeEc)) {
+                            LOG_WARN("DenuvoSync: failed to remove obsolete manifest '{}' ({})",
+                                     entryPathUtf8, removeEc.message());
+                        }
+                    }
+                }
+            }
+        } catch (const std::exception& ex) {
+            LOG_WARN("DenuvoSync: exception during CleanObsoleteManifestMirrors: {}", ex.what());
+        }
+    }
+
     std::string ToHex(const uint8_t* data, size_t size) {
         std::string hex;
         hex.reserve(size * 2);
@@ -476,10 +553,9 @@ namespace {
 void OnSpawnProcess(AppId_t appId, const char* pExePath, const char* cmdLine) {
     if (appId == 0 || appId == k_uAppIdInvalid) return;
 
-    const bool hasDPlus = cmdLine && HasCmdLineArg(cmdLine, "-d+");
+    const bool hasLuaArg = HasLuaArg(cmdLine);
     const bool hasNoDenuvo = HasNoDenuvoArg(cmdLine);
     const bool hasForcedDenuvo = HasForcedDenuvoArg(cmdLine);
-    const bool hasLua = LuaConfig::HasDepot(appId, false);
 
     LuaConfig::SetCmdLineNoDenuvo(appId, hasNoDenuvo);
     LuaConfig::SetCmdLineForcedDenuvo(appId, hasForcedDenuvo);
@@ -494,39 +570,54 @@ void OnSpawnProcess(AppId_t appId, const char* pExePath, const char* cmdLine) {
         LOG_INFO("DenuvoSync: -forcedenuvo active for appId={}", appId);
     }
 
+    std::filesystem::path existingLuaPath = ResolveAppLuaPath(appId);
+    std::error_code ec;
+    const bool hasLua = LuaConfig::HasDepot(appId, false) ||
+                        (!existingLuaPath.empty() && std::filesystem::exists(existingLuaPath, ec) && !ec);
+
     // 🛑 ABSOLUTE ZERO-OPERATION INVARIANT:
-    // If there is no Lua file configured and neither -d+ nor -forcedenuvo is passed,
+    // If there is no Lua file configured and neither -lua/-d+ nor -forcedenuvo is passed,
     // OST executes ABSOLUTELY ZERO operations. Pure vanilla pass-through!
-    if (!hasLua && !hasDPlus && !hasForcedDenuvo) {
+    if (!hasLua && !hasLuaArg && !hasForcedDenuvo) {
         ClearDPlusLaunch(appId);
         return;
     }
 
-    if (hasDPlus) {
+    // 🛑 OWNERSHIP RESTRICTION:
+    // -lua can ONLY extract/generate on accounts that genuinely own the game.
+    // If the account does not genuinely own the app, strictly refuse generation or updating.
+    const bool isOwned = Hooks_Package::IsAppTrulyOwned(appId);
+    if (!isOwned) {
+        if (hasLuaArg) {
+            LOG_WARN("DenuvoSync: -lua specified for appId={}, but app is not genuinely owned by current account — skipping generation", appId);
+        }
+        ClearDPlusLaunch(appId);
+        return;
+    }
+
+    if (hasLuaArg) {
         std::lock_guard lock(g_dPlusMutex);
         g_dPlusLaunches.insert(appId);
-        LOG_INFO("DenuvoSync: recorded -d+ launch option for appId={}", appId);
+        LOG_INFO("DenuvoSync: recorded -lua launch option for appId={}", appId);
     } else {
         ClearDPlusLaunch(appId);
     }
 
-    // Only genuine owners, -d+, or -forcedenuvo execute sync or package generation
-    if (LuaConfig::IsOwned(appId) || hasDPlus || hasForcedDenuvo) {
-        std::string_view exeSv = pExePath ? pExePath : "";
-        exeSv = TrimWhitespace(exeSv);
-        while (!exeSv.empty() && (exeSv.front() == '"' || exeSv.front() == '\'')) {
-            exeSv.remove_prefix(1);
-        }
-        while (!exeSv.empty() && (exeSv.back() == '"' || exeSv.back() == '\'')) {
-            exeSv.remove_suffix(1);
-        }
-        try {
-            SyncOrGenerate(appId, std::string(exeSv), hasDPlus);
-        } catch (const std::exception& ex) {
-            LOG_ERROR("DenuvoSync: exception in SyncOrGenerate for appId={}: {}", appId, ex.what());
-        } catch (...) {
-            LOG_ERROR("DenuvoSync: unknown exception in SyncOrGenerate for appId={}", appId);
-        }
+    // Genuine owner launching with existing Lua OR -lua / -forcedenuvo:
+    std::string_view exeSv = pExePath ? pExePath : "";
+    exeSv = TrimWhitespace(exeSv);
+    while (!exeSv.empty() && (exeSv.front() == '"' || exeSv.front() == '\'')) {
+        exeSv.remove_prefix(1);
+    }
+    while (!exeSv.empty() && (exeSv.back() == '"' || exeSv.back() == '\'')) {
+        exeSv.remove_suffix(1);
+    }
+    try {
+        SyncOrGenerate(appId, std::string(exeSv), hasLuaArg);
+    } catch (const std::exception& ex) {
+        LOG_ERROR("DenuvoSync: exception in SyncOrGenerate for appId={}: {}", appId, ex.what());
+    } catch (...) {
+        LOG_ERROR("DenuvoSync: unknown exception in SyncOrGenerate for appId={}", appId);
     }
 }
 
@@ -542,29 +633,12 @@ void ClearDPlusLaunch(AppId_t appId) {
     g_dPlusLaunches.erase(appId);
 }
 
-bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
+bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool allowGenerate) {
     if (appId == 0 || appId == k_uAppIdInvalid) return false;
 
     // Gatekeeper: if nodenuvo is configured, completely skip
     if (LuaConfig::IsNoDenuvo(appId)) {
         LOG_INFO("DenuvoSync: nodenuvo set for appId={} — skipping Denuvo sync", appId);
-        return false;
-    }
-
-    const bool hasLua = LuaConfig::HasDepot(appId, false);
-    if (!hasLua && !isDPlus) {
-        return false;
-    }
-
-    // Gatekeeper 2: Denuvo detection
-    // "只要是识别到Denuvo，除非配置了noDenuvo"
-    bool isDenuvo = isDPlus || LuaConfig::IsForcedDenuvo(appId);
-    if (!isDenuvo && !exePath.empty()) {
-        isDenuvo = IsDenuvoPath(OSTPlatform::Encoding::PathFromUtf8(exePath));
-    }
-
-    if (!isDenuvo) {
-        LOG_INFO("DenuvoSync: appId={} is not Denuvo — skipping Denuvo sync", appId);
         return false;
     }
 
@@ -581,7 +655,16 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
     }
 
     const auto appLuaDir = luaBaseDir / std::to_string(appId);
-    const auto luaFilePath = appLuaDir / (std::to_string(appId) + ".lua");
+    std::filesystem::path luaFilePath = ResolveAppLuaPath(appId);
+    std::error_code ec;
+    const bool luaFileExists = !luaFilePath.empty() && std::filesystem::exists(luaFilePath, ec) && !ec;
+
+    if (!luaFileExists) {
+        if (!allowGenerate) {
+            return false;
+        }
+        luaFilePath = appLuaDir / (std::to_string(appId) + ".lua");
+    }
 
     // Locate ACF file
     auto acfPath = FindAcfPath(appId, exePath);
@@ -600,15 +683,11 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
     auto depotKeys = ParseConfigVdfKeys(SteamInstallPath);
     LOG_INFO("DenuvoSync: parsed config.vdf keys: count={}", depotKeys.size());
 
-    std::error_code ec;
-    const bool shouldLockManifest = Config::GetDenuvoLockManifest();
     bool ticketAlreadyWritten = false;
     {
         std::lock_guard fileLock(g_syncFileMutex);
-        const bool luaFileExists = std::filesystem::exists(luaFilePath, ec) && !ec;
-
         if (!luaFileExists) {
-            // ── Case 1: First-time generation (-d+) ──────────────────────────────
+            // ── Case 1: First-time generation (-lua / -d+) ────────────────────────
             LOG_INFO("DenuvoSync: generating new <AppId>.lua for appId={}", appId);
             std::vector<std::string> lines;
             lines.reserve(32);
@@ -632,11 +711,7 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
             lines.push_back("-- Locked Manifests (Prevent Auto-Update)");
             for (const auto& [depotId, gid] : acfData.installedDepots) {
                 if (!gid.empty() && gid != "0") {
-                    if (shouldLockManifest) {
-                        lines.push_back("setManifestid(" + std::to_string(depotId) + ", \"" + gid + "\")");
-                    } else {
-                        lines.push_back("-- setManifestid(" + std::to_string(depotId) + ", \"" + gid + "\")");
-                    }
+                    lines.push_back("setManifestid(" + std::to_string(depotId) + ", \"" + gid + "\")");
                 }
             }
 
@@ -697,9 +772,7 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
                         if (ec2 == std::errc{} && dId != 0) {
                             auto itDepot = acfData.installedDepots.find(dId);
                             if (itDepot != acfData.installedDepots.end() && !itDepot->second.empty() && itDepot->second != "0") {
-                                std::string newLine = shouldLockManifest
-                                    ? "setManifestid(" + std::to_string(dId) + ", \"" + itDepot->second + "\")"
-                                    : "-- setManifestid(" + std::to_string(dId) + ", \"" + itDepot->second + "\")";
+                                std::string newLine = "setManifestid(" + std::to_string(dId) + ", \"" + itDepot->second + "\")";
                                 if (lines[i] != newLine) {
                                     lines[i] = std::move(newLine);
                                     manifestModified = true;
@@ -715,13 +788,9 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
             std::vector<std::string> missingManifestLines;
             for (const auto& [depotId, gid] : acfData.installedDepots) {
                 if (!gid.empty() && gid != "0" && !handledDepots.contains(depotId)) {
-                    if (shouldLockManifest) {
-                        missingManifestLines.push_back("setManifestid(" + std::to_string(depotId) + ", \"" + gid + "\")");
-                    } else {
-                        missingManifestLines.push_back("-- setManifestid(" + std::to_string(depotId) + ", \"" + gid + "\")");
-                    }
-                    LOG_INFO("DenuvoSync: re-inserting missing manifest depot={} gid={} (locked={})",
-                             depotId, gid, shouldLockManifest);
+                    missingManifestLines.push_back("setManifestid(" + std::to_string(depotId) + ", \"" + gid + "\")");
+                    LOG_INFO("DenuvoSync: re-inserting missing manifest depot={} gid={}",
+                             depotId, gid);
                 }
             }
 
@@ -743,11 +812,10 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
         }
     }
 
-    if (shouldLockManifest) {
-        // Mirror .manifest files into <AppId>/ folder and sync to Steam depotcache
-        CopyManifestMirrors(appId, appLuaDir, acfData, acfPath);
-        LuaConfig::SyncManifests(OSTPlatform::Encoding::PathToUtf8(appLuaDir));
-    }
+    // Mirror .manifest files into <AppId>/ folder, clean obsolete mirrors, and sync to Steam depotcache
+    CopyManifestMirrors(appId, appLuaDir, acfData, acfPath);
+    CleanObsoleteManifestMirrors(appLuaDir, acfData.installedDepots);
+    LuaConfig::SyncManifests(OSTPlatform::Encoding::PathToUtf8(appLuaDir));
 
     // If an AppTicket is already cached, ensure it is synchronized into Lua (skip if freshly written during generation)
     if (!ticketAlreadyWritten) {
@@ -776,6 +844,16 @@ bool SyncAppTicketToLua(AppId_t appId, const uint8_t* pTicketData, size_t ticket
     }
 
     const std::string newHex = ToHex(pTicketData, ticketSize);
+
+    // 🛑 OWNERSHIP RESTRICTION:
+    // Only genuine owners are allowed to persist AppTickets to disk.
+    // If the current account does not own the app, keep in memory only.
+    if (!Hooks_Package::IsAppTrulyOwned(appId)) {
+        LOG_DEBUG("DenuvoSync: appId={} is not genuinely owned by current account — skipping disk ticket sync", appId);
+        AppTicket::WriteAppOwnershipTicket(appId, std::vector<uint8_t>(pTicketData, pTicketData + ticketSize));
+        return false;
+    }
+
     const auto luaPath = ResolveAppLuaPath(appId);
     if (luaPath.empty()) {
         LOG_WARN("DenuvoSync: unable to resolve Lua file path for appId={}", appId);
@@ -785,10 +863,10 @@ bool SyncAppTicketToLua(AppId_t appId, const uint8_t* pTicketData, size_t ticket
     std::error_code ec;
     bool luaExists = std::filesystem::exists(luaPath, ec) && !ec;
 
-    // If Lua does not exist yet, check if this app was launched with -d+
+    // If Lua does not exist yet, check if this app was launched with -lua
     if (!luaExists) {
         if (IsDPlusLaunch(appId)) {
-            LOG_INFO("DenuvoSync: -d+ active and Lua missing for appId={}, generating via SyncOrGenerate", appId);
+            LOG_INFO("DenuvoSync: -lua active and Lua missing for appId={}, generating via SyncOrGenerate", appId);
             SyncOrGenerate(appId, "", true);
             luaExists = std::filesystem::exists(luaPath, ec) && !ec;
         }

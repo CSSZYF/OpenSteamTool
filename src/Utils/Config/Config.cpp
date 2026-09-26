@@ -23,6 +23,7 @@ namespace {
         std::vector<InjectDll> injectDlls;
         CloudSettings cloud;
         bool denuvoLockManifest = true;
+        bool manifestLockOwnedGames = false;
     };
 
     std::mutex g_mutex;
@@ -41,6 +42,7 @@ namespace {
     bool cloudEnabled = false;
     std::string cloudLibrary;
     bool denuvoLockManifest = true;
+    bool manifestLockOwnedGames = false;
 
     const char* ToString(LogLevel level) {
         switch (level) {
@@ -80,6 +82,7 @@ namespace {
         cloudEnabled           = snapshot.cloud.enabled;
         cloudLibrary           = snapshot.cloud.library;
         denuvoLockManifest     = snapshot.denuvoLockManifest;
+        manifestLockOwnedGames = snapshot.manifestLockOwnedGames;
     }
 
     void ApplyManifestProvider(const std::string& provider) {
@@ -133,6 +136,8 @@ namespace {
                     snapshot.manifestTimeouts.send = static_cast<uint32_t>(*val);
                 if (auto val = (*manifest)["timeout_recv_ms"].value<int64_t>())
                     snapshot.manifestTimeouts.recv = static_cast<uint32_t>(*val);
+                if (auto val = (*manifest)["lock_owned_games"].value<bool>())
+                    snapshot.manifestLockOwnedGames = *val;
             }
 
             // [log]
@@ -327,6 +332,11 @@ namespace {
     bool GetDenuvoLockManifest() {
         std::lock_guard lock(g_mutex);
         return denuvoLockManifest;
+    }
+
+    bool GetManifestLockOwnedGames() {
+        std::lock_guard lock(g_mutex);
+        return manifestLockOwnedGames;
     }
 
 }

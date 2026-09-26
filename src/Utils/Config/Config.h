@@ -47,4 +47,5 @@ namespace Config {
     bool GetStatsEnableApi();
     std::vector<InjectDll> GetInjectDlls();
     bool GetDenuvoLockManifest();
+    bool GetManifestLockOwnedGames();
 }

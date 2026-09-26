@@ -1,5 +1,7 @@
 #include "Hooks_Manifest.h"
 #include "HookMacros.h"
+#include "Hook/Hooks_Package.h"
+#include "Utils/Config/Config.h"
 #include "dllmain.h"
 #include <format>
 
@@ -45,12 +47,21 @@ namespace {
         const auto& overrides = LuaConfig::GetManifestOverrides();
         if (overrides.empty()) return result;
 
+        const bool lockOwned = Config::GetManifestLockOwnedGames();
+
         auto patchVector = [&](CUtlVector<DepotEntry>* vec, const char* label) {
             if (!vec || !vec->m_Size) return;
             for (uint32 i = 0; i < vec->m_Size; ++i) {
                 DepotEntry& e = vec->m_Memory.m_pMemory[i];
                 auto it = overrides.find(e.DepotId);
                 if (it != overrides.end()) {
+                    AppId_t targetAppId = (e.DlcAppId != 0) ? e.DlcAppId : (e.AppId != 0 ? e.AppId : AppId);
+                    if (!lockOwned && Hooks_Package::IsAppTrulyOwned(targetAppId)) {
+                        LOG_MANIFEST_INFO("BuildDepotDependency: skipping manifest lock for owned targetAppId={} depot={}",
+                            targetAppId, e.DepotId);
+                        continue;
+                    }
+
                     // if size=0 in the override, keep the original size(affects download display but not the actual download)
                     uint64_t newSize = it->second.size ? it->second.size : e.ManifestSize;
                     LOG_MANIFEST_INFO("BuildDepotDependency: patching {} depot {} gid={}->{} size={}->{}",

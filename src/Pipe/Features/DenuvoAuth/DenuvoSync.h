@@ -14,6 +14,9 @@ namespace PipeManager::DenuvoAuth {
     // Checks whether cmdLine contains any variant of -forcedenuvo (-forcedenuvo, -force-denuvo, -force_denuvo).
     bool HasForcedDenuvoArg(const char* cmdLine);
 
+    // Checks whether cmdLine contains any variant of -lua (-lua, --lua, -d+).
+    bool HasLuaArg(const char* cmdLine);
+
     // Called when CUser_SpawnProcess is intercepted in Hooks_Misc.
     // Checks the zero-operation gatekeeper (!hasLua && !hasDPlus -> returns immediately).
     // If -d+ is present, records the intent and triggers sync/generation if authorized.
@@ -25,12 +28,12 @@ namespace PipeManager::DenuvoAuth {
     // Clears the -d+ launch flag for the given app.
     void ClearDPlusLaunch(AppId_t appId);
 
-    // Core synchronization / package generation function (-d+ / genuine ownership).
+    // Core synchronization / package generation function (-lua / genuine ownership).
     // Guaranteed:
     // 1. Never creates credentials/ or writes SteamID.txt to disk!
     // 2. Locks all installed manifests in <AppId>.lua (inserts/uncomments/updates setManifestid).
     // 3. Directly embeds setAppTicket in <AppId>.lua for offline Denuvo identity and Capcom Error 54 immunity.
-    bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus);
+    bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool allowGenerate);
 
     // Synchronizes the genuine AppTicket into <AppId>.lua.
     // - If <AppId>.lua exists: uncomments commented setAppTicket, updates if different,

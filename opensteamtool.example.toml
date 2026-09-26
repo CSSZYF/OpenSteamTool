@@ -57,6 +57,16 @@ timeout_connect_ms = 5000
 timeout_send_ms    = 10000
 timeout_recv_ms    = 10000
 
+# Whether to enforce depot manifest locking (setManifestid) on games/DLCs truly owned by the current account.
+# false (default) -> Bypasses manifest locking for owned games/DLCs, allowing Steam to receive official updates normally.
+#                    Unowned DLCs and secondary accounts without licenses remain strictly manifest-locked.
+# true            -> Enforces manifest locking on all depots in Lua, even if the account owns the license.
+#
+# 是否对当前账号真实拥有的游戏/DLC生效清单锁定（setManifestid）。
+# false (默认)  → 拥有的游戏/DLC不受锁清单限制，允许 Steam 正常接收官方更新；未拥有的 DLC 及未拥有该游戏的小号仍严格生效锁清单。
+# true          → 即使账号拥有该游戏，也生效 Lua 中的清单锁定（适合想在授权号上也冻结游戏版本的用户）。
+lock_owned_games = false
+
 [stats]
 # Automatically query https://stats.opensteamtool.com/{appid} for a recommended
 # SteamID when no Lua setStat(appid, "steamid") override exists.
