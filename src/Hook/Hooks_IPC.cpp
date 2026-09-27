@@ -90,6 +90,22 @@ namespace {
             if (!call.ok())
                 return oIPCProcessMessage(pServer, hSteamPipe, pRead, pWrite);
 
+            // ==== OST DIAGNOSTIC (temporary, Debug-only): log EVERY InterfaceCall coming
+            // from a Lua-configured game, so we can identify exactly which IPC method the
+            // game uses to check DLC ownership/subscription (OST does not hook it yet, so it
+            // is otherwise invisible). arg0/arg1 usually carry appid + dlc appid. ====
+            {
+                const AppId_t diagApp = Hooks_Misc::ResolveAppId();
+                if (LuaConfig::HasDepot(diagApp, false)) {
+                    uint32 a0 = 0, a1 = 0;
+                    if (call.body().size() >= 4) memcpy(&a0, call.body().data(), 4);
+                    if (call.body().size() >= 8) memcpy(&a1, call.body().data() + 4, 4);
+                    LOG_IPC_INFO("DIAG IPCcall appid={} iface={} funcHash=0x{:08X} nbody={} arg0={} arg1={}",
+                                 diagApp, static_cast<uint32>(call.interfaceID()), call.funcHash(),
+                                 static_cast<uint32>(call.body().size()), a0, a1);
+                }
+            }
+
             // Detect the first SteamNetworkingSockets call (interface 46) so state is tracked.
             // Skipped once already seen or when OnlineFix is not active.
             if (Hooks_Misc::IsOnlineFixActive() && !Hooks_Misc::IsNetworkingSocketsActive()) {
