@@ -282,20 +282,7 @@ namespace
                     m_taskQueue.pop();
                 }
 
-                // 500ms interruptible debounce to allow Steam to flush ACF and release file handles
-                {
-                    std::unique_lock<std::mutex> lock(m_queueMutex);
-                    m_cv.wait_for(lock, std::chrono::milliseconds(500), [this]() {
-                        return m_stopping.load(std::memory_order_relaxed);
-                    });
-                    if (m_stopping.load(std::memory_order_relaxed)) {
-                        std::lock_guard<std::mutex> inFlightLock(g_inFlightMutex);
-                        g_inFlightSyncs.erase(appId);
-                        break;
-                    }
-                }
-
-                // InFlight cleanup guard ensures erasure on early exit or exception
+                // InFlight cleanup guard: instantiated immediately upon pop, RAII guarantees erasure on ALL exit paths
                 struct InFlightGuard {
                     AppId_t id;
                     ~InFlightGuard() {
@@ -303,6 +290,17 @@ namespace
                         g_inFlightSyncs.erase(id);
                     }
                 } guard{appId};
+
+                // 500ms interruptible debounce to allow Steam to flush ACF and release file handles
+                {
+                    std::unique_lock<std::mutex> lock(m_queueMutex);
+                    m_cv.wait_for(lock, std::chrono::milliseconds(500), [this]() {
+                        return m_stopping.load(std::memory_order_relaxed);
+                    });
+                    if (m_stopping.load(std::memory_order_relaxed)) {
+                        break;
+                    }
+                }
 
                 if (m_stopping.load(std::memory_order_relaxed)) {
                     break;
@@ -356,10 +354,12 @@ namespace
             }
         }
 
-        void Enqueue(AppId_t appId) {
+        bool Enqueue(AppId_t appId) {
             std::lock_guard<std::mutex> lock(m_queueMutex);
+            if (m_stopping.load(std::memory_order_relaxed)) return false;
             m_taskQueue.push(appId);
             m_cv.notify_one();
+            return true;
         }
     };
     static AutoSyncWorkerPool g_autoSyncWorkerPool;
@@ -453,14 +453,27 @@ namespace
                 }
 
                 if (!inAppsBlock) {
-                    std::string lower(sv);
-                    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                    if (lower.find("\"apps\"") != std::string_view::npos) {
-                        inAppsBlock = true;
-                        appsDepth = (openBraces > 0) ? braceDepth - (openBraces - closeBraces) : braceDepth;
-                        if (closeBraces > 0 && braceDepth <= appsDepth) {
-                            inAppsBlock = false;
-                            appsDepth = -1;
+                    size_t firstQuote = sv.find('"');
+                    if (firstQuote != std::string_view::npos) {
+                        size_t secondQuote = sv.find('"', firstQuote + 1);
+                        if (secondQuote != std::string_view::npos) {
+                            std::string_view key = sv.substr(firstQuote + 1, secondQuote - firstQuote - 1);
+                            const bool isAppsKey = (key.size() == 4 &&
+                                                    (key[0] == 'a' || key[0] == 'A') &&
+                                                    (key[1] == 'p' || key[1] == 'P') &&
+                                                    (key[2] == 'p' || key[2] == 'P') &&
+                                                    (key[3] == 's' || key[3] == 'S'));
+                            if (isAppsKey) {
+                                size_t thirdQuote = sv.find('"', secondQuote + 1);
+                                if (thirdQuote == std::string_view::npos || openBraces > 0) {
+                                    inAppsBlock = true;
+                                    appsDepth = (openBraces > 0) ? braceDepth - (openBraces - closeBraces) : braceDepth;
+                                    if (closeBraces > 0 && braceDepth <= appsDepth) {
+                                        inAppsBlock = false;
+                                        appsDepth = -1;
+                                    }
+                                }
+                            }
                         }
                     }
                 } else {
@@ -479,19 +492,16 @@ namespace
                 }
             }
 
-            if (foundInstalled.empty()) return;
-
-            auto configuredSnapshot = LuaConfig::GetConfiguredAppIdsSnapshot();
-            if (!configuredSnapshot || configuredSnapshot->empty()) {
-                return;
-            }
-
             std::vector<AppId_t> filteredInstalled;
-            filteredInstalled.reserve(std::min(foundInstalled.size(), size_t(1500)));
-
-            for (AppId_t appId : *configuredSnapshot) {
-                if (foundInstalled.contains(appId)) {
-                    filteredInstalled.push_back(appId);
+            if (!foundInstalled.empty()) {
+                auto configuredSnapshot = LuaConfig::GetConfiguredAppIdsSnapshot();
+                if (configuredSnapshot && !configuredSnapshot->empty()) {
+                    filteredInstalled.reserve(std::min(foundInstalled.size(), size_t(1500)));
+                    for (AppId_t appId : *configuredSnapshot) {
+                        if (foundInstalled.contains(appId)) {
+                            filteredInstalled.push_back(appId);
+                        }
+                    }
                 }
             }
 
@@ -566,7 +576,10 @@ namespace
                 }
                 if (inserted) {
                     try {
-                        g_autoSyncWorkerPool.Enqueue(id);
+                        if (!g_autoSyncWorkerPool.Enqueue(id)) {
+                            std::lock_guard<std::mutex> lock(g_inFlightMutex);
+                            g_inFlightSyncs.erase(id);
+                        }
                     } catch (...) {
                         std::lock_guard<std::mutex> lock(g_inFlightMutex);
                         g_inFlightSyncs.erase(id);
@@ -646,6 +659,7 @@ namespace
                 // 判定 1：常规状态机跳变完成
                 if (wasUpdating && isNowFullyInstalled) {
                     entryIt->second = { currentState, currentChangeNum };
+                    std::erase(g_activeUpdatingApps, appId);
                     safeEnqueue(appId);
                 }
                 // 判定 2：秒级小补丁/错失 Updating 的版本号跃迁自愈兜底
@@ -654,6 +668,7 @@ namespace
                         entryIt->second.changeNumber = currentChangeNum;
                     } else if ((currentState & k_EAppStateAppRunning) == 0) {
                         entryIt->second = { currentState, currentChangeNum };
+                        std::erase(g_activeUpdatingApps, appId);
                         safeEnqueue(appId);
                     }
                 }
@@ -733,6 +748,11 @@ namespace
     // the full snapshot skips it); MarkAppChange triggers the flush.
     HOOK_FUNC(CSteamUIAppControllerRunFrame, void *, void *pController)
     {
+        if (!g_HooksInstalled.load(std::memory_order_relaxed))
+        {
+            return oCSteamUIAppControllerRunFrame(pController);
+        }
+
         if (pController && !g_pController)
         {
             g_pController = pController;
@@ -889,11 +909,6 @@ namespace Hooks_SteamUI
 
     void Uninstall()
     {
-        g_installedScannerPool.Stop();
-        g_autoSyncWorkerPool.Stop();
-        g_trackedStates.clear();
-        g_activeUpdatingApps.clear();
-
         UNHOOK_BEGIN();
         if (!OSTPlatform::Detour::Detach(reinterpret_cast<void**>(&oGetModuleHandleA), reinterpret_cast<void*>(hkGetModuleHandleA))) _ost_detour_transaction_ok_ = false;
         if (!OSTPlatform::Detour::Detach(reinterpret_cast<void**>(&oGetModuleHandleW), reinterpret_cast<void*>(hkGetModuleHandleW))) _ost_detour_transaction_ok_ = false;
@@ -905,6 +920,11 @@ namespace Hooks_SteamUI
         UNINSTALL_HOOK(BuildCompleteAppOverviewChange);
         UNINSTALL_HOOK(CSteamUIAppControllerRunFrame);
         UNHOOK_END();
+
+        g_installedScannerPool.Stop();
+        g_autoSyncWorkerPool.Stop();
+        g_trackedStates.clear();
+        g_activeUpdatingApps.clear();
     }
 
 
