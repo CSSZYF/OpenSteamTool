@@ -137,6 +137,25 @@ namespace {
             LuaConfig::MarkOwned(appId);
         }
 
+        // ==== OST DIAGNOSTIC (temporary; Debug-only, compiles to no-ops in Release) ====
+        // Snapshot of what Steam ACTUALLY returned for this appid BEFORE we force it.
+        // Purpose: see whether the DLC ownership check even reaches this hook when
+        // ONLINE, and how the fields differ from the OFFLINE (working) case.
+        //   - TRACE line fires for every appid (catch DLC ids not in the .lua).
+        //   - INFO line fires for the base game (1868140) + every Lua-configured app.
+        LOG_PACKAGE_TRACE("DIAG probe appid={} origResult={}", appId, result);
+        if (pOwn && (LuaConfig::HasDepot(appId, false) || appId == 1868140u)) {
+            LOG_PACKAGE_INFO(
+                "DIAG CheckAppOwnership appid={} origResult={} bOwnsLicense={} bFamilyShared={} "
+                "bBorrowed={} bLicenseLocked={} bLicenseExpired={} bFreeLicense={} PackageId={} "
+                "ExistInPackageNums={} MasterSubAppID={} HasDepot={} IsOwnedCached={} isTrulyOwned={}",
+                appId, result, pOwn->bOwnsLicense, pOwn->bFamilyShared, pOwn->bBorrowed,
+                pOwn->bLicenseLocked, pOwn->bLicenseExpired, pOwn->bFreeLicense, pOwn->PackageId,
+                pOwn->ExistInPackageNums, pOwn->MasterSubscriptionAppID,
+                LuaConfig::HasDepot(appId, false), LuaConfig::IsOwned(appId), isTrulyOwned);
+        }
+        // ==== END DIAGNOSTIC ====
+
         if (LuaConfig::HasDepot(appId, false)) {
             if (pOwn) {
                 if (isTrulyOwned) {

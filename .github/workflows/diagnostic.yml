@@ -1,0 +1,32 @@
+name: Diagnostic Build (DLC offline probe)
+
+# Builds ONLY the Debug DLLs (with the temporary DIAG logging) on GitHub's
+# MSVC runners and uploads them as an artifact. No tag, no release — meant for
+# quick diagnostic iteration. Triggers on push to the diag branch or manually.
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - diag-dlc-offline
+
+jobs:
+  build-debug:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC toolchain
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        run: cmake -S src -B build -G "Ninja Multi-Config"
+
+      - name: Build Debug (OpenSteamTool.dll / dwmapi.dll / xinput1_4.dll)
+        run: cmake --build build --config Debug
+
+      - name: Upload Debug artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenSteamTool-Debug
+          path: build/Debug/
+          if-no-files-found: error

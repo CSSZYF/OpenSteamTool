@@ -1632,6 +1632,16 @@ namespace {
             Hooks_NetPacket_OwnershipTicket::HandleRecv(pBody, cbBody);
             return;
 
+        // ==== OST DIAGNOSTIC (temporary; observation only, packet passes through) ====
+        // The server's authoritative license list. Prime suspect for the online DLC
+        // failure: this refresh can overwrite the injected fake "package 0", after
+        // which a family-shared base game's injected DLC reverts to unowned. Offline
+        // this message never arrives, which is why the manual offline trick works.
+        case k_EMsgClientLicenseList:                     // 780
+            LOG_NETPACKET_INFO("DIAG LicenseList(780) received cbBody={} — server license refresh (may clobber injected package 0)", cbBody);
+            return;
+        // ==== END DIAGNOSTIC ====
+
         default:
             return;
         }
