@@ -434,6 +434,9 @@ namespace
 
             while (std::getline(file, line)) {
                 std::string_view sv = line;
+                if (sv.starts_with("\xEF\xBB\xBF")) {
+                    sv.remove_prefix(3);
+                }
                 while (!sv.empty() && (sv.front() == ' ' || sv.front() == '\t' || sv.front() == '\r' || sv.front() == '\n')) {
                     sv.remove_prefix(1);
                 }
