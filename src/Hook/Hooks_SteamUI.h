@@ -16,4 +16,6 @@ namespace Hooks_SteamUI {
     void QueueAddition(AppId_t appId);
     // Checks if an appId is currently marked as removed in the UI
     bool IsRemoved(AppId_t appId);
+    // Triggers an immediate background rescan of libraryfolders.vdf for installed apps
+    void TriggerInstalledScanner();
 }

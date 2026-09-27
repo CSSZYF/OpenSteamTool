@@ -3,6 +3,7 @@
 #include "Hook/Hooks_Decryption.h"
 #include "Hook/Hooks_Misc.h"
 #include "Hook/Hooks_Package.h"
+#include "Hook/Hooks_SteamUI.h"
 #include "Utils/Tickets/AppTicket.h"
 #include "Utils/Config/ConfigFileWatcher.h"
 #include "Utils/Config/LuaFileWatcher.h"
@@ -221,6 +222,9 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
 
     for (const auto& dir : watchDirs)
         LuaConfig::ParseDirectory(dir);
+
+    // Awaken installed scanner to immediately form installed snapshot with loaded Lua configs
+    Hooks_SteamUI::TriggerInstalledScanner();
 
     LuaFileWatcher::Start(watchDirs);
     ConfigFileWatcher::Start(ConfigPath, LuaDir);

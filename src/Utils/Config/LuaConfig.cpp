@@ -83,6 +83,24 @@ namespace LuaConfig{
     // Depot IDs removed by UnloadFile / added by ParseFile, consumed by NotifyLicenseChanged.
     static std::vector<AppId_t> g_pendingRemovals;
     static std::vector<AppId_t> g_pendingAdditions;
+
+    // RCU non-blocking snapshot for thread-safe zero-lock queries from UI thread
+    static std::atomic<std::shared_ptr<const std::vector<AppId_t>>> s_configuredAppIdsSnapshot{
+        std::make_shared<const std::vector<AppId_t>>()
+    };
+
+    static void RebuildConfiguredAppIdsSnapshotLocked() {
+        std::unordered_set<AppId_t> appIds;
+        for (const auto& [filePath, depots] : g_fileDepots) {
+            for (AppId_t id : depots) {
+                appIds.insert(id);
+            }
+        }
+        std::vector<AppId_t> vec(appIds.begin(), appIds.end());
+        std::sort(vec.begin(), vec.end());
+        s_configuredAppIdsSnapshot.store(
+            std::make_shared<const std::vector<AppId_t>>(std::move(vec)));
+    }
     constexpr uint64_t kDefaultStatSteamId = 76561198028121353ULL;
     static std::recursive_mutex g_manifestSyncMutex;
 
@@ -1132,9 +1150,12 @@ namespace LuaConfig{
         g_fileMtime.erase(filePath);
     }
 
-    void UnloadFile(const std::string& rawFilePath, bool isPermanentRemoval) {
+    void UnloadFile(const std::string& rawFilePath, bool isPermanentRemoval, bool rebuildSnapshot) {
         std::unique_lock lock(g_configSharedMutex);
         UnloadFileLocked(rawFilePath, isPermanentRemoval);
+        if (rebuildSnapshot) {
+            RebuildConfiguredAppIdsSnapshotLocked();
+        }
     }
 
     static bool StartsWithCaseInsensitive(std::string_view str, std::string_view prefix) {
@@ -1224,6 +1245,7 @@ namespace LuaConfig{
             LOG_PACKAGE_INFO("UnloadDirectory: unloading file '{}' from removed dir '{}'", filePath, rawDirPath);
             UnloadFileLocked(filePath, true);
         }
+        RebuildConfiguredAppIdsSnapshotLocked();
         return static_cast<uint32_t>(toUnload.size());
     }
 
@@ -1432,7 +1454,7 @@ namespace LuaConfig{
     }
 
     // ── single-file parser ──────────────────────────────────────
-    void ParseFile(const std::string& rawFilePath) {
+    void ParseFile(const std::string& rawFilePath, bool rebuildSnapshot) {
         if (!Initialize()) return;
 
         std::filesystem::path path = OSTPlatform::Encoding::PathFromUtf8(rawFilePath).lexically_normal();
@@ -1541,6 +1563,9 @@ namespace LuaConfig{
         g_hasManifestCodeFuncEx.store(hasCodeEx, std::memory_order_relaxed);
 
         g_currentFile.clear();
+        if (rebuildSnapshot) {
+            RebuildConfiguredAppIdsSnapshotLocked();
+        }
     }
 
     // ── directory scanner ────────────────────────────────────────
@@ -1550,13 +1575,14 @@ namespace LuaConfig{
         SyncManifests(directory);
 
         for (const auto& filePath : CollectLuaFiles(directory)) {
-            ParseFile(filePath);
+            ParseFile(filePath, false);
         }
 
         // Initial parse — discard pending additions so NotifyLicenseChanged
         // only sees changes that happen after startup.
         std::unique_lock lock(g_configSharedMutex);
         g_pendingAdditions.clear();
+        RebuildConfiguredAppIdsSnapshotLocked();
     }
 
     void ReloadDirectories(const std::vector<std::string>& directories, bool clearPendingAdditions) {
@@ -1627,18 +1653,19 @@ namespace LuaConfig{
 
         for (const auto& filePath : trackedFiles) {
             if (!activeFiles.contains(filePath)) {
-                UnloadFile(filePath, true);
+                UnloadFile(filePath, true, false);
             }
         }
 
         for (const auto& filePath : orderedFiles) {
-            ParseFile(filePath);
+            ParseFile(filePath, false);
         }
 
+        std::unique_lock lock(g_configSharedMutex);
         if (clearPendingAdditions) {
-            std::unique_lock lock(g_configSharedMutex);
             g_pendingAdditions.clear();
         }
+        RebuildConfiguredAppIdsSnapshotLocked();
     }
 
     std::string FindLuaFileForAppId(AppId_t appId) {
@@ -1656,15 +1683,15 @@ namespace LuaConfig{
         return {};
     }
 
-    std::vector<AppId_t> GetConfiguredAppIds() {
-        std::shared_lock lock(g_configSharedMutex);
-        std::unordered_set<AppId_t> appIds;
-        for (const auto& [filePath, depots] : g_fileDepots) {
-            for (AppId_t id : depots) {
-                appIds.insert(id);
-            }
-        }
-        return std::vector<AppId_t>(appIds.begin(), appIds.end());
+    std::shared_ptr<const std::vector<AppId_t>> GetConfiguredAppIdsSnapshot() {
+        return s_configuredAppIdsSnapshot.load();
     }
 
+    std::vector<AppId_t> GetConfiguredAppIds() {
+        auto snapshot = GetConfiguredAppIdsSnapshot();
+        if (snapshot) {
+            return *snapshot;
+        }
+        return {};
+    }
 }
