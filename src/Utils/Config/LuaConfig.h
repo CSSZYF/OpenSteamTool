@@ -7,6 +7,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <memory>
 
 namespace LuaConfig{
     bool HasDepot(AppId_t appId, bool excludeOwned = true);
@@ -26,8 +27,8 @@ namespace LuaConfig{
     };
     std::unordered_map<uint64_t, ManifestOverride> GetManifestOverrides();
 
-    void ParseFile(const std::string& filePath);
-    void UnloadFile(const std::string& filePath, bool isPermanentRemoval = false);
+    void ParseFile(const std::string& filePath, bool rebuildSnapshot = true);
+    void UnloadFile(const std::string& filePath, bool isPermanentRemoval = false, bool rebuildSnapshot = true);
     uint32_t UnloadDirectory(const std::string& directory);
     // Returns and clears the list of depot IDs removed/added since last call.
     std::vector<AppId_t> TakePendingRemovals();
@@ -41,6 +42,9 @@ namespace LuaConfig{
 
     // Returns a list of all distinct AppIds configured across all loaded Lua files.
     std::vector<AppId_t> GetConfiguredAppIds();
+
+    // RCU non-blocking snapshot: Returns a thread-safe shared_ptr to the cached list of configured AppIds.
+    std::shared_ptr<const std::vector<AppId_t>> GetConfiguredAppIdsSnapshot();
 
     // Resolves the Steam\depotcache directory (always points to Steam install path, even in portable mode).
     std::string GetSteamDepotcacheDir();
