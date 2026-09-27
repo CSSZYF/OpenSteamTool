@@ -122,11 +122,30 @@ namespace {
                 memcpy(&dlcAppId, call.body().data() + 4, 4);
                 if (dlcAppId != 0 && LuaConfig::HasDepot(dlcAppId, false)) {
                     const bool result = oIPCProcessMessage(pServer, hSteamPipe, pRead, pWrite);
+
+                    // DIAG: dump the raw response bytes so we learn the exact wire layout
+                    // of the bool return (result header + body), then force it.
+                    auto hexDump = [](CUtlBuffer* b) {
+                        std::string s;
+                        if (b && b->Base()) {
+                            int n = b->m_Put > 16 ? 16 : b->m_Put;
+                            for (int i = 0; i < n; ++i)
+                                s += std::format("{:02X} ", static_cast<unsigned>(b->Base()[i]));
+                        }
+                        return s;
+                    };
+                    const std::string before = hexDump(pWrite);
                     IPCMessages::IClientAppManager::BIsDlcInstalledResp resp{pWrite};
-                    if (resp.ok() && !resp.returnValue()) {
-                        resp.set_returnValue(true);
-                        LOG_IPC_INFO("IClientAppManager::BIsDlcInstalled: forced dlc={} -> installed", dlcAppId);
+                    const bool okv = resp.ok();
+                    const bool rv  = resp.returnValue();
+                    resp.set_returnValue(true);                 // force via facade (unconditional)
+                    if (pWrite && pWrite->Base() && pWrite->m_Put >= 2) {
+                        pWrite->Base()[0] = 0x0B;               // EIPCResult::OK
+                        pWrite->Base()[pWrite->m_Put - 1] = 1;  // last byte = bool true (raw belt-and-suspenders)
                     }
+                    LOG_IPC_INFO("DLCFIXPROBE dlc={} put={} ok={} retval={} before=[{}] after=[{}]",
+                                 dlcAppId, (pWrite ? pWrite->m_Put : -1), okv, rv,
+                                 before, hexDump(pWrite));
                     return result;
                 }
             }
