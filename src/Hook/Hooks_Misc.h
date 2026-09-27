@@ -40,6 +40,14 @@ namespace Hooks_Misc {
     // or when a non-onlinefix game launches).
     void ResetOnlineFixState();
 
+    // DLC-starve window (experimental): armed briefly when a Lua-unlocked game spawns.
+    // While active, Hooks_NetPacket drops the base game's outbound server ownership /
+    // family requests so the client falls back to LOCAL (package 0) ownership — i.e.
+    // "thinks it's offline" for that window, which makes injected DLC on a family-shared
+    // base game resolve as owned while the client stays online.
+    void BeginDlcStarveWindow();
+    bool IsDlcStarveWindow();
+
     // Get localized game name via GetAppDataFromAppInfo (cached).
     std::string GetGameNameByAppID(AppId_t appId);
 

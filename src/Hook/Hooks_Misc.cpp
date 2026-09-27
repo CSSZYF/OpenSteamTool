@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <unordered_map>
 
@@ -30,6 +31,14 @@ namespace {
     // access user data, and authenticate properly.
     // Flipped to false only if user explicitly passes -p2pflip.
     std::atomic<bool>    g_SuppressAppIdFlip{true};
+
+    // DLC-starve window deadline (steady-clock ms). While now < deadline, the
+    // net layer drops the base game's server ownership/family requests.
+    std::atomic<uint64_t> g_DlcStarveDeadlineMs{0};
+    static uint64_t NowMs() {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    }
     std::mutex           g_GameNameMutex;
     std::unordered_map<AppId_t, std::string> g_GameNameCache;
 
@@ -64,6 +73,14 @@ namespace {
 
         PipeManager::DenuvoAuth::OnSpawnProcess(appId, pExePath, cmdLine);
         LuaConfig::PrewarmStatSteamId(appId);
+
+        // Experimental: for a Lua-unlocked game, arm the DLC-starve window so the net
+        // layer briefly drops server ownership/family requests during launch → client
+        // falls back to local package 0 → injected DLC on a family-shared base resolve.
+        if (LuaConfig::HasDepot(appId, false)) {
+            Hooks_Misc::BeginDlcStarveWindow();
+            LOG_MISC_INFO("SpawnProcess: DLC-starve window armed for Lua app {}", appId);
+        }
 
         if (cmdLine && HasCmdLineArg(cmdLine, "-onlinefix"))
         {
@@ -221,6 +238,13 @@ namespace Hooks_Misc {
 
     bool IsOnlineFixActive() {
         return g_OnlineFixRealAppId.load(std::memory_order_relaxed) != 0;
+    }
+
+    void BeginDlcStarveWindow() {
+        g_DlcStarveDeadlineMs.store(NowMs() + 8000, std::memory_order_release); // ~8s
+    }
+    bool IsDlcStarveWindow() {
+        return NowMs() < g_DlcStarveDeadlineMs.load(std::memory_order_acquire);
     }
 
     bool IsNetworkingSocketsActive() {
