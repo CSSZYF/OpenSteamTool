@@ -68,6 +68,10 @@ namespace {
         PipeManager::OnHandshake(pipe);
     }
 
+    // IClientAppManager::BIsDlcInstalled(appId, dlcAppId) -> bool. Wire funcHash observed
+    // from the game's IPC call; stable across Steam versions (derived from the method ABI).
+    constexpr uint32 kFuncHash_BIsDlcInstalled = 0xCDBD8C70;
+
     HOOK_FUNC(IPCProcessMessage, bool, void* pServer, HSteamPipe hSteamPipe,
               CUtlBuffer* pRead, CUtlBuffer* pWrite)
     {
@@ -103,6 +107,27 @@ namespace {
                     LOG_IPC_INFO("DIAG IPCcall appid={} iface={} funcHash=0x{:08X} nbody={} arg0={} arg1={}",
                                  diagApp, static_cast<uint32>(call.interfaceID()), call.funcHash(),
                                  static_cast<uint32>(call.body().size()), a0, a1);
+                }
+            }
+
+            // ==== FIX: force injected DLC to "installed" online (family-shared base game) ====
+            // The game asks IClientAppManager::BIsDlcInstalled(appId, dlcAppId). ONLINE, for a
+            // borrowed (family-shared) base game, Steam answers false for DLC the lender does not
+            // own — even though OST owns them locally via package 0. Force true so the DLC is
+            // recognized while staying online (no offline-mode dance needed).
+            if (call.interfaceID() == EIPCInterface::IClientAppManager &&
+                call.funcHash() == kFuncHash_BIsDlcInstalled &&
+                call.body().size() >= 8) {
+                uint32 dlcAppId = 0;
+                memcpy(&dlcAppId, call.body().data() + 4, 4);
+                if (dlcAppId != 0 && LuaConfig::HasDepot(dlcAppId, false)) {
+                    const bool result = oIPCProcessMessage(pServer, hSteamPipe, pRead, pWrite);
+                    IPCMessages::IClientAppManager::BIsDlcInstalledResp resp{pWrite};
+                    if (resp.ok() && !resp.returnValue()) {
+                        resp.set_returnValue(true);
+                        LOG_IPC_INFO("IClientAppManager::BIsDlcInstalled: forced dlc={} -> installed", dlcAppId);
+                    }
+                    return result;
                 }
             }
 

@@ -146,3 +146,12 @@ interface IClientUtils {
         out bool   pbFailed
     );
 }
+
+interface IClientAppManager {
+    // Per-DLC ownership/installed gate the game queries at runtime.
+    // funcHash 0xCDBD8C70 on this interface (observed on the wire).
+    bool BIsDlcInstalled(
+        in uint32 unAppID,
+        in uint32 unDlcAppID
+    );
+}
