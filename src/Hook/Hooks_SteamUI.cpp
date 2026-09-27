@@ -249,13 +249,13 @@ namespace
         uint32_t changeNumber = 0;
     };
 
-    struct AppStateTracker {
-        std::unordered_map<AppId_t, AppStateEntry> trackedStates;
-        std::vector<AppId_t> activeUpdatingApps;
-        std::unordered_set<AppId_t> inFlightSyncs;
-        std::mutex mutex;
-    };
-    static AppStateTracker g_appStateTracker;
+    // UI-thread confined state (RunFrame only; zero synchronization locks required)
+    static std::unordered_map<AppId_t, AppStateEntry> g_trackedStates;
+    static std::vector<AppId_t> g_activeUpdatingApps;
+
+    // Cross-thread synchronization state (between UI thread RunFrame and AutoSyncWorkerPool)
+    static std::unordered_set<AppId_t> g_inFlightSyncs;
+    static std::mutex g_inFlightMutex;
 
     class AutoSyncWorkerPool {
     private:
@@ -282,35 +282,39 @@ namespace
                     m_taskQueue.pop();
                 }
 
-                // 500ms interruptible debounce to allow Steam to flush ACF and release handles
+                // 500ms interruptible debounce to allow Steam to flush ACF and release file handles
                 {
                     std::unique_lock<std::mutex> lock(m_queueMutex);
                     m_cv.wait_for(lock, std::chrono::milliseconds(500), [this]() {
                         return m_stopping.load(std::memory_order_relaxed);
                     });
                     if (m_stopping.load(std::memory_order_relaxed)) {
-                        std::lock_guard<std::mutex> trackerLock(g_appStateTracker.mutex);
-                        g_appStateTracker.inFlightSyncs.erase(appId);
+                        std::lock_guard<std::mutex> inFlightLock(g_inFlightMutex);
+                        g_inFlightSyncs.erase(appId);
                         break;
                     }
                 }
 
-                // InFlight cleanup guard
+                // InFlight cleanup guard ensures erasure on early exit or exception
                 struct InFlightGuard {
                     AppId_t id;
                     ~InFlightGuard() {
-                        std::lock_guard<std::mutex> lock(g_appStateTracker.mutex);
-                        g_appStateTracker.inFlightSyncs.erase(id);
+                        std::lock_guard<std::mutex> lock(g_inFlightMutex);
+                        g_inFlightSyncs.erase(id);
                     }
                 } guard{appId};
 
-                // 1. Account ownership check
+                if (m_stopping.load(std::memory_order_relaxed)) {
+                    break;
+                }
+
+                // 1. Account ownership check (thread-safe: read-lock on LuaConfig, atomic load on g_pCUser)
                 if (!Hooks_Package::IsAppTrulyOwned(appId)) {
                     LOG_STEAMUI_DEBUG("AutoSync: appId={} is not genuinely owned by current account - skipping background sync", appId);
                     continue;
                 }
 
-                // 2. Lua configuration check
+                // 2. Lua configuration check (thread-safe: read-lock on LuaConfig)
                 if (!LuaConfig::HasDepot(appId, false)) {
                     LOG_STEAMUI_DEBUG("AutoSync: appId={} is not configured with addappid - skipping background sync", appId);
                     continue;
@@ -318,6 +322,7 @@ namespace
 
                 LOG_STEAMUI_INFO("AutoSync: detected update completion for owned appId={}, triggering background sync", appId);
                 try {
+                    // Thread-safe: DenuvoSync serializes file writes via g_syncFileMutex & atomic line rewrites
                     PipeManager::DenuvoAuth::SyncOrGenerate(appId, "", false);
                 } catch (const std::exception& ex) {
                     LOG_STEAMUI_ERROR("AutoSync: exception during SyncOrGenerate for appId={}: {}", appId, ex.what());
@@ -346,8 +351,8 @@ namespace
                 m_taskQueue.swap(empty);
             }
             {
-                std::lock_guard<std::mutex> trackerLock(g_appStateTracker.mutex);
-                g_appStateTracker.inFlightSyncs.clear();
+                std::lock_guard<std::mutex> inFlightLock(g_inFlightMutex);
+                g_inFlightSyncs.clear();
             }
         }
 
@@ -359,9 +364,57 @@ namespace
     };
     static AutoSyncWorkerPool g_autoSyncWorkerPool;
 
+    // Snapshot of installed + configured app IDs shared atomically between scanner and UI thread
     static std::atomic<std::shared_ptr<const std::vector<AppId_t>>> s_installedSnapshot{
         std::make_shared<const std::vector<AppId_t>>()
     };
+
+    // Robust quote-aware comment stripper for VDF files (preserves // or # inside quotes)
+    static std::string_view StripVdfComments(std::string_view sv) {
+        bool inQuote = false;
+        for (size_t i = 0; i < sv.size(); ++i) {
+            if (sv[i] == '\\' && inQuote && i + 1 < sv.size()) {
+                ++i;
+                continue;
+            }
+            if (sv[i] == '"') {
+                inQuote = !inQuote;
+                continue;
+            }
+            if (!inQuote) {
+                if (sv[i] == '#' || (sv[i] == '/' && i + 1 < sv.size() && sv[i + 1] == '/')) {
+                    sv = sv.substr(0, i);
+                    break;
+                }
+            }
+        }
+        while (!sv.empty() && (sv.back() == ' ' || sv.back() == '\t' || sv.back() == '\r' || sv.back() == '\n')) {
+            sv.remove_suffix(1);
+        }
+        return sv;
+    }
+
+    // Counts braces only when outside quoted string literals to prevent misinterpreting directory names
+    static std::pair<int, int> CountUnquotedBraces(std::string_view sv) {
+        int openBraces = 0;
+        int closeBraces = 0;
+        bool inQuote = false;
+        for (size_t i = 0; i < sv.size(); ++i) {
+            if (sv[i] == '\\' && inQuote && i + 1 < sv.size()) {
+                ++i;
+                continue;
+            }
+            if (sv[i] == '"') {
+                inQuote = !inQuote;
+                continue;
+            }
+            if (!inQuote) {
+                if (sv[i] == '{') ++openBraces;
+                else if (sv[i] == '}') ++closeBraces;
+            }
+        }
+        return {openBraces, closeBraces};
+    }
 
     static void ScanInstalledAppIds() {
         try {
@@ -381,19 +434,16 @@ namespace
 
             while (std::getline(file, line)) {
                 std::string_view sv = line;
-                while (!sv.empty() && (sv.front() == ' ' || sv.front() == '\t' || sv.front() == '\r' || sv.front() == '\n')) sv.remove_prefix(1);
-                if (sv.empty() || sv.starts_with("//") || sv.starts_with("#")) continue;
-
-                size_t commentPos = sv.find("//");
-                if (commentPos != std::string_view::npos) {
-                    sv = sv.substr(0, commentPos);
-                    while (!sv.empty() && (sv.back() == ' ' || sv.back() == '\t')) sv.remove_suffix(1);
-                    if (sv.empty()) continue;
+                while (!sv.empty() && (sv.front() == ' ' || sv.front() == '\t' || sv.front() == '\r' || sv.front() == '\n')) {
+                    sv.remove_prefix(1);
                 }
+                if (sv.empty()) continue;
 
-                int openBraces = static_cast<int>(std::count(sv.begin(), sv.end(), '{'));
+                sv = StripVdfComments(sv);
+                if (sv.empty()) continue;
+
+                auto [openBraces, closeBraces] = CountUnquotedBraces(sv);
                 braceDepth += openBraces;
-                int closeBraces = static_cast<int>(std::count(sv.begin(), sv.end(), '}'));
                 if (closeBraces > 0) {
                     braceDepth = std::max(0, braceDepth - closeBraces);
                     if (inAppsBlock && appsDepth >= 0 && braceDepth <= appsDepth) {
@@ -505,24 +555,31 @@ namespace
             void* pCtrl = pController ? pController : g_pController;
             if (!pCtrl) return;
 
-            std::lock_guard lock(g_appStateTracker.mutex);
+            // Zero locks held here! g_trackedStates and g_activeUpdatingApps are confined to the SteamUI render thread.
+            // oGetAppByID is called with ZERO mutexes held, completely eliminating lock contention with Steam internals.
 
             auto safeEnqueue = [](AppId_t id) {
-                if (g_appStateTracker.inFlightSyncs.insert(id).second) {
+                bool inserted = false;
+                {
+                    std::lock_guard<std::mutex> lock(g_inFlightMutex);
+                    inserted = g_inFlightSyncs.insert(id).second;
+                }
+                if (inserted) {
                     try {
                         g_autoSyncWorkerPool.Enqueue(id);
                     } catch (...) {
-                        g_appStateTracker.inFlightSyncs.erase(id);
+                        std::lock_guard<std::mutex> lock(g_inFlightMutex);
+                        g_inFlightSyncs.erase(id);
                     }
                 }
             };
 
-            // ── 通道一：活跃传输集检查（通常仅 0~1 款下载中游戏，耗时 20 纳秒）──
-            for (auto it = g_appStateTracker.activeUpdatingApps.begin(); it != g_appStateTracker.activeUpdatingApps.end(); ) {
+            // ── 通道一：活跃传输集检查（通常仅 0~1 款下载中游戏）──
+            for (auto it = g_activeUpdatingApps.begin(); it != g_activeUpdatingApps.end(); ) {
                 AppId_t appId = *it;
                 CSteamApp* pApp = oGetAppByID(pCtrl, appId, false);
                 if (!pApp) {
-                    it = g_appStateTracker.activeUpdatingApps.erase(it);
+                    it = g_activeUpdatingApps.erase(it);
                     continue;
                 }
 
@@ -531,21 +588,21 @@ namespace
                                                  ((currentState & k_EAppStateFullyInstalled) != 0);
 
                 if (isNowFullyInstalled) {
-                    g_appStateTracker.trackedStates[appId].stateFlags = currentState;
-                    g_appStateTracker.trackedStates[appId].changeNumber = pApp->ChangeNumber;
+                    g_trackedStates[appId].stateFlags = currentState;
+                    g_trackedStates[appId].changeNumber = pApp->ChangeNumber;
                     safeEnqueue(appId);
-                    it = g_appStateTracker.activeUpdatingApps.erase(it);
+                    it = g_activeUpdatingApps.erase(it);
                 } else if ((currentState & k_EAppStateActiveTransferMask) == 0) {
-                    g_appStateTracker.trackedStates[appId].stateFlags = currentState;
-                    it = g_appStateTracker.activeUpdatingApps.erase(it);
+                    g_trackedStates[appId].stateFlags = currentState;
+                    it = g_activeUpdatingApps.erase(it);
                 } else {
-                    g_appStateTracker.trackedStates[appId].stateFlags = currentState;
+                    g_trackedStates[appId].stateFlags = currentState;
                     ++it;
                 }
             }
 
-            // ── 通道二：时间片平摊步进（单帧耗时约 0.0015 ms）──
-            auto installedSnapshot = s_installedSnapshot.load();
+            // ── 通道二：时间片平摊步进（单帧固定 64 个轻量级已安装游戏探针）──
+            auto installedSnapshot = s_installedSnapshot.load(std::memory_order_relaxed);
             if (!installedSnapshot || installedSnapshot->empty()) {
                 return;
             }
@@ -568,12 +625,12 @@ namespace
                 const uint32_t currentState = static_cast<uint32_t>(pApp->AppStateFlags);
                 const uint32_t currentChangeNum = pApp->ChangeNumber;
 
-                auto entryIt = g_appStateTracker.trackedStates.find(appId);
-                if (entryIt == g_appStateTracker.trackedStates.end()) {
-                    g_appStateTracker.trackedStates[appId] = { currentState, currentChangeNum };
+                auto entryIt = g_trackedStates.find(appId);
+                if (entryIt == g_trackedStates.end()) {
+                    g_trackedStates[appId] = { currentState, currentChangeNum };
                     if ((currentState & k_EAppStateActiveTransferMask) != 0) {
-                        if (std::ranges::find(g_appStateTracker.activeUpdatingApps, appId) == g_appStateTracker.activeUpdatingApps.end()) {
-                            g_appStateTracker.activeUpdatingApps.push_back(appId);
+                        if (std::ranges::find(g_activeUpdatingApps, appId) == g_activeUpdatingApps.end()) {
+                            g_activeUpdatingApps.push_back(appId);
                         }
                     }
                     continue;
@@ -602,8 +659,8 @@ namespace
                 }
                 // 判定 3：捕获到游戏开始活跃传输，晋升至通道一以享受每帧直达监控
                 else if ((currentState & k_EAppStateActiveTransferMask) != 0) {
-                    if (std::ranges::find(g_appStateTracker.activeUpdatingApps, appId) == g_appStateTracker.activeUpdatingApps.end()) {
-                        g_appStateTracker.activeUpdatingApps.push_back(appId);
+                    if (std::ranges::find(g_activeUpdatingApps, appId) == g_activeUpdatingApps.end()) {
+                        g_activeUpdatingApps.push_back(appId);
                     }
                     entryIt->second.stateFlags = currentState;
                 } else if (currentState != lastState) {
@@ -824,8 +881,8 @@ namespace Hooks_SteamUI
 
         HOOK_END();
 
-        g_appStateTracker.trackedStates.reserve(1500);
-        g_appStateTracker.activeUpdatingApps.reserve(16);
+        g_trackedStates.reserve(1500);
+        g_activeUpdatingApps.reserve(16);
         g_autoSyncWorkerPool.Start();
         g_installedScannerPool.Start();
     }
@@ -834,6 +891,8 @@ namespace Hooks_SteamUI
     {
         g_installedScannerPool.Stop();
         g_autoSyncWorkerPool.Stop();
+        g_trackedStates.clear();
+        g_activeUpdatingApps.clear();
 
         UNHOOK_BEGIN();
         if (!OSTPlatform::Detour::Detach(reinterpret_cast<void**>(&oGetModuleHandleA), reinterpret_cast<void*>(hkGetModuleHandleA))) _ost_detour_transaction_ok_ = false;
