@@ -695,6 +695,12 @@ namespace
     {
         if (pApp)
         {
+            if (pApp->OwnershipFlags & k_EAppOwnershipFlags_LicenseLocked)
+            {
+                pApp->OwnershipFlags = static_cast<EAppOwnershipFlags>(
+                    pApp->OwnershipFlags & ~k_EAppOwnershipFlags_LicenseLocked);
+            }
+
             if (LuaConfig::HasDepot(pApp->nAppID, false))
             {
                 if (pApp->OwnershipFlags == k_EAppOwnershipFlags_None)

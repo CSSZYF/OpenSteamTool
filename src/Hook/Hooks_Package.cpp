@@ -121,18 +121,33 @@ namespace {
             LOG_PACKAGE_DEBUG("CheckAppOwnership: captured CUser {}", pObj);
         }
 
-        bool result = oCheckAppOwnership(pObj, appId, pOwn);
+        AppOwnership localOwn{};
+        AppOwnership* pEffectiveOwn = pOwn ? pOwn : &localOwn;
+
+        bool result = oCheckAppOwnership(pObj, appId, pEffectiveOwn);
         TryInitFakeLicenseOnce();
         TryProcessPendingLicenseRefresh();
+        const bool isSharedLicense = (pEffectiveOwn->bFamilyShared || pEffectiveOwn->bBorrowed) &&
+                                     (pEffectiveOwn->PackageId != 0) &&
+                                     (pEffectiveOwn->PackageId != kInjectedPackageId) &&
+                                     (pEffectiveOwn->ExistInPackageNums >= 1) &&
+                                     !pEffectiveOwn->bLicenseExpired;
+        if (isSharedLicense) {
+            if (pEffectiveOwn->bLicenseLocked) {
+                LOG_PACKAGE_DEBUG("CheckAppOwnership: Clearing bLicenseLocked for shared AppId={}", appId);
+                pEffectiveOwn->bLicenseLocked = false;
+            }
+            pEffectiveOwn->bBorrowed = false;
+            pEffectiveOwn->bOwnsLicense = true;
+            result = true;
+        }
 
-        const bool isTrulyOwned = pOwn && result &&
-                                  (pOwn->PackageId != kInjectedPackageId) &&
-                                  (pOwn->PackageId != 0) &&
-                                  (pOwn->ExistInPackageNums >= 1) &&
-                                  pOwn->bOwnsLicense &&
-                                  !pOwn->bLicenseExpired &&
-                                  !pOwn->bFamilyShared &&
-                                  !pOwn->bBorrowed;
+        const bool isTrulyOwned = result &&
+                                  (pEffectiveOwn->PackageId != kInjectedPackageId) &&
+                                  (pEffectiveOwn->PackageId != 0) &&
+                                  (pEffectiveOwn->ExistInPackageNums >= 1) &&
+                                  pEffectiveOwn->bOwnsLicense &&
+                                  !pEffectiveOwn->bLicenseExpired;
         if (isTrulyOwned) {
             LuaConfig::MarkOwned(appId);
         }
@@ -292,14 +307,24 @@ namespace Hooks_Package {
 
         AppOwnership own{};
         bool result = oCheckAppOwnership(pUser, appId, &own);
+        const bool isSharedLicense = (own.bFamilyShared || own.bBorrowed) &&
+                                     (own.PackageId != 0) &&
+                                     (own.PackageId != kInjectedPackageId) &&
+                                     (own.ExistInPackageNums >= 1) &&
+                                     !own.bLicenseExpired;
+        if (isSharedLicense) {
+            own.bLicenseLocked = false;
+            own.bBorrowed = false;
+            own.bOwnsLicense = true;
+            result = true;
+        }
+
         const bool isTrulyOwned = result &&
                                   (own.PackageId != kInjectedPackageId) &&
                                   (own.PackageId != 0) &&
                                   (own.ExistInPackageNums >= 1) &&
                                   own.bOwnsLicense &&
-                                  !own.bLicenseExpired &&
-                                  !own.bFamilyShared &&
-                                  !own.bBorrowed;
+                                  !own.bLicenseExpired;
         if (isTrulyOwned) {
             LuaConfig::MarkOwned(appId);
             return true;

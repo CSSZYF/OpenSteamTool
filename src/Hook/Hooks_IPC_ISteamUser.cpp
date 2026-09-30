@@ -33,6 +33,7 @@ namespace {
             appId = PipeManager::DenuvoAuth::GetAuthorizedAppId(pipe);
         }
         if (appId == 0 || !LuaConfig::HasDepot(appId, false)) return;
+        if (LuaConfig::IsOwned(appId)) return;
         GetSteamIDResp resp{pWrite};
         if (!resp.ok()) return;
 
@@ -154,6 +155,8 @@ namespace {
 
         // Refresh the Denuvo authorization lease window when an encrypted ticket is requested.
         PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
+
+        if (LuaConfig::IsOwned(appId)) return;
 
         bool haveFresh = false;
         // Strict Denuvo passes a per-launch nonce (pData) here and rejects a

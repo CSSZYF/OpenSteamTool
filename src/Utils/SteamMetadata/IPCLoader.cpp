@@ -193,21 +193,19 @@ bool Load(const std::string& steamclientPath)
         return false;
     }
 
-    toml::table root;
     try {
-        root = toml::parse(r.body);
+        toml::table root = toml::parse(r.body);
+        for (auto& [key, val] : root) {
+            if (!val.is_table()) continue;
+            Interface iface;
+            if (!ParseInterfaceTable(key.str(), *val.as_table(), iface)) continue;
+
+            g_registry.Add(std::move(iface));
+        }
     } catch (const toml::parse_error& e) {
         LOG_WARN("IPCLoader: TOML parse error: {}", e.description());
         ShowMissingPopup(r.sha256);
         return false;
-    }
-
-    for (auto& [key, val] : root) {
-        if (!val.is_table()) continue;
-        Interface iface;
-        if (!ParseInterfaceTable(key.str(), *val.as_table(), iface)) continue;
-
-        g_registry.Add(std::move(iface));
     }
 
     g_registry.BuildIndex();

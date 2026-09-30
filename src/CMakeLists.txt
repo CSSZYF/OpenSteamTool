@@ -33,7 +33,7 @@ endif()
 
 add_compile_definitions(NOMINMAX)
 if(MSVC)
-    add_compile_options(/utf-8)
+    add_compile_options(/utf-8 /EHsc)
 endif()
 
 
