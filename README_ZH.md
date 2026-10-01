@@ -96,7 +96,7 @@
 2. 在该目录下创建 `config/lua/` 文件夹并放入 `.lua` 解锁脚本；若需自定义配置，可将 `opensteamtool.toml` 直接放在此目录下
 3. 启动方式：
    - **手动启动**：直接运行 `ost-Injector.exe`，自动检测或拉起 Steam 并注入
-   - **开机自启**：右键以管理员身份运行 `CreateAutoInjectTask.bat`（卸载运行 `DeleteAutoInjectTask.bat`）
+   - **开机自启**：直接运行 `CreateAutoInjectTask.bat`（无需管理员权限；卸载运行 `DeleteAutoInjectTask.bat`）
    - **命令行**：支持 `-watch`（后台监听）与 `-silent`（单次静默注入）
 
 ### 方式二：标准模式（DLL 劫持）

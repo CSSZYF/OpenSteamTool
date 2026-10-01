@@ -1,6 +1,5 @@
 #include "Injector.h"
 
-#include <windows.h>
 #include <tlhelp32.h>
 #include <iostream>
 #include <fstream>
@@ -11,203 +10,141 @@
 #include <set>
 #include <sstream>
 #include <iomanip>
-#include <cctype>
-#include <cwchar>
-#include <ctime>
-#include <filesystem>
+#include <algorithm>
+#include <optional>
+#include <utility>
+#include <cwctype>
+#include <atomic>
 
 namespace Injector {
 
-    bool IsModuleLoaded(DWORD pid, const std::wstring& moduleName) {
-        HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
-        if (hSnap == INVALID_HANDLE_VALUE) return false;
+namespace {
 
-        MODULEENTRY32W me = { sizeof(me) };
-        bool found = false;
+    // Move-only RAII Windows handle wrapper
+    class ScopedHandle {
+    public:
+        constexpr ScopedHandle() noexcept = default;
+        explicit ScopedHandle(HANDLE h) noexcept : handle_(IsValid(h) ? h : nullptr) {}
+        ~ScopedHandle() noexcept { Reset(); }
 
-        if (Module32FirstW(hSnap, &me)) {
-            do {
-                if (_wcsicmp(moduleName.c_str(), me.szModule) == 0) {
-                    found = true;
-                    break;
-                }
-            } while (Module32NextW(hSnap, &me));
+        ScopedHandle(const ScopedHandle&) = delete;
+        ScopedHandle& operator=(const ScopedHandle&) = delete;
+
+        ScopedHandle(ScopedHandle&& other) noexcept : handle_(other.handle_) {
+            other.handle_ = nullptr;
         }
-
-        CloseHandle(hSnap);
-        return found;
-    }
-
-    std::vector<DWORD> FindProcessesByName(const std::wstring& processName) {
-        std::vector<DWORD> pids;
-        HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if (hSnap == INVALID_HANDLE_VALUE) return pids;
-
-        PROCESSENTRY32W pe = { sizeof(pe) };
-        if (Process32FirstW(hSnap, &pe)) {
-            do {
-                if (_wcsicmp(processName.c_str(), pe.szExeFile) == 0) {
-                    pids.push_back(pe.th32ProcessID);
-                }
-            } while (Process32NextW(hSnap, &pe));
-        }
-
-        CloseHandle(hSnap);
-        return pids;
-    }
-
-    bool InjectDllByHandle(HANDLE hProcess, const std::wstring& dllPath, bool isSilent) {
-        SIZE_T byteCount = (dllPath.size() + 1) * sizeof(wchar_t);
-        void* remoteMem = VirtualAllocEx(hProcess, nullptr, byteCount, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        if (!remoteMem) {
-            if (!isSilent) {
-                std::wcerr << L"[-] VirtualAllocEx failed. Error: " << GetLastError() << std::endl;
+        ScopedHandle& operator=(ScopedHandle&& other) noexcept {
+            if (this != &other) {
+                Reset(other.handle_);
+                other.handle_ = nullptr;
             }
-            return false;
+            return *this;
         }
 
-        if (!WriteProcessMemory(hProcess, remoteMem, dllPath.c_str(), byteCount, nullptr)) {
-            if (!isSilent) {
-                std::wcerr << L"[-] WriteProcessMemory failed. Error: " << GetLastError() << std::endl;
+        [[nodiscard]] HANDLE Get() const noexcept { return handle_; }
+        [[nodiscard]] bool IsValid() const noexcept { return handle_ != nullptr; }
+        explicit operator bool() const noexcept { return IsValid(); }
+
+        void Reset(HANDLE h = nullptr) noexcept {
+            if (handle_) {
+                ::CloseHandle(handle_);
             }
-            VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
-            return false;
+            handle_ = IsValid(h) ? h : nullptr;
         }
 
-        HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
-        FARPROC loadLibraryWAddr = GetProcAddress(hKernel32, "LoadLibraryW");
-        if (!loadLibraryWAddr) {
-            if (!isSilent) {
-                std::wcerr << L"[-] Failed to locate LoadLibraryW. Error: " << GetLastError() << std::endl;
-            }
-            VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
-            return false;
+        HANDLE* Put() noexcept {
+            Reset();
+            return &handle_;
         }
 
-        HANDLE hThread = CreateRemoteThread(hProcess, nullptr, 0,
-            reinterpret_cast<LPTHREAD_START_ROUTINE>(loadLibraryWAddr),
-            remoteMem, 0, nullptr);
+    private:
+        static bool IsValid(HANDLE h) noexcept {
+            return h != nullptr && h != INVALID_HANDLE_VALUE;
+        }
+        HANDLE handle_ = nullptr;
+    };
 
-        if (!hThread) {
-            if (!isSilent) {
-                std::wcerr << L"[-] CreateRemoteThread failed. Error: " << GetLastError() << std::endl;
-            }
-            VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
-            return false;
+    // Lightweight ScopeGuard for RAII cleanups with dismiss capability
+    template <typename F>
+    class ScopeGuard {
+    public:
+        explicit ScopeGuard(F&& func) : func_(std::forward<F>(func)) {}
+        ~ScopeGuard() noexcept {
+            if (active_) func_();
         }
 
-        DWORD waitRes = WaitForSingleObject(hThread, 15000);
-        if (waitRes != WAIT_OBJECT_0) {
-            if (!isSilent) {
-                std::wcerr << L"[-] Remote thread execution timed out or failed (waitRes=" << waitRes << L")." << std::endl;
-            }
-            CloseHandle(hThread);
-            VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
-            return false;
+        ScopeGuard(const ScopeGuard&) = delete;
+        ScopeGuard& operator=(const ScopeGuard&) = delete;
+        ScopeGuard(ScopeGuard&& other) noexcept : func_(std::move(other.func_)), active_(other.active_) {
+            other.active_ = false;
         }
 
-        DWORD exitCode = 0;
-        GetExitCodeThread(hThread, &exitCode);
-        CloseHandle(hThread);
-        VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
+        void Dismiss() noexcept { active_ = false; }
 
-        if (exitCode == 0) {
-            DWORD pid = GetProcessId(hProcess);
-            if (pid != 0 && IsModuleLoaded(pid, L"OpenSteamTool.dll")) {
-                return true;
-            }
-            if (!isSilent) {
-                std::wcerr << L"[-] Warning: LoadLibraryW returned NULL. The DLL initialization may have failed." << std::endl;
-            }
-            return false;
+    private:
+        F func_;
+        bool active_ = true;
+    };
+
+    // Global stop flag for graceful termination of background services
+    std::atomic<bool> g_stopRequested{ false };
+
+    BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType) {
+        switch (ctrlType) {
+        case CTRL_C_EVENT:
+        case CTRL_BREAK_EVENT:
+        case CTRL_CLOSE_EVENT:
+        case CTRL_LOGOFF_EVENT:
+        case CTRL_SHUTDOWN_EVENT:
+            g_stopRequested.store(true);
+            return TRUE;
+        default:
+            return FALSE;
         }
-
-        return true;
     }
 
-    std::wstring GetExecutableDirectory() {
-        wchar_t buffer[MAX_PATH] = { 0 };
-        GetModuleFileNameW(NULL, buffer, MAX_PATH);
-        std::wstring exePath(buffer);
-        size_t lastSlash = exePath.find_last_of(L"\\/");
-        if (lastSlash != std::wstring::npos) {
-            return exePath.substr(0, lastSlash);
+    // Single-instance protection for the background watcher daemon
+    class SingleInstanceGuard {
+    public:
+        SingleInstanceGuard() {
+            // Using Local namespace guarantees seamless execution under standard user privileges
+            // without requiring SeCreateGlobalPrivilege.
+            hMutex_.Reset(CreateMutexW(nullptr, TRUE, L"Local\\OpenSteamTool_AutoInject_Watcher"));
+            const DWORD gle = GetLastError();
+            isAlreadyRunning_ = (gle == ERROR_ALREADY_EXISTS);
         }
-        return L".";
-    }
 
-    std::wstring GetIniFilePath(const std::wstring& iniFileName) {
-        return GetExecutableDirectory() + L"\\" + iniFileName;
-    }
-
-    std::wstring GetSteamPathFromRegistry() {
-        HKEY hKey = nullptr;
-        std::wstring steamExePath = L"";
-
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"SOFTWARE\\Valve\\Steam", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-            wchar_t buffer[MAX_PATH] = { 0 };
-            DWORD bufferSize = sizeof(buffer);
-            DWORD type = REG_SZ;
-
-            if (RegQueryValueExW(hKey, L"SteamExe", nullptr, &type, reinterpret_cast<LPBYTE>(buffer), &bufferSize) == ERROR_SUCCESS) {
-                steamExePath = buffer;
-                for (wchar_t& ch : steamExePath) {
-                    if (ch == L'/') ch = L'\\';
-                }
-            } else {
-                bufferSize = sizeof(buffer);
-                if (RegQueryValueExW(hKey, L"SteamPath", nullptr, &type, reinterpret_cast<LPBYTE>(buffer), &bufferSize) == ERROR_SUCCESS) {
-                    std::wstring steamDir = buffer;
-                    for (wchar_t& ch : steamDir) {
-                        if (ch == L'/') ch = L'\\';
-                    }
-                    steamExePath = steamDir + L"\\steam.exe";
-                }
-            }
-            RegCloseKey(hKey);
+        [[nodiscard]] bool IsConflict() const noexcept {
+            return isAlreadyRunning_ || !hMutex_.IsValid();
         }
-        return steamExePath;
-    }
 
-    std::wstring ResolveAbsoluteDllPath(const std::wstring& rawDllPath, const std::wstring& baseDir) {
-        std::filesystem::path raw(rawDllPath);
-        if (raw.is_absolute()) {
-            return raw.lexically_normal().wstring();
+    private:
+        ScopedHandle hMutex_;
+        bool isAlreadyRunning_ = false;
+    };
+
+    // Query Steam installation executable from Windows Registry with full fallback chain
+    std::optional<std::filesystem::path> QuerySteamRegistryPath() {
+        wchar_t buffer[1024] = { 0 };
+        DWORD size = sizeof(buffer);
+
+        // 1. Primary: SteamExe (contains direct path to steam.exe)
+        if (RegGetValueW(HKEY_CURRENT_USER, L"SOFTWARE\\Valve\\Steam", L"SteamExe",
+                         RRF_RT_REG_SZ, nullptr, buffer, &size) == ERROR_SUCCESS && buffer[0] != L'\0') {
+            return std::filesystem::path(buffer);
         }
-        std::filesystem::path base(baseDir);
-        return (base / raw).lexically_normal().wstring();
-    }
 
-    bool FileExists(const std::wstring& filePath) {
-        DWORD attributes = GetFileAttributesW(filePath.c_str());
-        return (attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY));
-    }
-
-    void LogMessage(const std::wstring& baseDir, const std::string& msg, bool isSilent) {
-        if (!isSilent) {
-            std::cout << msg << std::endl;
+        // 2. Fallback: SteamPath (contains Steam install directory)
+        size = sizeof(buffer);
+        if (RegGetValueW(HKEY_CURRENT_USER, L"SOFTWARE\\Valve\\Steam", L"SteamPath",
+                         RRF_RT_REG_SZ, nullptr, buffer, &size) == ERROR_SUCCESS && buffer[0] != L'\0') {
+            return std::filesystem::path(buffer) / "steam.exe";
         }
-        try {
-            std::wstring logFile = baseDir + L"\\inject.log";
-            std::ofstream ofs(logFile, std::ios::app | std::ios::binary);
-            if (ofs.is_open()) {
-                auto now = std::chrono::system_clock::now();
-                auto timeT = std::chrono::system_clock::to_time_t(now);
-                std::tm tmNow;
-                localtime_s(&tmNow, &timeT);
 
-                std::ostringstream ss;
-                ss << "[" << std::put_time(&tmNow, "%Y-%m-%d %H:%M:%S") << "] " << msg << "\r\n";
-                std::string line = ss.str();
-                ofs.write(line.c_str(), line.size());
-            }
-        } catch (...) {}
+        return std::nullopt;
     }
 
-    void ShowErrorAlert(const std::wstring& message) {
-        MessageBoxW(NULL, message.c_str(), L"OpenSteamTool Injector Error", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
-    }
-
+    // Attach or allocate console for interactive sessions and force UTF-8 output
     void EnsureInteractiveConsole() {
         HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
         DWORD fileType = (hOut != NULL && hOut != INVALID_HANDLE_VALUE) ? GetFileType(hOut) : FILE_TYPE_UNKNOWN;
@@ -220,322 +157,467 @@ namespace Injector {
             freopen_s(&fp, "CONOUT$", "w", stderr);
             freopen_s(&fp, "CONIN$", "r", stdin);
         }
+        SetConsoleOutputCP(CP_UTF8);
+        SetConsoleCP(CP_UTF8);
+        std::ios::sync_with_stdio(false);
     }
 
-    int RunWatcher(const std::wstring& baseDir, const std::wstring& dllPath) {
-        HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Global\\OpenSteamTool_AutoInject_Watcher");
-        if (!hMutex && GetLastError() == ERROR_ACCESS_DENIED) {
-            hMutex = CreateMutexW(NULL, TRUE, L"Local\\OpenSteamTool_AutoInject_Watcher");
-        }
-        if (GetLastError() == ERROR_ALREADY_EXISTS) {
-            if (hMutex) CloseHandle(hMutex);
-            return 0; // Instance already running
-        }
-
-        LogMessage(baseDir, "[Watcher] 自动注入后台监听已启动，等待 steam.exe 启动...", true);
-        std::set<DWORD> injectedPids;
-
-        constexpr DWORD kInjectAccess = PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
-                                       PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ;
-
-        while (true) {
-            std::vector<DWORD> pids = FindProcessesByName(L"steam.exe");
-            if (!pids.empty()) {
-                std::set<DWORD> currentPids(pids.begin(), pids.end());
-                for (auto it = injectedPids.begin(); it != injectedPids.end(); ) {
-                    if (!currentPids.count(*it)) {
-                        it = injectedPids.erase(it);
-                    } else {
-                        ++it;
-                    }
-                }
-
-                for (DWORD pid : pids) {
-                    if (injectedPids.count(pid)) continue;
-
-                    if (IsModuleLoaded(pid, L"OpenSteamTool.dll")) {
-                        injectedPids.insert(pid);
-                        continue;
-                    }
-
-                    // Wait for steamui.dll to be loaded
-                    bool uiReady = false;
-                    for (int i = 0; i < 60; ++i) {
-                        HANDLE hCheck = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-                        if (!hCheck) break;
+    // Successor process detection with active liveness verification
+    std::optional<DWORD> PollSuccessorProcess(DWORD oldPid, std::chrono::milliseconds timeout = std::chrono::seconds(15)) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            auto pids = SnapshotProcessIds(L"steam.exe");
+            for (DWORD pid : pids) {
+                if (pid != oldPid) {
+                    // Verify candidate is an active living process, avoiding zombie handles
+                    ScopedHandle hCheck(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
+                    if (hCheck) {
                         DWORD exitCode = 0;
-                        GetExitCodeProcess(hCheck, &exitCode);
-                        CloseHandle(hCheck);
-                        if (exitCode != STILL_ACTIVE) break;
-
-                        if (IsModuleLoaded(pid, L"steamui.dll")) {
-                            uiReady = true;
-                            break;
-                        }
-                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                    }
-
-                    if (uiReady) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                        HANDLE hProcess = OpenProcess(kInjectAccess, FALSE, pid);
-                        if (hProcess) {
-                            if (InjectDllByHandle(hProcess, dllPath, true)) {
-                                injectedPids.insert(pid);
-                                LogMessage(baseDir, "[Watcher] 成功自动注入 OpenSteamTool 到 Steam (PID: " + std::to_string(pid) + ")", true);
-                            } else {
-                                LogMessage(baseDir, "[Watcher] 注入失败 (PID: " + std::to_string(pid) + ")", true);
-                            }
-                            CloseHandle(hProcess);
+                        if (GetExitCodeProcess(hCheck.Get(), &exitCode) && exitCode == STILL_ACTIVE) {
+                            return pid;
                         }
                     }
                 }
-            } else {
-                if (!injectedPids.empty()) {
-                    injectedPids.clear();
-                }
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-        }
-
-        if (hMutex) CloseHandle(hMutex);
-        return 0;
-    }
-
-    int RunSilentOnce(const std::wstring& baseDir, const std::wstring& dllPath) {
-        std::vector<DWORD> pids = FindProcessesByName(L"steam.exe");
-        if (pids.empty()) return 0;
-
-        DWORD pid = pids[0];
-        if (IsModuleLoaded(pid, L"OpenSteamTool.dll")) return 0;
-
-        bool uiReady = false;
-        for (int i = 0; i < 60; ++i) {
-            if (IsModuleLoaded(pid, L"steamui.dll")) {
-                uiReady = true;
-                break;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
-        if (!uiReady) return 0;
+        return std::nullopt;
+    }
+
+    void PrintUsage() {
+        std::cout << "OpenSteamTool Injector (ost-Injector)\n";
+        std::cout << "Usage: ost-Injector.exe [options]\n\n";
+        std::cout << "Options:\n";
+        std::cout << "  -watch, --watch, -daemon, /watch  Run as background auto-injection watcher\n";
+        std::cout << "  -silent, --silent, -s, /s         Perform silent injection once and exit\n";
+        std::cout << "  -help, --help, -h, /?             Display this help message and exit\n";
+    }
+
+} // namespace
+
+// ============================================================================
+// Public Interface Implementations
+// ============================================================================
+
+std::wstring Utf8ToWide(std::string_view utf8) {
+    if (utf8.empty()) return {};
+    int size = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+    if (size <= 0) return {};
+    std::wstring wide(size, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), wide.data(), size);
+    return wide;
+}
+
+bool IsModulePresent(DWORD pid, std::wstring_view moduleName) {
+    // Retry on ERROR_BAD_LENGTH when target process dynamic module list is transient
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        ScopedHandle snap(CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid));
+        if (!snap) {
+            if (GetLastError() == ERROR_BAD_LENGTH) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                continue;
+            }
+            return false;
+        }
+
+        MODULEENTRY32W me{};
+        me.dwSize = sizeof(me);
+        if (Module32FirstW(snap.Get(), &me)) {
+            do {
+                if (_wcsicmp(moduleName.data(), me.szModule) == 0) {
+                    return true;
+                }
+            } while (Module32NextW(snap.Get(), &me));
+        }
+        break;
+    }
+    return false;
+}
+
+std::vector<DWORD> SnapshotProcessIds(std::wstring_view processName) {
+    std::vector<DWORD> pids;
+    ScopedHandle snap(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    if (!snap) return pids;
+
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    if (Process32FirstW(snap.Get(), &pe)) {
+        do {
+            if (_wcsicmp(processName.data(), pe.szExeFile) == 0) {
+                pids.push_back(pe.th32ProcessID);
+            }
+        } while (Process32NextW(snap.Get(), &pe));
+    }
+    return pids;
+}
+
+RuntimeConfig ResolveConfig(const std::filesystem::path& baseDir) {
+    std::filesystem::path iniPath = baseDir / "config.ini";
+    std::filesystem::path resolvedExe;
+    std::filesystem::path resolvedDll = baseDir / "OpenSteamTool.dll";
+
+    if (std::filesystem::exists(iniPath)) {
+        std::vector<wchar_t> bufExe(1024, L'\0');
+        std::vector<wchar_t> bufDll(1024, L'\0');
+        GetPrivateProfileStringW(L"Settings", L"ExePath", L"", bufExe.data(), static_cast<DWORD>(bufExe.size()), iniPath.c_str());
+        GetPrivateProfileStringW(L"Settings", L"DllPath", L"", bufDll.data(), static_cast<DWORD>(bufDll.size()), iniPath.c_str());
+
+        if (bufExe[0] != L'\0') resolvedExe = bufExe.data();
+        if (bufDll[0] != L'\0') {
+            std::filesystem::path rawDll(bufDll.data());
+            resolvedDll = rawDll.is_absolute() ? rawDll : (baseDir / rawDll);
+        }
+    }
+
+    if (resolvedExe.empty()) {
+        auto regPath = QuerySteamRegistryPath();
+        resolvedExe = regPath.value_or(L"C:\\Program Files (x86)\\Steam\\steam.exe");
+
+        if (!std::filesystem::exists(iniPath)) {
+            WritePrivateProfileStringW(L"Settings", L"ExePath", resolvedExe.c_str(), iniPath.c_str());
+            WritePrivateProfileStringW(L"Settings", L"DllPath", L"OpenSteamTool.dll", iniPath.c_str());
+        }
+    }
+
+    resolvedExe.make_preferred();
+    resolvedDll.make_preferred();
+    return { resolvedExe, resolvedDll, baseDir };
+}
+
+ExecutionResult InjectPayload(DWORD pid, const std::filesystem::path& dllPath, bool isSilent) {
+    if (!std::filesystem::exists(dllPath)) {
+        return { Status::PayloadNotFound, ERROR_FILE_NOT_FOUND, "Payload DLL not found: " + dllPath.string() };
+    }
+
+    if (IsModulePresent(pid, dllPath.filename().wstring())) {
+        return { Status::AlreadyInjected, 0, "Module already loaded in target process." };
+    }
+
+    constexpr DWORD kAccess = PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
+                              PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ;
+
+    ScopedHandle hProcess(OpenProcess(kAccess, FALSE, pid));
+    if (!hProcess) {
+        DWORD gle = GetLastError();
+        if (!isSilent) {
+            std::cerr << "[-] OpenProcess failed (PID=" << pid << ", Error=" << gle << ").\n";
+        }
+        return { Status::ProcessAccessDenied, gle, "OpenProcess failed. Administrator privilege may be required." };
+    }
+
+    std::wstring nativeDllPath = dllPath.wstring();
+    const SIZE_T byteCount = (nativeDllPath.size() + 1) * sizeof(wchar_t);
+
+    void* remoteMem = VirtualAllocEx(hProcess.Get(), nullptr, byteCount, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!remoteMem) {
+        DWORD gle = GetLastError();
+        return { Status::RemoteAllocFailed, gle, "VirtualAllocEx failed." };
+    }
+
+    ScopeGuard freeRemoteGuard([&] {
+        VirtualFreeEx(hProcess.Get(), remoteMem, 0, MEM_RELEASE);
+    });
+
+    if (!WriteProcessMemory(hProcess.Get(), remoteMem, nativeDllPath.c_str(), byteCount, nullptr)) {
+        DWORD gle = GetLastError();
+        return { Status::RemoteAllocFailed, gle, "WriteProcessMemory failed." };
+    }
+
+    // In a 64-bit Windows environment, system DLLs share identical virtual base addresses across 64-bit processes
+    HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
+    FARPROC pfnLoadLibraryW = GetProcAddress(hKernel32, "LoadLibraryW");
+    if (!pfnLoadLibraryW) {
+        return { Status::RemoteThreadFailed, GetLastError(), "Failed to resolve LoadLibraryW." };
+    }
+
+    ScopedHandle hThread(CreateRemoteThread(hProcess.Get(), nullptr, 0,
+        reinterpret_cast<LPTHREAD_START_ROUTINE>(pfnLoadLibraryW), remoteMem, 0, nullptr));
+    if (!hThread) {
+        DWORD gle = GetLastError();
+        return { Status::RemoteThreadFailed, gle, "CreateRemoteThread failed." };
+    }
+
+    DWORD waitRes = WaitForSingleObject(hThread.Get(), 15000);
+    if (waitRes != WAIT_OBJECT_0) {
+        // Critical defense: Do NOT free remote memory on timeout to avoid crashing target process (UAF)
+        freeRemoteGuard.Dismiss();
+        return { Status::ComponentTimeout, waitRes, "Remote LoadLibraryW execution timed out." };
+    }
+
+    DWORD exitCode = 0;
+    GetExitCodeThread(hThread.Get(), &exitCode);
+    if (exitCode == 0) {
+        // Double-check module list in case 64-bit HMODULE lower 32 bits align to zero
+        if (!IsModulePresent(pid, dllPath.filename().wstring())) {
+            return { Status::LoadLibraryFailed, 0, "LoadLibraryW returned NULL in target process." };
+        }
+    }
+
+    return { Status::Success, 0, "Injection succeeded." };
+}
+
+ExecutionResult AwaitAndInject(DWORD pid, const std::filesystem::path& dllPath,
+                              std::chrono::milliseconds timeout,
+                              bool isSilent) {
+    if (IsModulePresent(pid, dllPath.filename().wstring())) {
+        return { Status::AlreadyInjected, 0, "Module already loaded in target process." };
+    }
+
+    ScopedHandle hWatch(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid));
+    if (!hWatch) {
+        return { Status::ProcessAccessDenied, GetLastError(), "Failed to open process for monitoring." };
+    }
+
+    const auto startTime = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - startTime < timeout) {
+        // Kernel event-driven exit detection: 0 ms check with zero overhead
+        if (WaitForSingleObject(hWatch.Get(), 0) == WAIT_OBJECT_0) {
+            return { Status::TargetExited, 0, "Target process terminated before steamui.dll loaded." };
+        }
+
+        // Wait until steamui.dll is loaded, signalling UI milestone
+        if (IsModulePresent(pid, L"steamui.dll")) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+            return InjectPayload(pid, dllPath, isSilent);
+        }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        constexpr DWORD kInjectAccess = PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
-                                       PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ;
-        HANDLE hProcess = OpenProcess(kInjectAccess, FALSE, pid);
-        if (hProcess) {
-            bool ok = InjectDllByHandle(hProcess, dllPath, true);
-            CloseHandle(hProcess);
-            if (ok) {
-                LogMessage(baseDir, "[Silent] 成功静默注入 OpenSteamTool 到 Steam (PID: " + std::to_string(pid) + ")", true);
-                return 0;
-            } else {
-                LogMessage(baseDir, "[Silent] 注入失败 (PID: " + std::to_string(pid) + ")", true);
-                return 1;
-            }
-        }
-        return 0;
     }
 
-    void RunInteractive(const std::wstring& baseDir, const std::wstring& exePath, const std::wstring& dllPath) {
-        SetConsoleTitleW(L"OpenSteamTool Injector (ost-Injector)");
+    return { Status::ComponentTimeout, 0, "Timed out waiting for steamui.dll to load." };
+}
 
-        std::cout << "=================================================" << std::endl;
-        std::cout << "       OpenSteamTool Injector (ost-Injector)     " << std::endl;
-        std::cout << "       Supported modes: manual, -silent, -watch   " << std::endl;
-        std::cout << "=================================================" << std::endl;
-        std::cout << std::endl;
+void LogMessage(const std::filesystem::path& baseDir, const std::string& msg, bool isSilent) {
+    if (!isSilent) {
+        std::cout << msg << std::endl;
+    }
+    try {
+        std::filesystem::path logFile = baseDir / "inject.log";
+        std::ofstream ofs(logFile, std::ios::app | std::ios::binary);
+        if (ofs.is_open()) {
+            auto now = std::chrono::system_clock::now();
+            auto timeT = std::chrono::system_clock::to_time_t(now);
+            std::tm tmNow{};
+            localtime_s(&tmNow, &timeT);
 
-        std::wcout << L"[+] Target Executable : " << exePath << std::endl;
-        std::wcout << L"[+] Payload DLL       : " << dllPath << std::endl;
-        std::cout << std::endl;
-
-        if (!FileExists(dllPath)) {
-            std::wstring err = L"Error: Payload DLL was not found at:\n" + dllPath + L"\n\nPlease ensure OpenSteamTool.dll exists.";
-            std::wcerr << L"[-] " << err << std::endl;
-            ShowErrorAlert(err);
-            return;
+            std::ostringstream ss;
+            ss << "[" << std::put_time(&tmNow, "%Y-%m-%d %H:%M:%S") << "] " << msg << "\r\n";
+            std::string line = ss.str();
+            ofs.write(line.c_str(), line.size());
         }
+    } catch (...) {}
+}
 
-        std::vector<DWORD> existingPids = FindProcessesByName(L"steam.exe");
-        constexpr DWORD kInjectAccess = PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
-                                       PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ;
+void ShowErrorAlert(const std::wstring& message) {
+    MessageBoxW(nullptr, message.c_str(), L"OpenSteamTool Injector Error", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+}
 
-        if (!existingPids.empty()) {
-            DWORD pid = existingPids[0];
-            std::cout << "[+] Found running Steam process (PID: " << pid << ")" << std::endl;
+int RunWatcher(const RuntimeConfig& config) {
+    SingleInstanceGuard guard;
+    if (guard.IsConflict()) {
+        return 0; // Instance already running
+    }
 
-            if (IsModuleLoaded(pid, L"OpenSteamTool.dll")) {
-                std::cout << "[!] 当前 Steam 进程已加载过 OpenSteamTool.dll！" << std::endl;
-                std::cout << "[!] 无需重复注入。" << std::endl;
-                std::cout << "This console will close in 3 seconds..." << std::endl;
-                std::this_thread::sleep_for(std::chrono::seconds(3));
-                return;
-            }
+    SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+    LogMessage(config.baseDir, "[Watcher] 后台自动注入监听已启动，等待 steam.exe 启动...", true);
+    std::set<DWORD> injectedPids;
 
-            std::cout << "[+] Waiting for steamui.dll to load..." << std::endl;
-            for (int i = 0; i < 60; ++i) {
-                if (IsModuleLoaded(pid, L"steamui.dll")) break;
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            }
+    while (!g_stopRequested.load()) {
+        auto pids = SnapshotProcessIds(L"steam.exe");
+        if (!pids.empty()) {
+            for (DWORD pid : pids) {
+                if (injectedPids.contains(pid)) continue;
 
-            std::cout << "[+] Injecting DLL into running Steam..." << std::endl;
-            HANDLE hProcess = OpenProcess(kInjectAccess, FALSE, pid);
-            if (hProcess) {
-                if (InjectDllByHandle(hProcess, dllPath, false)) {
-                    std::cout << "[+] Injection completed successfully." << std::endl;
+                auto res = AwaitAndInject(pid, config.payloadDll, std::chrono::seconds(30), true);
+                if (res.IsOk()) {
+                    injectedPids.insert(pid);
+                    LogMessage(config.baseDir, "[Watcher] 成功自动注入 OpenSteamTool 到 Steam (PID: " + std::to_string(pid) + ")", true);
                 } else {
-                    std::wcerr << L"[-] Injection failed." << std::endl;
-                    ShowErrorAlert(L"DLL injection into running Steam process failed.");
+                    LogMessage(config.baseDir, "[Watcher] 注入失败 (PID: " + std::to_string(pid) + "): " + res.message, true);
                 }
-                CloseHandle(hProcess);
-            } else {
-                std::wcerr << L"[-] OpenProcess failed. Error: " << GetLastError() << std::endl;
-                ShowErrorAlert(L"Failed to open Steam process. Try running as Administrator.");
             }
-            return;
-        }
 
-        // Steam is not running: launch it
-        if (!FileExists(exePath)) {
-            std::wstring err = L"Error: Target Steam executable does not exist at:\n" + exePath;
-            std::wcerr << L"[-] " << err << std::endl;
-            ShowErrorAlert(err);
-            return;
-        }
-
-        size_t lastSlash = exePath.find_last_of(L"\\/");
-        std::wstring workingDir = (lastSlash == std::wstring::npos) ? L"" : exePath.substr(0, lastSlash);
-
-        STARTUPINFOW si = { sizeof(si) };
-        PROCESS_INFORMATION pi = { 0 };
-        std::wstring quotedCmd = L"\"" + exePath + L"\"";
-        std::vector<wchar_t> cmdBuffer(quotedCmd.begin(), quotedCmd.end());
-        cmdBuffer.push_back(L'\0');
-
-        std::cout << "[+] Launching Steam executable..." << std::endl;
-        if (!CreateProcessW(nullptr, cmdBuffer.data(), nullptr, nullptr, FALSE, 0, nullptr,
-            workingDir.empty() ? nullptr : workingDir.c_str(), &si, &pi)) {
-            std::wstring err = L"CreateProcessW failed. Error: " + std::to_wstring(GetLastError());
-            std::wcerr << L"[-] " << err << std::endl;
-            ShowErrorAlert(err);
-            return;
-        }
-
-        std::cout << "[+] Waiting for steamui.dll to load..." << std::endl;
-        bool moduleFound = false;
-        auto startTime = std::chrono::steady_clock::now();
-
-        while (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - startTime).count() < 30) {
-            if (IsModuleLoaded(pi.dwProcessId, L"steamui.dll")) {
-                moduleFound = true;
-                break;
+            std::erase_if(injectedPids, [&](DWORD cachedPid) {
+                return std::find(pids.begin(), pids.end(), cachedPid) == pids.end();
+            });
+        } else {
+            if (!injectedPids.empty()) {
+                injectedPids.clear();
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
 
-        if (!moduleFound) {
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-            std::wcerr << L"[-] Timeout reached. steamui.dll never loaded." << std::endl;
-            ShowErrorAlert(L"Timeout waiting for Steam UI to initialize.");
-            return;
-        }
-
-        std::cout << "[+] Injecting DLL into spawned Steam..." << std::endl;
-        if (!InjectDllByHandle(pi.hProcess, dllPath, false)) {
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-            std::wcerr << L"[-] DLL injection failed." << std::endl;
-            ShowErrorAlert(L"DLL injection failed.");
-            return;
-        }
-
-        std::cout << "[+] Injection completed successfully." << std::endl;
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
     }
+
+    LogMessage(config.baseDir, "[Watcher] 后台监听服务正常退出。", true);
+    return 0;
+}
+
+int RunSilentOnce(const RuntimeConfig& config) {
+    auto pids = SnapshotProcessIds(L"steam.exe");
+    if (pids.empty()) return 0;
+
+    auto res = AwaitAndInject(pids.front(), config.payloadDll, std::chrono::seconds(30), true);
+    if (res.IsOk()) {
+        LogMessage(config.baseDir, "[Silent] 成功静默注入 OpenSteamTool 到 Steam (PID: " + std::to_string(pids.front()) + ")", true);
+        return 0;
+    } else {
+        LogMessage(config.baseDir, "[Silent] 注入失败: " + res.message, true);
+        return 1;
+    }
+}
+
+int RunInteractive(const RuntimeConfig& config) {
+    SetConsoleTitleW(L"OpenSteamTool Injector (ost-Injector)");
+
+    std::cout << "=================================================\n";
+    std::cout << "       OpenSteamTool Injector (ost-Injector)     \n";
+    std::cout << "       Supported modes: manual, -silent, -watch   \n";
+    std::cout << "=================================================\n\n";
+
+    std::cout << "[+] Target Executable : " << config.targetExe.string() << "\n";
+    std::cout << "[+] Payload DLL       : " << config.payloadDll.string() << "\n\n";
+
+    if (!std::filesystem::exists(config.payloadDll)) {
+        std::wstring err = L"Error: Payload DLL was not found at:\n" + config.payloadDll.wstring() + L"\n\nPlease ensure OpenSteamTool.dll exists.";
+        std::cerr << "[-] " << config.payloadDll.string() << " not found!\n";
+        ShowErrorAlert(err);
+        return 1;
+    }
+
+    auto existingPids = SnapshotProcessIds(L"steam.exe");
+    if (!existingPids.empty()) {
+        DWORD pid = existingPids.front();
+        std::cout << "[+] Found running Steam process (PID: " << pid << ")\n";
+
+        if (IsModulePresent(pid, config.payloadDll.filename().wstring())) {
+            std::cout << "[!] 当前 Steam 进程已加载过 OpenSteamTool.dll！\n";
+            std::cout << "[!] 无需重复注入。\n";
+            std::cout << "This console will close in 3 seconds...\n";
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+            return 0;
+        }
+
+        std::cout << "[+] Waiting for steamui.dll to load...\n";
+        auto res = AwaitAndInject(pid, config.payloadDll, std::chrono::seconds(30), false);
+        if (res.IsOk()) {
+            std::cout << "[+] Injection completed successfully.\n";
+            std::cout << "This console will close in 3 seconds...\n";
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+            return 0;
+        } else {
+            std::cerr << "[-] Injection failed: " << res.message << "\n";
+            ShowErrorAlert(L"DLL injection into running Steam process failed: " + Utf8ToWide(res.message));
+            return 1;
+        }
+    }
+
+    // Steam is not running: launch it
+    if (!std::filesystem::exists(config.targetExe)) {
+        std::wstring err = L"Error: Target Steam executable does not exist at:\n" + config.targetExe.wstring();
+        std::cerr << "[-] " << config.targetExe.string() << " not found!\n";
+        ShowErrorAlert(err);
+        return 1;
+    }
+
+    STARTUPINFOW si{ sizeof(si) };
+    PROCESS_INFORMATION pi{};
+    std::wstring quotedCmd = L"\"" + config.targetExe.wstring() + L"\"";
+    std::vector<wchar_t> cmdBuffer(quotedCmd.begin(), quotedCmd.end());
+    cmdBuffer.push_back(L'\0');
+
+    std::cout << "[+] Launching Steam executable...\n";
+    std::wstring workingDir = config.targetExe.parent_path().wstring();
+
+    if (!CreateProcessW(nullptr, cmdBuffer.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                        workingDir.empty() ? nullptr : workingDir.c_str(), &si, &pi)) {
+        DWORD gle = GetLastError();
+        std::wstring err = L"CreateProcessW failed. Error: " + std::to_wstring(gle);
+        std::cerr << "[-] CreateProcessW failed. Error: " << gle << "\n";
+        ShowErrorAlert(err);
+        return 1;
+    }
+
+    ScopedHandle hProcess(pi.hProcess);
+    ScopedHandle hThread(pi.hThread);
+    DWORD currentPid = pi.dwProcessId;
+
+    std::cout << "[+] Waiting for Steam UI to initialize (PID: " << currentPid << ")...\n";
+    auto res = AwaitAndInject(currentPid, config.payloadDll, std::chrono::seconds(15), false);
+
+    // Handle Steam cold-start updater restart (bootstrap exit & successor spawn)
+    if (res.status == Status::TargetExited) {
+        std::cout << "[!] 检测到 Steam 引导进程退出，正在捕获自更新后的继任主进程...\n";
+        auto successorPid = PollSuccessorProcess(currentPid, std::chrono::seconds(15));
+        if (successorPid) {
+            std::cout << "[+] 成功捕获继任 Steam 进程 (PID: " << *successorPid << ")，继续等待注入...\n";
+            res = AwaitAndInject(*successorPid, config.payloadDll, std::chrono::seconds(30), false);
+        }
+    }
+
+    if (res.IsOk()) {
+        std::cout << "[+] Injection completed successfully.\n";
+        std::cout << "This console will close in 3 seconds...\n";
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+        return 0;
+    } else {
+        std::cerr << "[-] Injection failed: " << res.message << "\n";
+        ShowErrorAlert(L"DLL injection failed: " + Utf8ToWide(res.message));
+        return 1;
+    }
+}
 
 } // namespace Injector
 
-int main(int argc, char* argv[]) {
+// Windows standard entry point
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    int argc = 0;
+    LPWSTR* argvW = CommandLineToArgvW(GetCommandLineW(), &argc);
     bool isWatchMode = false;
     bool isSilentMode = false;
+    bool isHelpRequested = false;
 
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        for (char& c : arg) c = static_cast<char>(tolower(c));
-        if (arg == "-watch" || arg == "--watch" || arg == "-daemon" || arg == "/watch") {
-            isWatchMode = true;
-        } else if (arg == "-silent" || arg == "--silent" || arg == "-s" || arg == "/s") {
-            isSilentMode = true;
+    if (argvW) {
+        for (int i = 1; i < argc; ++i) {
+            std::wstring arg = argvW[i];
+            for (auto& c : arg) c = towlower(c);
+            if (arg == L"-watch" || arg == L"--watch" || arg == L"-daemon" || arg == L"/watch") {
+                isWatchMode = true;
+            } else if (arg == L"-silent" || arg == L"--silent" || arg == L"-s" || arg == L"/s") {
+                isSilentMode = true;
+            } else if (arg == L"-help" || arg == L"--help" || arg == L"-h" || arg == L"/?" || arg == L"/h") {
+                isHelpRequested = true;
+            }
         }
+        LocalFree(argvW);
+    }
+
+    if (isHelpRequested) {
+        Injector::EnsureInteractiveConsole();
+        Injector::PrintUsage();
+        return 0;
     }
 
     if (!isWatchMode && !isSilentMode) {
         Injector::EnsureInteractiveConsole();
     }
 
-    std::wstring baseDir = Injector::GetExecutableDirectory();
-    std::wstring iniPath = Injector::GetIniFilePath(L"config.ini");
-    std::wstring steamReg = Injector::GetSteamPathFromRegistry();
-
-    if (!Injector::FileExists(iniPath)) {
-        std::wstring defaultExe = !steamReg.empty() ? steamReg : L"C:\\Program Files (x86)\\Steam\\steam.exe";
-        std::wstring defaultDll = L"OpenSteamTool.dll";
-        WritePrivateProfileStringW(L"Settings", L"ExePath", defaultExe.c_str(), iniPath.c_str());
-        WritePrivateProfileStringW(L"Settings", L"DllPath", defaultDll.c_str(), iniPath.c_str());
+    std::vector<wchar_t> pathBuffer(1024, L'\0');
+    DWORD len = GetModuleFileNameW(nullptr, pathBuffer.data(), static_cast<DWORD>(pathBuffer.size()));
+    while (len == pathBuffer.size()) {
+        pathBuffer.resize(pathBuffer.size() * 2, L'\0');
+        len = GetModuleFileNameW(nullptr, pathBuffer.data(), static_cast<DWORD>(pathBuffer.size()));
     }
+    std::filesystem::path baseDir = std::filesystem::path(pathBuffer.data()).parent_path();
 
-    wchar_t wExeBuffer[MAX_PATH] = { 0 };
-    wchar_t wDllBuffer[MAX_PATH] = { 0 };
-    GetPrivateProfileStringW(L"Settings", L"ExePath", L"", wExeBuffer, MAX_PATH, iniPath.c_str());
-    GetPrivateProfileStringW(L"Settings", L"DllPath", L"", wDllBuffer, MAX_PATH, iniPath.c_str());
-
-    std::wstring exePath = wExeBuffer;
-    std::wstring rawDllPath = wDllBuffer;
-
-    if (exePath.empty()) {
-        exePath = !steamReg.empty() ? steamReg : L"C:\\Program Files (x86)\\Steam\\steam.exe";
-    }
-    if (rawDllPath.empty()) {
-        rawDllPath = L"OpenSteamTool.dll";
-    }
-
-    std::wstring absDllPath = Injector::ResolveAbsoluteDllPath(rawDllPath, baseDir);
+    auto config = Injector::ResolveConfig(baseDir);
 
     if (isWatchMode) {
-        return Injector::RunWatcher(baseDir, absDllPath);
+        return Injector::RunWatcher(config);
     }
     if (isSilentMode) {
-        return Injector::RunSilentOnce(baseDir, absDllPath);
+        return Injector::RunSilentOnce(config);
     }
 
-    Injector::RunInteractive(baseDir, exePath, absDllPath);
-    return 0;
+    return Injector::RunInteractive(config);
 }
-
-#if defined(_WIN32)
-int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
-    int argc = 0;
-    LPWSTR* argvW = CommandLineToArgvW(GetCommandLineW(), &argc);
-    std::vector<std::string> args;
-    if (argvW) {
-        for (int i = 0; i < argc; ++i) {
-            int size_needed = WideCharToMultiByte(CP_UTF8, 0, argvW[i], -1, NULL, 0, NULL, NULL);
-            std::string strTo(size_needed, 0);
-            WideCharToMultiByte(CP_UTF8, 0, argvW[i], -1, strTo.data(), size_needed, NULL, NULL);
-            if (!strTo.empty() && strTo.back() == '\0') strTo.pop_back();
-            args.push_back(strTo);
-        }
-        LocalFree(argvW);
-    }
-    std::vector<char*> argvPtrs;
-    for (auto& s : args) {
-        argvPtrs.push_back(s.data());
-    }
-    argvPtrs.push_back(nullptr);
-    return main(argc, argvPtrs.data());
-}
-#endif
-
-

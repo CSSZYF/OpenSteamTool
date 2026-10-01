@@ -96,7 +96,7 @@ No DLLs in the Steam directory; runs completely independently:
 2. Create `config/lua/` and add your `.lua` unlock scripts; `opensteamtool.toml` can be placed directly in this portable folder
 3. Launch options:
    - **Manual**: Run `ost-Injector.exe` to detect or launch Steam and inject
-   - **Auto-start**: Run `CreateAutoInjectTask.bat` as administrator (uninstall via `DeleteAutoInjectTask.bat`)
+   - **Auto-start**: Run `CreateAutoInjectTask.bat` (uninstall via `DeleteAutoInjectTask.bat`)
    - **CLI**: Supports `-watch` (daemon) and `-silent` (one-shot injection)
 
 ### Method 2: Standard Mode (DLL Hijacking)
