@@ -1,32 +1,67 @@
 #pragma once
 
+#ifndef _WIN64
+#error "OpenSteamTool Injector is strictly designed for 64-bit Windows architecture (x64)."
+#endif
+
 #include <windows.h>
+#include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
+#include <chrono>
 
 namespace Injector {
 
+    enum class Status {
+        Success,
+        AlreadyInjected,
+        TargetExited,
+        ComponentTimeout,
+        ProcessAccessDenied,
+        RemoteAllocFailed,
+        RemoteThreadFailed,
+        LoadLibraryFailed,
+        PayloadNotFound
+    };
+
+    struct ExecutionResult {
+        Status status = Status::Success;
+        DWORD win32Error = 0;
+        std::string message;
+
+        [[nodiscard]] bool IsOk() const noexcept {
+            return status == Status::Success || status == Status::AlreadyInjected;
+        }
+    };
+
+    struct RuntimeConfig {
+        std::filesystem::path targetExe;
+        std::filesystem::path payloadDll;
+        std::filesystem::path baseDir;
+    };
+
+    // Configuration & Environment
+    RuntimeConfig ResolveConfig(const std::filesystem::path& baseDir);
+
     // Process & Module Inspection
-    bool IsModuleLoaded(DWORD pid, const std::wstring& moduleName);
-    std::vector<DWORD> FindProcessesByName(const std::wstring& processName);
+    bool IsModulePresent(DWORD pid, std::wstring_view moduleName);
+    std::vector<DWORD> SnapshotProcessIds(std::wstring_view processName);
 
-    // Injection Primitives
-    bool InjectDllByHandle(HANDLE hProcess, const std::wstring& dllPath, bool isSilent = false);
-
-    // Path & Registry Resolution
-    std::wstring GetExecutableDirectory();
-    std::wstring GetIniFilePath(const std::wstring& iniFileName);
-    std::wstring GetSteamPathFromRegistry();
-    std::wstring ResolveAbsoluteDllPath(const std::wstring& rawDllPath, const std::wstring& baseDir);
-    bool FileExists(const std::wstring& filePath);
+    // Core Injection & Lifecycle Orchestration
+    ExecutionResult InjectPayload(DWORD pid, const std::filesystem::path& dllPath, bool isSilent = false);
+    ExecutionResult AwaitAndInject(DWORD pid, const std::filesystem::path& dllPath,
+                                  std::chrono::milliseconds timeout = std::chrono::seconds(30),
+                                  bool isSilent = false);
 
     // Execution Modes
-    void RunInteractive(const std::wstring& baseDir, const std::wstring& exePath, const std::wstring& dllPath);
-    int  RunWatcher(const std::wstring& baseDir, const std::wstring& dllPath);
-    int  RunSilentOnce(const std::wstring& baseDir, const std::wstring& dllPath);
+    int RunWatcher(const RuntimeConfig& config);
+    int RunSilentOnce(const RuntimeConfig& config);
+    int RunInteractive(const RuntimeConfig& config);
 
-    // Logging & Notifications
-    void LogMessage(const std::wstring& baseDir, const std::string& msg, bool isSilent = false);
+    // UI & Logging
+    void LogMessage(const std::filesystem::path& baseDir, const std::string& msg, bool isSilent = false);
     void ShowErrorAlert(const std::wstring& message);
+    std::wstring Utf8ToWide(std::string_view utf8);
 
 } // namespace Injector

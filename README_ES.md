@@ -96,7 +96,7 @@ No requiere copiar DLL en la carpeta de Steam y funciona de manera totalmente in
 2. Crea `config/lua/` y coloca tus scripts de desbloqueo; `opensteamtool.toml` se puede ubicar directamente en este directorio portátil
 3. Métodos de inicio:
    - **Manual**: Ejecuta `ost-Injector.exe` para detectar o abrir Steam e inyectar
-   - **Inicio automático**: Ejecuta `CreateAutoInjectTask.bat` como administrador (desinstalar con `DeleteAutoInjectTask.bat`)
+   - **Inicio automático**: Ejecuta `CreateAutoInjectTask.bat` (sin necesidad de administrador; desinstalar con `DeleteAutoInjectTask.bat`)
    - **Línea de comandos**: Admite `-watch` (servicio en segundo plano) y `-silent` (inyección única silenciosa)
 
 ### Método 2: Modo estándar (Secuestro de DLL)
