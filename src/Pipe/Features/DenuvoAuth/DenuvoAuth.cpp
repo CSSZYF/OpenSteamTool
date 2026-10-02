@@ -1,5 +1,10 @@
 #include "Pipe/Features/DenuvoAuth/DenuvoAuth.h"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
 #include "Pipe/Features/DenuvoAuth/ProtectionScan.h"
 #include "Utils/Logging/Log.h"
 #include "Utils/Tickets/AppTicket.h"

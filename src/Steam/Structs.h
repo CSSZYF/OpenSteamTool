@@ -119,6 +119,7 @@ struct AppOwnership
 	bool bAllSiteLicenses;
 	bool bAllActivationRequired;
 	bool bFamilyShared;
+	uint8_t _safetyPadding[64]{};
 };
 
 // Single depot manifest entry (0x20 bytes) produced by BuildDepotDependency.

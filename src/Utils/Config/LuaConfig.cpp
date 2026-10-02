@@ -5,7 +5,6 @@
 #include "Utils/Config/LuaConfig.h"
 #include "Utils/SteamMetadata/StatsClient.h"
 #include "Utils/Tickets/AppTicket.h"
-#include "Hook/Hooks_Package.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -599,13 +598,6 @@ namespace LuaConfig{
             return luaL_error(L, "setAppTicket: appId out of range");
         AppId_t appId = static_cast<uint32_t>(val);
 
-        // Genuinely owned and family shared apps: ignore foreign setAppTicket from Lua files
-        // to prevent third-party ticket pollution.
-        if (Hooks_Package::HasValidLicense(appId)) {
-            LOG_INFO("LuaConfig: appId={} has valid license (owned/shared) — ignoring foreign setAppTicket", appId);
-            return 0;
-        }
-
         size_t hexLen;
         const char* hex = lua_tolstring(L, 2, &hexLen);
         const auto binary = ParseHexStringToBytes(hex, hexLen);
@@ -635,13 +627,6 @@ namespace LuaConfig{
         if (val < 0 || val > UINT32_MAX)
             return luaL_error(L, "setETicket: appId out of range");
         AppId_t appId = static_cast<uint32_t>(val);
-
-        // Genuinely owned and family shared apps: ignore foreign setETicket from Lua files
-        // to prevent third-party ticket pollution.
-        if (Hooks_Package::HasValidLicense(appId)) {
-            LOG_INFO("LuaConfig: appId={} has valid license (owned/shared) — ignoring foreign setETicket", appId);
-            return 0;
-        }
 
         size_t hexLen;
         const char* hex = lua_tolstring(L, 2, &hexLen);
