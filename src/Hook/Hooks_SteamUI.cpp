@@ -219,6 +219,7 @@ namespace
     std::vector<AppId_t> g_pendingRemovals;
     std::vector<AppId_t> g_pendingAdditions;
     std::unordered_set<AppId_t> g_removedAppIds;
+    std::atomic<bool> g_hasRemovedAppIds{false};
 
     constexpr uint32_t k_EAppStateUpdatingMask =
         k_EAppStateDownloading         | // 0x00800000
@@ -718,15 +719,11 @@ namespace
             }
             else
             {
-                if (!LuaConfig::IsOwned(pApp->nAppID))
+                if (Hooks_SteamUI::IsRemoved(pApp->nAppID) && !Hooks_Package::HasValidLicense(pApp->nAppID))
                 {
-                    std::lock_guard<std::mutex> lock(g_removalMutex);
-                    if (g_removedAppIds.contains(pApp->nAppID))
-                    {
-                        pApp->OwnershipFlags = k_EAppOwnershipFlags_None;
-                        pApp->PurchasedTime = 0;
-                        pApp->MasterSubAppID = 0;
-                    }
+                    pApp->OwnershipFlags = k_EAppOwnershipFlags_None;
+                    pApp->PurchasedTime = 0;
+                    pApp->MasterSubAppID = 0;
                 }
             }
         }
@@ -740,6 +737,8 @@ namespace
               CAppOverview_Change *pChange, void *optionalCallbackSlot)
     {
         oBuildCompleteAppOverviewChange(pController, pChange, optionalCallbackSlot);
+        if (!g_hasRemovedAppIds.load(std::memory_order_acquire))
+            return;
         std::lock_guard<std::mutex> lock(g_removalMutex);
         if (pChange && !g_removedAppIds.empty() && oRepeatedFieldUint32_Add)
         {
@@ -830,11 +829,12 @@ namespace
 
                 for (AppId_t appId : drainingRemovals)
                 {
-                    if (LuaConfig::IsOwned(appId) || LuaConfig::HasDepot(appId, false))
+                    if (Hooks_Package::HasValidLicense(appId) || LuaConfig::HasDepot(appId, false))
                     {
-                        LOG_STEAMUI_DEBUG("RunFrame: appId {} is still owned or active in config, skipping removal", appId);
+                        LOG_STEAMUI_DEBUG("RunFrame: appId {} is still licensed (owned/shared) or active in config, skipping removal", appId);
                         std::lock_guard<std::mutex> lock(g_removalMutex);
                         g_removedAppIds.erase(appId);
+                        g_hasRemovedAppIds.store(!g_removedAppIds.empty(), std::memory_order_release);
                         continue;
                     }
 
@@ -862,6 +862,7 @@ namespace
                     {
                         std::lock_guard<std::mutex> lock(g_removalMutex);
                         g_removedAppIds.insert(appId);
+                        g_hasRemovedAppIds.store(true, std::memory_order_release);
                     }
 
                     LOG_STEAMUI_INFO("RunFrame: removing appId {}", appId);
@@ -942,6 +943,7 @@ namespace Hooks_SteamUI
         std::lock_guard<std::mutex> lock(g_removalMutex);
         std::erase(g_pendingAdditions, appId);
         g_removedAppIds.insert(appId);
+        g_hasRemovedAppIds.store(true, std::memory_order_release);
         if (std::ranges::find(g_pendingRemovals, appId) == g_pendingRemovals.end()) {
             g_pendingRemovals.push_back(appId);
         }
@@ -952,6 +954,7 @@ namespace Hooks_SteamUI
         std::lock_guard<std::mutex> lock(g_removalMutex);
         std::erase(g_pendingRemovals, appId);
         g_removedAppIds.erase(appId);
+        g_hasRemovedAppIds.store(!g_removedAppIds.empty(), std::memory_order_release);
     }
 
     void QueueAddition(AppId_t appId)
@@ -959,6 +962,7 @@ namespace Hooks_SteamUI
         std::lock_guard<std::mutex> lock(g_removalMutex);
         std::erase(g_pendingRemovals, appId);
         g_removedAppIds.erase(appId);
+        g_hasRemovedAppIds.store(!g_removedAppIds.empty(), std::memory_order_release);
         if (std::ranges::find(g_pendingAdditions, appId) == g_pendingAdditions.end()) {
             g_pendingAdditions.push_back(appId);
         }
@@ -966,6 +970,9 @@ namespace Hooks_SteamUI
 
     bool IsRemoved(AppId_t appId)
     {
+        if (!g_hasRemovedAppIds.load(std::memory_order_acquire)) {
+            return false;
+        }
         std::lock_guard<std::mutex> lock(g_removalMutex);
         return g_removedAppIds.contains(appId);
     }

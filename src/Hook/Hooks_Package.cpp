@@ -23,6 +23,7 @@ namespace {
     std::atomic<bool>          g_licenseRefreshPending{false};
     std::shared_mutex          g_sharedLicensesMutex;
     std::unordered_set<AppId_t> g_sharedLicenses;
+    std::atomic<bool>          g_hasSharedLicenses{false};
 
     constexpr PackageId_t kInjectedPackageId = 0;
     constexpr uint64_t kInjectedPkgAccessToken = 10660652434190618804ull;
@@ -118,6 +119,76 @@ namespace {
         return false;
     }
 
+    struct LicenseClassification {
+        bool isTrulyOwned = false;
+        bool isShared = false;
+    };
+
+    inline LicenseClassification EvaluateOwnership(bool result, const AppOwnership& own) {
+        const bool isSharedLicense = (own.bFamilyShared || own.bBorrowed) &&
+                                     (own.PackageId != 0) &&
+                                     (own.PackageId != kInjectedPackageId) &&
+                                     (own.ExistInPackageNums >= 1) &&
+                                     !own.bLicenseExpired;
+        if (isSharedLicense) {
+            return { .isTrulyOwned = false, .isShared = true };
+        }
+
+        const bool isTrulyOwned = result &&
+                                  (own.PackageId != 0) &&
+                                  (own.PackageId != kInjectedPackageId) &&
+                                  (own.ExistInPackageNums >= 1) &&
+                                  own.bOwnsLicense &&
+                                  !own.bLicenseExpired &&
+                                  !own.bFamilyShared &&
+                                  !own.bBorrowed;
+        if (isTrulyOwned) {
+            return { .isTrulyOwned = true, .isShared = false };
+        }
+
+        return {};
+    }
+
+    inline void RecordLicenseClassification(AppId_t appId, const LicenseClassification& lc) {
+        if (lc.isShared) {
+            if (g_hasSharedLicenses.load(std::memory_order_acquire)) {
+                std::shared_lock rlock(g_sharedLicensesMutex);
+                if (g_sharedLicenses.contains(appId)) {
+                    return;
+                }
+            }
+            std::unique_lock wlock(g_sharedLicensesMutex);
+            if (g_sharedLicenses.insert(appId).second) {
+                g_hasSharedLicenses.store(true, std::memory_order_release);
+            }
+        } else if (lc.isTrulyOwned) {
+            if (!LuaConfig::IsOwned(appId)) {
+                LuaConfig::MarkOwned(appId);
+                if (g_hasSharedLicenses.load(std::memory_order_acquire)) {
+                    std::unique_lock wlock(g_sharedLicensesMutex);
+                    if (g_sharedLicenses.erase(appId) > 0) {
+                        g_hasSharedLicenses.store(!g_sharedLicenses.empty(), std::memory_order_release);
+                    }
+                }
+            }
+        } else {
+            // Neither shared nor owned: evict if previously cached
+            if (g_hasSharedLicenses.load(std::memory_order_acquire)) {
+                bool wasShared = false;
+                {
+                    std::shared_lock rlock(g_sharedLicensesMutex);
+                    wasShared = g_sharedLicenses.contains(appId);
+                }
+                if (wasShared) {
+                    std::unique_lock wlock(g_sharedLicensesMutex);
+                    if (g_sharedLicenses.erase(appId) > 0) {
+                        g_hasSharedLicenses.store(!g_sharedLicenses.empty(), std::memory_order_release);
+                    }
+                }
+            }
+        }
+    }
+
     HOOK_FUNC(CheckAppOwnership, bool, void* pObj, AppId_t appId, AppOwnership* pOwn) {
         if (!g_pCUser.load(std::memory_order_acquire)) {
             g_pCUser.store(pObj, std::memory_order_release);
@@ -130,20 +201,13 @@ namespace {
         bool result = oCheckAppOwnership(pObj, appId, pEffectiveOwn);
         TryInitFakeLicenseOnce();
         TryProcessPendingLicenseRefresh();
-        const bool isSharedLicense = (pEffectiveOwn->bFamilyShared || pEffectiveOwn->bBorrowed) &&
-                                     (pEffectiveOwn->PackageId != 0) &&
-                                     (pEffectiveOwn->PackageId != kInjectedPackageId) &&
-                                     (pEffectiveOwn->ExistInPackageNums >= 1) &&
-                                     !pEffectiveOwn->bLicenseExpired;
-        bool isTrulyOwned = false;
-        if (isSharedLicense) {
-            {
-                std::shared_lock rlock(g_sharedLicensesMutex);
-                if (!g_sharedLicenses.contains(appId)) {
-                    rlock.unlock();
-                    std::unique_lock wlock(g_sharedLicensesMutex);
-                    g_sharedLicenses.insert(appId);
-                }
+
+        const auto lc = EvaluateOwnership(result, *pEffectiveOwn);
+        RecordLicenseClassification(appId, lc);
+
+        if (lc.isShared) {
+            if (Hooks_SteamUI::IsRemoved(appId)) {
+                Hooks_SteamUI::CancelRemoval(appId);
             }
             if (pEffectiveOwn->bLicenseLocked) {
                 LOG_PACKAGE_DEBUG("CheckAppOwnership: Clearing bLicenseLocked for shared AppId={}", appId);
@@ -151,27 +215,11 @@ namespace {
             }
             pEffectiveOwn->bOwnsLicense = true;
             result = true;
-        } else {
-            isTrulyOwned = result &&
-                           (pEffectiveOwn->PackageId != kInjectedPackageId) &&
-                           (pEffectiveOwn->PackageId != 0) &&
-                           (pEffectiveOwn->ExistInPackageNums >= 1) &&
-                           pEffectiveOwn->bOwnsLicense &&
-                           !pEffectiveOwn->bLicenseExpired &&
-                           !pEffectiveOwn->bFamilyShared &&
-                           !pEffectiveOwn->bBorrowed;
-            if (isTrulyOwned) {
-                LuaConfig::MarkOwned(appId);
-                {
-                    std::unique_lock wlock(g_sharedLicensesMutex);
-                    g_sharedLicenses.erase(appId);
-                }
-            }
         }
 
         if (LuaConfig::HasDepot(appId, false)) {
             if (pOwn) {
-                if (isTrulyOwned) {
+                if (lc.isTrulyOwned) {
                     pOwn->ReleaseState = EAppReleaseState::Released;
                 } else {
                     pOwn->PackageId    = kInjectedPackageId;
@@ -185,8 +233,9 @@ namespace {
             }
         } else {
             // App is not active in LuaConfig:
-            // 1. If explicitly marked as removed in the UI session (and not genuinely owned):
-            if (Hooks_SteamUI::IsRemoved(appId) && !LuaConfig::IsOwned(appId)) {
+            // 1. If explicitly marked as removed in the UI session (and not genuinely owned or family shared):
+            const bool hasValidLicense = lc.isTrulyOwned || lc.isShared;
+            if (Hooks_SteamUI::IsRemoved(appId) && !hasValidLicense) {
                 if (pOwn) {
                     pOwn->bOwnsLicense = false;
                     pOwn->PackageId = 0;
@@ -199,6 +248,30 @@ namespace {
         }
 
         return result;
+    }
+
+    static LicenseClassification ClassifyAppLicense(AppId_t appId) {
+        if (appId == 0 || appId == k_uAppIdInvalid) return {};
+
+        if (LuaConfig::IsOwned(appId)) {
+            return { .isTrulyOwned = true, .isShared = false };
+        }
+
+        if (g_hasSharedLicenses.load(std::memory_order_acquire)) {
+            std::shared_lock lock(g_sharedLicensesMutex);
+            if (g_sharedLicenses.contains(appId)) {
+                return { .isTrulyOwned = false, .isShared = true };
+            }
+        }
+
+        void* pUser = g_pCUser.load(std::memory_order_acquire);
+        if (!pUser || !oCheckAppOwnership) return {};
+
+        AppOwnership own{};
+        bool result = oCheckAppOwnership(pUser, appId, &own);
+        const auto lc = EvaluateOwnership(result, own);
+        RecordLicenseClassification(appId, lc);
+        return lc;
     }
 }
 
@@ -306,69 +379,13 @@ namespace Hooks_Package {
         for (AppId_t id : removals) {
             // ParseFile unloads the old file before parsing the replacement.
             // Do not queue that transient removal when the id was added again.
-            if (!addedIds.contains(id) && !LuaConfig::IsOwned(id) && queuedRemovals.insert(id).second) {
+            if (!addedIds.contains(id) && !Hooks_Package::HasValidLicense(id) && queuedRemovals.insert(id).second) {
                 Hooks_SteamUI::QueueRemoval(id);
                 ++queuedRemovalCount;
             }
         }
         LOG_PACKAGE_DEBUG("NotifyLicenseChanged: queued {} UI removals, skipped {} transient removals",
                           queuedRemovalCount, removals.size() - queuedRemovalCount);
-    }
-
-    struct LicenseClassification {
-        bool isTrulyOwned = false;
-        bool isShared = false;
-    };
-
-    static LicenseClassification ClassifyAppLicense(AppId_t appId) {
-        if (appId == 0 || appId == k_uAppIdInvalid) return {};
-
-        if (LuaConfig::IsOwned(appId)) {
-            return { .isTrulyOwned = true, .isShared = false };
-        }
-
-        {
-            std::shared_lock lock(g_sharedLicensesMutex);
-            if (g_sharedLicenses.contains(appId)) {
-                return { .isTrulyOwned = false, .isShared = true };
-            }
-        }
-
-        void* pUser = g_pCUser.load(std::memory_order_acquire);
-        if (!pUser || !oCheckAppOwnership) return {};
-
-        AppOwnership own{};
-        bool result = oCheckAppOwnership(pUser, appId, &own);
-
-        const bool isSharedLicense = (own.bFamilyShared || own.bBorrowed) &&
-                                     (own.PackageId != 0) &&
-                                     (own.PackageId != kInjectedPackageId) &&
-                                     (own.ExistInPackageNums >= 1) &&
-                                     !own.bLicenseExpired;
-        if (isSharedLicense) {
-            std::unique_lock lock(g_sharedLicensesMutex);
-            g_sharedLicenses.insert(appId);
-            return { .isTrulyOwned = false, .isShared = true };
-        }
-
-        const bool isTrulyOwned = result &&
-                                  (own.PackageId != 0) &&
-                                  (own.PackageId != kInjectedPackageId) &&
-                                  (own.ExistInPackageNums >= 1) &&
-                                  own.bOwnsLicense &&
-                                  !own.bLicenseExpired &&
-                                  !own.bFamilyShared &&
-                                  !own.bBorrowed;
-        if (isTrulyOwned) {
-            LuaConfig::MarkOwned(appId);
-            {
-                std::unique_lock lock(g_sharedLicensesMutex);
-                g_sharedLicenses.erase(appId);
-            }
-            return { .isTrulyOwned = true, .isShared = false };
-        }
-
-        return {};
     }
 
     bool IsAppTrulyOwned(AppId_t appId) {
