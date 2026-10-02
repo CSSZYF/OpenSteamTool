@@ -167,11 +167,13 @@ namespace {
             "IPC interception is disabled for this session; pattern-based "
             "hooks are unaffected.\n\n"
             "You can:\n"
-            "  1. Wait for the next upstream publish and restart Steam.\n"
+            "  1. Wait for the next tracker update, then restart Steam.\n"
             "  2. Drop a matching TOML at:\n"
             "       " + rootLabel + "\\opensteamtool\\ipc\\steamclient\\" + sha256 + ".toml\n"
-            "  3. Check upstream:\n"
-            "       https://github.com/mmxlyo/steam-monitor/tree/ipc/steamclient");
+            "  3. Check tracker repository:\n"
+            "       https://github.com/mmxlyo/steam-monitor/tree/ipc/steamclient\n"
+            "  4. Report the diagnostics below:\n"
+            "       https://github.com/mmxlyo/OpenSteamTool/issues");
     }
 
 } // namespace

@@ -161,10 +161,10 @@ static void ShowDownloadFailedPopup(const std::string& dllName,
         "  1. Wait for the next signature update, then restart Steam.\n"
         "  2. Drop a matching TOML at:\n"
         "       " + rootLabel + "\\opensteamtool\\pattern\\" + component + "\\" + sha256 + ".toml\n"
-        "  3. Check upstream:\n"
+        "  3. Check tracker repository:\n"
         "       https://github.com/mmxlyo/steam-monitor/tree/pattern/" + component + "\n"
         "  4. Report the diagnostics below:\n"
-        "       https://github.com/OpenSteam001/OpenSteamTool/issues");
+        "       https://github.com/mmxlyo/OpenSteamTool/issues");
 }
 
 } // namespace
@@ -294,7 +294,7 @@ void ReportMissingFunctions()
         list +
         "\nHooks for these functions are disabled for this session.\n\n"
         "Please report this at:\n"
-        "https://github.com/OpenSteam001/OpenSteamTool/issues");
+        "https://github.com/mmxlyo/OpenSteamTool/issues");
 }
 
 } // namespace PatternLoader
