@@ -134,7 +134,6 @@ exclude_appids = [
 # all_games = false                   # [重要] 必须默认为 false。设为 true 时注入全部游戏（但受 exclude_appids 排除保护）
 # when_cmdline = "-onlinefix"         # 可选：游戏启动命令行中必须包含此子串（默认：无限制）
 # when_appids = [1361510]             # 白名单：仅向指定 AppID 注入（优先级高于 exclude_appids 排除名单）
-# exclude_appids = []                 # 可选：规则专属排除名单（覆盖全局 [injects].exclude_appids）
 
 [cloud]
 # 基于 CloudRedirect (https://github.com/Selectively11/CloudRedirect) 的可选 Steam 云存档重定向引擎。

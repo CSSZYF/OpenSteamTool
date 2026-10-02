@@ -284,21 +284,10 @@ namespace {
                         }
                     }
 
-                    // Anti-cheat / compatibility exclusion list:
-                    // 1. If individual [[inject]] has explicit exclude_appids, use it strictly.
-                    // 2. Otherwise, if global [injects].exclude_appids was explicitly configured, use it strictly (no merging).
-                    // 3. Otherwise (unconfigured), fall back to built-in default anti-cheat blacklist.
-                    if (auto ruleExclude = (*t)["exclude_appids"].as_array()) {
-                        for (auto& id : *ruleExclude) {
-                            if (auto v = id.value<int64_t>()) {
-                                dll.excludeAppids.insert(static_cast<AppId_t>(*v));
-                            }
-                        }
-                    } else if (hasGlobalExclude) {
-                        dll.excludeAppids = globalExcludeAppids;
-                    } else {
-                        dll.excludeAppids = GetDefaultAntiCheatAppids();
-                    }
+                    // Anti-cheat / compatibility exclusion list from global [injects]:
+                    // If explicitly configured in [injects], use it strictly (no default merging).
+                    // Otherwise (unconfigured), fall back to built-in default anti-cheat blacklist.
+                    dll.excludeAppids = hasGlobalExclude ? globalExcludeAppids : GetDefaultAntiCheatAppids();
 
                     // Whitelist priority: if an AppID is explicitly specified in when_appids,
                     // whitelist takes precedence over exclusion list, so it will not be excluded for this rule.

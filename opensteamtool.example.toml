@@ -135,7 +135,6 @@ exclude_appids = [
 # all_games = false                   # [IMPORTANT] Must default to false. When set to true, injects into all games except those in exclude_appids.
 # when_cmdline = "-onlinefix"         # Optional: require this substring in launch command (default: any)
 # when_appids = [1361510]             # Whitelist: target specific AppIDs (takes priority over exclude_appids)
-# exclude_appids = []                 # Optional: rule-specific exclusion list (overrides global [injects].exclude_appids)
 
 [cloud]
 # Optional Steam Cloud save redirection for unlocked ("lua") games, powered by

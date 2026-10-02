@@ -135,7 +135,6 @@ exclude_appids = [
 # all_games = false                   # [IMPORTANTE] Debe ser false por defecto. En true, inyecta en todos los juegos excepto los de exclude_appids.
 # when_cmdline = "-onlinefix"         # Opcional: requiere esta subcadena en la línea de comandos de inicio (por defecto: cualquiera)
 # when_appids = [1361510]             # Lista blanca: restringe a AppIDs específicos (tiene prioridad sobre exclude_appids)
-# exclude_appids = []                 # Opcional: lista de exclusión específica de la regla (anula el [injects].exclude_appids global)
 
 [cloud]
 # Redirección opcional de guardado en la nube de Steam para juegos desbloqueados ("lua"), impulsada por
