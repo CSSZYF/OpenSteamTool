@@ -97,7 +97,7 @@
 3. 启动方式：
    - **手动启动**：直接运行 `ost-Injector.exe`，自动检测或拉起 Steam 并注入
    - **开机自启**：直接运行 `CreateAutoInjectTask.bat`（无需管理员权限；卸载运行 `DeleteAutoInjectTask.bat`）
-   - **命令行**：支持 `-watch`（后台监听）与 `-silent`（单次静默注入）
+   - **命令行**：支持 `-watch` / `--watch` / `-daemon`（后台常驻监听）、`-silent` / `--silent` / `-s`（单次静默注入）及 `-help` / `--help` / `-h`（命令行帮助）
 
 ### 方式二：标准模式（DLL 劫持）
 1. 将 `dwmapi.dll`、`xinput1_4.dll` 和 `OpenSteamTool.dll` 复制到 Steam 安装根目录
@@ -137,6 +137,8 @@ forcedenuvo(1361510) -- 强制标记为 Denuvo（等价于启动项 -forcedenuvo
 [log]
 # 仅调试构建有效：trace, debug, info, warn, error
 level = "info"
+# 日志输出目录（可选，仅调试构建有效）
+# dir = "opensteamtool"
 
 [manifest]
 # 上游 API："manifestdex"（默认）、"opensteamtool"、"steamrun"、"wudrm"
@@ -145,6 +147,10 @@ timeout_resolve_ms = 5000
 timeout_connect_ms = 5000
 timeout_send_ms    = 10000
 timeout_recv_ms    = 10000
+# 是否对当前账号已拥有的游戏/DLC放行官方更新（false 为放行；true 为强制锁定版本，默认：false）
+lock_owned_games = false
+# 拥有授权的游戏在 Steam 完成后台下载更新后自动静默同步清单与 Lua（默认：true）
+auto_sync_on_update = true
 
 [stats]
 # 未配置 setStat 时查询 https://stats.opensteamtool.com/{appid}
@@ -186,13 +192,14 @@ exclude_appids = [
 ### 全局注入设置 (`[injects]`)
 | 字段 | 说明 |
 | :--- | :--- |
-| `exclude_appids` | 排除向其注入 DLL 的 AppID 列表。当注入规则开启 `all_games = true` 时生效。<br>- **显式覆盖原则**：若显式配置了本项（即使列表为空 `[]` 或仅配置单款游戏），则严格按用户实际配置排除，**不再包含默认排除名单**；<br>- **默认保底原则**：若完全未配置本项，且开启了 `all_games = true`，自动采用内置的 20 余款竞技/反作弊网游保底名单（涵盖 CS2、Dota 2、Apex、PUBG、R6S 等）；<br>- **白名单优先原则**：若某 AppID 在此被排除，但在具体 `[[inject]]` 规则的 `when_appids` 中被显式指定，则**白名单优先于排除名单**，该 AppID 在该规则下**不被排除**；<br>**注意：此排除严格仅排除向游戏进程注入第三方 DLL，绝不影响任何游戏的正常解锁与 DLC 模拟（`addappid`、清单下载、票据伪造等 100% 正常运行）！** |
+| `exclude_appids` | 排除向其注入第三方 DLL 的目标 AppID 列表。<br>- **全局保底保护**：无论注入规则是全局还是局部，只要目标在此名单中，一律严格跳过注入（除非在具体规则的 `when_appids` 中被显式加入白名单）；<br>- **显式覆盖原则**：若显式配置了本项（即使列表为空 `[]` 或仅配置单款游戏），则严格按用户实际配置排除，**不再包含默认排除名单**；<br>- **默认保底原则**：若完全未配置本项，自动采用内置的 20 余款竞技/反作弊网游保底名单（涵盖 CS2、Dota 2、Apex、PUBG、R6S 等）；<br>- **白名单优先原则**：若某 AppID 在此被排除，但在具体 `[[inject]]` 规则的 `when_appids` 中被显式指定，则**白名单优先于排除名单**，该 AppID 在该规则下**不被排除**；<br>**注意：此排除严格仅排除向游戏进程注入第三方 DLL，绝不影响任何游戏的正常解锁与 DLC 模拟（`addappid`、清单下载、票据伪造等 100% 正常运行）！** |
 
+<a id="第三方-dll-注入"></a>
 ### 第三方 DLL 注入规则 (`[[inject]]`)
 | 字段 | 说明 |
 | :--- | :--- |
 | `path` | DLL 路径。裸文件名优先在 toml 目录、DLL 目录及 Steam 根目录解析，支持绝对路径 |
-| `all_games` | 可选。`false`（默认且强烈推荐）仅对指定游戏/Lua 解锁单机生效；若设为 `true` 则作为全局注入开关，尝试注入游戏并受上方 `[injects].exclude_appids` 排除保护 |
+| `all_games` | 可选。默认为 `false`（强烈推荐）。<br>- **`false`**：仅对 Lua 解锁游戏生效。**注意：若未指定 `when_appids`，则所有通过 Lua 解锁的游戏启动时都会被注入！强烈建议配合 `when_appids`（白名单限定特定游戏）或 `when_cmdline`（限定特定启动参数，如 `"-onlinefix"`）使用**；<br>- **`true`**：全局注入开关。无论是否由 Lua 解锁（包含账号原本拥有的正版游戏和免费游戏）均尝试注入，受上方 `[injects].exclude_appids` 排除名单保护 |
 | `when_cmdline` | 可选。启动命令行中必须包含的子串（例如 `"-onlinefix"`） |
 | `when_appids` | 可选。白名单机制，限定目标 AppID 列表（例如 `[1361510]`）。**优先于排除名单**：即使目标 AppID 存在于全局或默认排除名单中，一旦在此显式指定，该规则仍会对其生效并注入 |
 

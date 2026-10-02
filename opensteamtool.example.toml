@@ -90,7 +90,7 @@ enable_api = true
 
 [injects]
 # Global DLL injection settings.
-# exclude_appids: AppIDs to strictly exclude from library injection when all_games is true.
+# exclude_appids: AppIDs to strictly exclude from library injection into game processes.
 # Explicitly specifying appids here overrides the built-in default list without merging.
 # If omitted entirely, OpenSteamTool defaults to protecting ~20 known competitive multiplayer games (VAC/EAC/BattlEye).
 # Whitelist precedence: if an AppID listed in exclude_appids is explicitly specified in an [[inject]]
@@ -132,7 +132,7 @@ exclude_appids = [
 # Injection rule example (commented out by default; enable as needed):
 # [[inject]]
 # path = "OnlineFix.dll"              # bare name resolves next to steam.exe; absolute path used as-is
-# all_games = false                   # [IMPORTANT] Must default to false. When set to true, injects into all games except those in exclude_appids.
+# all_games = false                   # [IMPORTANT] Must default to false. false = targets Lua-unlocked games (injects into all Lua games if when_appids is omitted; specify when_appids or when_cmdline to restrict). true = injects all Steam games (protected by exclude_appids).
 # when_cmdline = "-onlinefix"         # Optional: require this substring in launch command (default: any)
 # when_appids = [1361510]             # Whitelist: target specific AppIDs (takes priority over exclude_appids)
 

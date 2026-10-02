@@ -48,7 +48,7 @@
 
 ### Game Process Injection
 - Inject third-party DLLs into game processes via `[[inject]]` in `opensteamtool.toml`
-- Supports multiple DLL rules, command-line filtering, and AppID restrictions (see [Third-party DLL injection](#third-party-dll-injection))
+- Supports multiple DLL rules, command-line filtering, and AppID restrictions (see [Third-party DLL injection rules](#third-party-dll-injection))
 
 ### Family Sharing Support
 - Automatically unlocks Family Sharing restrictions with zero configuration and no conflicts
@@ -96,8 +96,8 @@ No DLLs in the Steam directory; runs completely independently:
 2. Create `config/lua/` and add your `.lua` unlock scripts; `opensteamtool.toml` can be placed directly in this portable folder
 3. Launch options:
    - **Manual**: Run `ost-Injector.exe` to detect or launch Steam and inject
-   - **Auto-start**: Run `CreateAutoInjectTask.bat` (uninstall via `DeleteAutoInjectTask.bat`)
-   - **CLI**: Supports `-watch` (daemon) and `-silent` (one-shot injection)
+   - **Auto-start**: Run `CreateAutoInjectTask.bat` (no administrator privileges required; uninstall via `DeleteAutoInjectTask.bat`)
+   - **CLI**: Supports `-watch` / `--watch` / `-daemon` (background auto-injection watcher), `-silent` / `--silent` / `-s` (one-shot silent injection), and `-help` / `--help` / `-h` (command-line help)
 
 ### Method 2: Standard Mode (DLL Hijacking)
 1. Copy `dwmapi.dll`, `xinput1_4.dll`, and `OpenSteamTool.dll` to the Steam root directory
@@ -131,12 +131,14 @@ All function names are **case-insensitive**.
 
 ## Configuration (optional)
 
-Rename `opensteamtool.example.toml` to `opensteamtool.toml` and place it in the portable directory or Steam root. Hot-reloaded on changes.
+Rename `opensteamtool.example.toml` (or localized templates `opensteamtool.example_zh.toml` / `opensteamtool.example_es.toml`) to `opensteamtool.toml` and place it in the portable directory or Steam root. Hot-reloaded on changes.
 
 ```toml
 [log]
 # Debug build only: trace, debug, info, warn, error
 level = "info"
+# Relative or absolute directory for debug logs (optional, Debug build only)
+# dir = "opensteamtool"
 
 [manifest]
 # Upstream API: "manifestdex" (default), "opensteamtool", "steamrun", "wudrm"
@@ -145,6 +147,10 @@ timeout_resolve_ms = 5000
 timeout_connect_ms = 5000
 timeout_send_ms    = 10000
 timeout_recv_ms    = 10000
+# Allow official Steam updates for owned games/DLCs (default: false)
+lock_owned_games = false
+# Auto-sync Lua scripts and manifests in background after Steam completes updates (default: true)
+auto_sync_on_update = true
 
 [stats]
 # Query stats API when setStat is absent
@@ -186,13 +192,14 @@ exclude_appids = [
 ### Global Injection Settings (`[injects]`)
 | Key | Explanation |
 | :--- | :--- |
-| `exclude_appids` | List of AppIDs to strictly exclude from DLL injection when `all_games = true`.<br>- **Explicit Override Principle**: If explicitly configured (even with an empty list `[]` or a single game), strictly only these AppIDs are excluded (**default list is not merged**);<br>- **Default Fallback Principle**: If omitted entirely and `all_games = true`, automatically uses the built-in protection list (~20 competitive/anti-cheat titles including CS2, Dota 2, Apex, PUBG, etc.);<br>- **Whitelist Priority**: If an AppID is excluded here but explicitly specified in an `[[inject]]` rule's `when_appids`, the **whitelist takes priority** and the AppID will **not be excluded** for that rule.<br>**Note: This exclusion strictly prevents DLL injection into game processes; game and DLC unlocking (`addappid`, manifests, tickets, etc.) are 100% active and unaffected!** |
+| `exclude_appids` | List of AppIDs to strictly exclude from third-party DLL injection into game processes.<br>- **Universal Protection**: Strictly blocks DLL injection across rules unless explicitly overridden by a rule's `when_appids` whitelist;<br>- **Explicit Override Principle**: If explicitly configured (even with an empty list `[]` or a single game), strictly only these AppIDs are excluded (**default list is not merged**);<br>- **Default Fallback Principle**: If omitted entirely, automatically uses the built-in protection list (~20 competitive/anti-cheat titles including CS2, Dota 2, Apex, PUBG, etc.);<br>- **Whitelist Priority**: If an AppID is excluded here but explicitly specified in an `[[inject]]` rule's `when_appids`, the **whitelist takes priority** and the AppID will **not be excluded** for that rule.<br>**Note: This exclusion strictly prevents DLL injection into game processes; game and DLC unlocking (`addappid`, manifests, tickets, etc.) are 100% active and unaffected!** |
 
+<a id="third-party-dll-injection"></a>
 ### Third-party DLL injection rules (`[[inject]]`)
 | Key | Explanation |
 | :--- | :--- |
 | `path` | DLL to load. Bare file names resolve next to toml, DLL directory, or Steam root; absolute paths used as-is |
-| `all_games` | Optional. `false` (default and strongly recommended) only targets specified games; `true` activates global injection protected by `[injects].exclude_appids` |
+| `all_games` | Optional. Defaults to `false` (strongly recommended).<br>- **`false`**: Only targets Lua-unlocked games. **Important: If `when_appids` is omitted, ALL Lua-unlocked games will be injected upon launch! It is strongly recommended to specify `when_appids` (whitelist target AppIDs) or `when_cmdline` (e.g. `"-onlinefix"`) to restrict injection**;<br>- **`true`**: Global injection switch. Injects into all games (including genuine owned and free titles) launched via Steam, protected by `[injects].exclude_appids` above |
 | `when_cmdline` | Optional. Substring required in launch command line (e.g. `"-onlinefix"`) |
 | `when_appids` | Optional. Whitelist mechanism targeting specific AppIDs (e.g. `[1361510]`). **Takes priority over exclusion list**: even if the target AppID is in the exclusion list, explicitly specifying it here ensures this rule injects into it |
 

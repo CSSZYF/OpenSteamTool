@@ -54,11 +54,11 @@ namespace {
         const bool whitelisted = dll.whenAppids.count(ctx.appId) > 0;
         if (!dll.allGames && !ctx.trackedApp && !whitelisted) return false;
 
-        // Blacklist strictly applies only to game DLL injection when all_games is true;
+        // Exclusion list strictly protects game processes from DLL injection unless explicitly whitelisted;
         // game unlocking and DLC simulation (addappid, manifest, etc.) remain 100% active.
         // Whitelist priority: if explicitly specified in when_appids, the game is never excluded.
-        if (ctx.gameProcess && dll.allGames && !whitelisted && dll.excludeAppids.count(ctx.appId)) {
-            LOG_INJECT_WARN("inject skipped: game appid={} is in exclude_appids (all_games is true)", ctx.appId);
+        if (ctx.gameProcess && !whitelisted && dll.excludeAppids.count(ctx.appId)) {
+            LOG_INJECT_WARN("inject skipped: game appid={} is in exclude_appids", ctx.appId);
             return false;
         }
 

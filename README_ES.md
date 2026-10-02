@@ -97,7 +97,7 @@ No requiere copiar DLL en la carpeta de Steam y funciona de manera totalmente in
 3. Métodos de inicio:
    - **Manual**: Ejecuta `ost-Injector.exe` para detectar o abrir Steam e inyectar
    - **Inicio automático**: Ejecuta `CreateAutoInjectTask.bat` (sin necesidad de administrador; desinstalar con `DeleteAutoInjectTask.bat`)
-   - **Línea de comandos**: Admite `-watch` (servicio en segundo plano) y `-silent` (inyección única silenciosa)
+   - **Línea de comandos**: Admite `-watch` / `--watch` / `-daemon` (servicio en segundo plano), `-silent` / `--silent` / `-s` (inyección única silenciosa) y `-help` / `--help` / `-h` (ayuda de línea de comandos)
 
 ### Método 2: Modo estándar (Secuestro de DLL)
 1. Copia `dwmapi.dll`, `xinput1_4.dll` y `OpenSteamTool.dll` al directorio raíz de Steam
@@ -137,6 +137,8 @@ Renombra `opensteamtool.example.toml` (o la versión comentada en español `open
 [log]
 # Solo en compilaciones Debug: trace, debug, info, warn, error
 level = "info"
+# Directorio donde se escriben los registros (opcional, solo Debug)
+# dir = "opensteamtool"
 
 [manifest]
 # API ascendente: "manifestdex" (predeterminado), "opensteamtool", "steamrun", "wudrm"
@@ -145,6 +147,10 @@ timeout_resolve_ms = 5000
 timeout_connect_ms = 5000
 timeout_send_ms    = 10000
 timeout_recv_ms    = 10000
+# Permite actualizaciones oficiales para juegos/DLCs en propiedad (por defecto: false)
+lock_owned_games = false
+# Sincroniza automáticamente Lua y manifiestos en segundo plano tras actualizar Steam (por defecto: true)
+auto_sync_on_update = true
 
 [stats]
 # Consulta la API cuando no haya setStat en Lua
@@ -186,13 +192,14 @@ exclude_appids = [
 ### Configuración global de inyección (`[injects]`)
 | Clave | Descripción |
 | :--- | :--- |
-| `exclude_appids` | Lista de AppIDs a excluir de la inyección de DLL cuando `all_games = true`.<br>- **Principio de anulación explícita**: si se configura explícitamente (incluso una lista vacía `[]` o un único juego), solo se excluirán dichos AppIDs (**no se fusiona con la lista predeterminada**);<br>- **Principio de respaldo predeterminado**: si se omite y `all_games = true`, protege automáticamente ~20 títulos multijugador competitivos (CS2, Dota 2, Apex, PUBG, etc.);<br>- **Prioridad de lista blanca**: si un AppID está excluido aquí pero se especifica en `when_appids` de una regla `[[inject]]`, la **lista blanca tiene prioridad** y dicho juego **no será excluido** para esa regla.<br>**Nota: Esta exclusión SOLO impide la inyección de DLL en el proceso; el desbloqueo de juegos y DLCs (`addappid`, manifiestos, etc.) funciona al 100% sin afectarse.** |
+| `exclude_appids` | Lista de AppIDs a excluir estrictamente de la inyección de DLL en procesos de juego.<br>- **Protección global**: Evita la inyección de DLL en todas las reglas (a menos que se anule explícitamente mediante la lista blanca `when_appids` de una regla);<br>- **Principio de anulación explícita**: si se configura explícitamente (incluso una lista vacía `[]` o un único juego), solo se excluirán dichos AppIDs (**no se fusiona con la lista predeterminada**);<br>- **Principio de respaldo predeterminado**: si se omite, protege automáticamente ~20 títulos multijugador competitivos (CS2, Dota 2, Apex, PUBG, etc.);<br>- **Prioridad de lista blanca**: si un AppID está excluido aquí pero se especifica en `when_appids` de una regla `[[inject]]`, la **lista blanca tiene prioridad** y dicho juego **no será excluido** para esa regla.<br>**Nota: Esta exclusión SOLO impide la inyección de DLL en el proceso; el desbloqueo de juegos y DLCs (`addappid`, manifiestos, etc.) funciona al 100% sin afectarse.** |
 
+<a id="inyección-de-dll-de-terceros"></a>
 ### Reglas de inyección de DLL de terceros (`[[inject]]`)
 | Clave | Descripción |
 | :--- | :--- |
 | `path` | DLL a cargar. Los nombres simples se resuelven junto a toml, directorio de DLL o Steam; admite rutas absolutas |
-| `all_games` | Opcional. `false` (predeterminado y recomendado) solo inyecta en juegos específicos; `true` activa la inyección global protegida por `[injects].exclude_appids` |
+| `all_games` | Opcional. Por defecto `false` (fuertemente recomendado).<br>- **`false`**: Solo actúa en juegos desbloqueados por Lua. **Aviso importante: ¡Si se omite `when_appids`, se inyectará en TODOS los juegos desbloqueados por Lua al iniciar! Se recomienda encarecidamente especificar `when_appids` (lista blanca de AppIDs) o `when_cmdline` (p. ej. `"-onlinefix"`) para restringir la inyección**;<br>- **`true`**: Conmutador de inyección global. Inyecta en todos los juegos (incluyendo títulos propios y gratuitos) ejecutados por Steam, protegido por `[injects].exclude_appids` arriba |
 | `when_cmdline` | Opcional. Subcadena requerida en la línea de comandos de inicio (p. ej. `"-onlinefix"`) |
 | `when_appids` | Opcional. Mecanismo de lista blanca que restringe la inyección a AppIDs específicos (p. ej. `[1361510]`). **Tiene prioridad sobre la lista de exclusión**: incluso si el AppID está excluido, especificarlo aquí asegura que esta regla lo inyecte |
 

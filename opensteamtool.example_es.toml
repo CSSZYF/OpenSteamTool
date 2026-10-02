@@ -90,7 +90,7 @@ enable_api = true
 
 [injects]
 # Configuración global de inyección de DLL.
-# exclude_appids: AppIDs a excluir estrictamente de la inyección de DLL cuando all_games está en true.
+# exclude_appids: AppIDs a excluir estrictamente de la inyección de DLL en procesos de juego.
 # Principio de anulación explícita: si se especifica una lista aquí, se usará estrictamente dicha lista sin fusionar la predeterminada.
 # Principio de respaldo predeterminado: si se omite, OST protege por defecto ~20 juegos multijugador competitivos (VAC/EAC/BattlEye).
 # Prioridad de lista blanca: si un AppID excluido aquí se incluye explícitamente en when_appids de una regla [[inject]],
@@ -132,7 +132,7 @@ exclude_appids = [
 # Ejemplo de regla de inyección (comentada por defecto; activar según sea necesario):
 # [[inject]]
 # path = "OnlineFix.dll"              # el nombre simple se busca junto a steam.exe; admite rutas absolutas
-# all_games = false                   # [IMPORTANTE] Debe ser false por defecto. En true, inyecta en todos los juegos excepto los de exclude_appids.
+# all_games = false                   # [IMPORTANTE] Debe ser false por defecto. false = solo juegos desbloqueados por Lua (inyecta en todos ellos si se omite when_appids; usa when_appids o when_cmdline para restringir). true = inyección global (protegido por exclude_appids).
 # when_cmdline = "-onlinefix"         # Opcional: requiere esta subcadena en la línea de comandos de inicio (por defecto: cualquiera)
 # when_appids = [1361510]             # Lista blanca: restringe a AppIDs específicos (tiene prioridad sobre exclude_appids)
 

@@ -89,7 +89,7 @@ enable_api = true
 
 [injects]
 # 全局 DLL 注入设置。
-# exclude_appids: 当 all_games 为 true 时，严格排除注入的目标 AppID 列表。
+# exclude_appids: 严格排除注入第三方 DLL 的目标 AppID 列表。
 # 显式覆盖原则：一旦在此显式指定列表，将严格按此列表排除，不再合并任何内置默认名单。
 # 默认保底原则：若完全不配置本项，OST 默认保护 ~20 款主流多人竞技/反作弊网游（VAC/EAC/BattlEye）。
 # 白名单优先原则：若某 AppID 在此被排除，但在具体 [[inject]] 规则的 when_appids 中显式指定，
@@ -131,7 +131,7 @@ exclude_appids = [
 # 注入规则示例（默认全部注释；按需取消注释并配置）：
 # [[inject]]
 # path = "OnlineFix.dll"              # 裸文件名在 toml 目录、DLL 目录或 steam.exe 旁解析；支持绝对路径
-# all_games = false                   # [重要] 必须默认为 false。设为 true 时注入全部游戏（但受 exclude_appids 排除保护）
+# all_games = false                   # 【重要】必须默认为 false。false = 仅对 Lua 解锁游戏生效（若未配置 when_appids 则对所有 Lua 游戏注入，强烈建议配合 when_appids 或 when_cmdline 限制目标）；true = 全局注入所有游戏（受 exclude_appids 保护）。
 # when_cmdline = "-onlinefix"         # 可选：游戏启动命令行中必须包含此子串（默认：无限制）
 # when_appids = [1361510]             # 白名单：仅向指定 AppID 注入（优先级高于 exclude_appids 排除名单）
 
