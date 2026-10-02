@@ -34,6 +34,11 @@ namespace {
             appId = PipeManager::DenuvoAuth::GetAuthorizedAppId(pipe);
         }
         if (appId == 0 || !LuaConfig::HasDepot(appId, false)) return;
+
+        // Genuinely owned and family shared apps: OST must NEVER touch or spoof SteamID!
+        // Preserves player's authentic identity, local save directory, and native Steam Cloud.
+        if (Hooks_Package::HasValidLicense(appId)) return;
+
         GetSteamIDResp resp{pWrite};
         if (!resp.ok()) return;
 
@@ -73,18 +78,26 @@ namespace {
         }
         if (appId == 0) return;
 
-        // If Steam's genuine implementation already returned a valid ticket (account owns the game),
-        // leave it untouched and pass through cleanly.
         GetAppOwnershipTicketExtendedDataResp origResp{pWrite, static_cast<size_t>(req.cbMaxTicket())};
-        if (origResp.ok() && origResp.returnValue() > 0) {
-            if (Hooks_Package::HasValidLicense(appId)) {
+        const bool origTicketValid = origResp.ok() && origResp.returnValue() > 0;
+
+        // If the account has a valid license (truly owned or family shared), Steam client
+        // natively manages tickets. OST does not forge or inject tickets for genuine/shared games.
+        // If a Lua file exists (e.g. for manifest locking), sync the genuine ticket to Lua.
+        if (Hooks_Package::HasValidLicense(appId)) {
+            if (origTicketValid) {
                 auto ticketSpan = origResp.pTicket();
                 if (!ticketSpan.empty()) {
                     const size_t ticketSize = (std::min)(ticketSpan.size(), static_cast<size_t>(origResp.returnValue()));
                     PipeManager::DenuvoAuth::SyncAppTicketToLua(appId, ticketSpan.data(), ticketSize);
                 }
             }
+            return;
+        }
 
+        // If Steam's genuine implementation already returned a valid ticket,
+        // leave it untouched and pass through cleanly.
+        if (origTicketValid) {
             PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
             return;
         }
@@ -153,6 +166,9 @@ namespace {
         }
         if (appId == 0 || !LuaConfig::HasDepot(appId, false)) return;
 
+        // Genuinely owned and family shared apps: Steam natively handles encrypted tickets.
+        if (Hooks_Package::HasValidLicense(appId)) return;
+
         // Refresh the Denuvo authorization lease window when an encrypted ticket is requested.
         PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
 
@@ -210,23 +226,19 @@ namespace {
         }
         if (appId == 0 || !LuaConfig::HasDepot(appId, false)) return;
 
+        // Genuinely owned and family shared apps: Steam natively handles genuine tickets.
+        if (Hooks_Package::HasValidLicense(appId)) return;
+
         // Refresh the Denuvo authorization lease window when reading the encrypted ticket.
         PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
 
-        // 1. If Steam client returned a genuine encrypted ticket (e.g. authorized account):
+        // 1. If Steam client returned a genuine encrypted ticket, pass through cleanly:
         GetEncryptedAppTicketResp existingResp{pWrite};
         if (existingResp.ok() && existingResp.returnValue()) {
             auto ticketSpan = existingResp.pTicket();
             if (!ticketSpan.empty() || existingResp.pcbTicket() > 0) {
-                Hooks_Package::IsAppTrulyOwned(appId);
                 return;
             }
-        }
-
-        // For owned games, Steam client natively manages genuine tickets.
-        // If Steam returned no ticket (e.g. offline/network error), never overwrite pWrite with cached/stale ticket.
-        if (Hooks_Package::IsAppTrulyOwned(appId)) {
-            return;
         }
 
         // 2. Fallback to cached or freshly minted tickets (offline / unowned accounts)

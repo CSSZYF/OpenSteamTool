@@ -204,6 +204,7 @@ namespace {
 
         const auto lc = EvaluateOwnership(result, *pEffectiveOwn);
         RecordLicenseClassification(appId, lc);
+        const bool hasValidLicense = lc.isTrulyOwned || lc.isShared;
 
         if (lc.isShared) {
             if (Hooks_SteamUI::IsRemoved(appId)) {
@@ -219,7 +220,7 @@ namespace {
 
         if (LuaConfig::HasDepot(appId, false)) {
             if (pOwn) {
-                if (lc.isTrulyOwned) {
+                if (hasValidLicense) {
                     pOwn->ReleaseState = EAppReleaseState::Released;
                 } else {
                     pOwn->PackageId    = kInjectedPackageId;
@@ -234,7 +235,6 @@ namespace {
         } else {
             // App is not active in LuaConfig:
             // 1. If explicitly marked as removed in the UI session (and not genuinely owned or family shared):
-            const bool hasValidLicense = lc.isTrulyOwned || lc.isShared;
             if (Hooks_SteamUI::IsRemoved(appId) && !hasValidLicense) {
                 if (pOwn) {
                     pOwn->bOwnsLicense = false;
