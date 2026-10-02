@@ -6,6 +6,9 @@
 # Nivel de detalle de los registros para todos los archivos de log (solo compilación Debug).
 # Valores válidos: trace, debug, info, warn, error
 level = "debug"
+# Directorio donde se escriben los archivos de registro (opcional, solo compilación Debug).
+# Por defecto es "<Steam>/opensteamtool" o junto a opensteamtool.toml.
+# dir = "opensteamtool"
 
 [manifest]
 # API ascendente a consultar para los códigos de solicitud de manifiesto de depósito.
@@ -132,6 +135,7 @@ exclude_appids = [
 # all_games = false                   # [IMPORTANTE] Debe ser false por defecto. En true, inyecta en todos los juegos excepto los de exclude_appids.
 # when_cmdline = "-onlinefix"         # Opcional: requiere esta subcadena en la línea de comandos de inicio (por defecto: cualquiera)
 # when_appids = [1361510]             # Lista blanca: restringe a AppIDs específicos (tiene prioridad sobre exclude_appids)
+# exclude_appids = []                 # Opcional: lista de exclusión específica de la regla (anula el [injects].exclude_appids global)
 
 [cloud]
 # Redirección opcional de guardado en la nube de Steam para juegos desbloqueados ("lua"), impulsada por
