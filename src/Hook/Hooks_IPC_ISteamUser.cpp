@@ -9,6 +9,7 @@
 #include "Utils/Logging/Log.h"
 #include "Hooks_Misc.h"
 #include "Utils/Config/LuaConfig.h"
+#include "Hooks_Package.h"
 
 #include <algorithm>
 #include <mutex>
@@ -33,7 +34,6 @@ namespace {
             appId = PipeManager::DenuvoAuth::GetAuthorizedAppId(pipe);
         }
         if (appId == 0 || !LuaConfig::HasDepot(appId, false)) return;
-        if (LuaConfig::IsOwned(appId)) return;
         GetSteamIDResp resp{pWrite};
         if (!resp.ok()) return;
 
@@ -77,12 +77,12 @@ namespace {
         // leave it untouched and pass through cleanly.
         GetAppOwnershipTicketExtendedDataResp origResp{pWrite, static_cast<size_t>(req.cbMaxTicket())};
         if (origResp.ok() && origResp.returnValue() > 0) {
-            LuaConfig::MarkOwned(appId);
-
-            auto ticketSpan = origResp.pTicket();
-            if (!ticketSpan.empty()) {
-                const size_t ticketSize = (std::min)(ticketSpan.size(), static_cast<size_t>(origResp.returnValue()));
-                PipeManager::DenuvoAuth::SyncAppTicketToLua(appId, ticketSpan.data(), ticketSize);
+            if (Hooks_Package::HasValidLicense(appId)) {
+                auto ticketSpan = origResp.pTicket();
+                if (!ticketSpan.empty()) {
+                    const size_t ticketSize = (std::min)(ticketSpan.size(), static_cast<size_t>(origResp.returnValue()));
+                    PipeManager::DenuvoAuth::SyncAppTicketToLua(appId, ticketSpan.data(), ticketSize);
+                }
             }
 
             PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
@@ -156,8 +156,6 @@ namespace {
         // Refresh the Denuvo authorization lease window when an encrypted ticket is requested.
         PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
 
-        if (LuaConfig::IsOwned(appId)) return;
-
         bool haveFresh = false;
         // Strict Denuvo passes a per-launch nonce (pData) here and rejects a
         // stale/cached ticket (88500012). Try an on-demand mint bound to that
@@ -220,14 +218,14 @@ namespace {
         if (existingResp.ok() && existingResp.returnValue()) {
             auto ticketSpan = existingResp.pTicket();
             if (!ticketSpan.empty() || existingResp.pcbTicket() > 0) {
-                LuaConfig::MarkOwned(appId);
+                Hooks_Package::IsAppTrulyOwned(appId);
                 return;
             }
         }
 
         // For owned games, Steam client natively manages genuine tickets.
         // If Steam returned no ticket (e.g. offline/network error), never overwrite pWrite with cached/stale ticket.
-        if (LuaConfig::IsOwned(appId)) {
+        if (Hooks_Package::IsAppTrulyOwned(appId)) {
             return;
         }
 

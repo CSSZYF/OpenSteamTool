@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <shared_mutex>
 #include <unordered_set>
 
 namespace {
@@ -20,6 +21,8 @@ namespace {
     std::atomic<PackageInfo*>  g_pInjectedPackageInfo{nullptr};
     std::atomic<bool>          g_licenseInitialized{false};
     std::atomic<bool>          g_licenseRefreshPending{false};
+    std::shared_mutex          g_sharedLicensesMutex;
+    std::unordered_set<AppId_t> g_sharedLicenses;
 
     constexpr PackageId_t kInjectedPackageId = 0;
     constexpr uint64_t kInjectedPkgAccessToken = 10660652434190618804ull;
@@ -132,24 +135,38 @@ namespace {
                                      (pEffectiveOwn->PackageId != kInjectedPackageId) &&
                                      (pEffectiveOwn->ExistInPackageNums >= 1) &&
                                      !pEffectiveOwn->bLicenseExpired;
+        bool isTrulyOwned = false;
         if (isSharedLicense) {
+            {
+                std::shared_lock rlock(g_sharedLicensesMutex);
+                if (!g_sharedLicenses.contains(appId)) {
+                    rlock.unlock();
+                    std::unique_lock wlock(g_sharedLicensesMutex);
+                    g_sharedLicenses.insert(appId);
+                }
+            }
             if (pEffectiveOwn->bLicenseLocked) {
                 LOG_PACKAGE_DEBUG("CheckAppOwnership: Clearing bLicenseLocked for shared AppId={}", appId);
                 pEffectiveOwn->bLicenseLocked = false;
             }
-            pEffectiveOwn->bBorrowed = false;
             pEffectiveOwn->bOwnsLicense = true;
             result = true;
-        }
-
-        const bool isTrulyOwned = result &&
-                                  (pEffectiveOwn->PackageId != kInjectedPackageId) &&
-                                  (pEffectiveOwn->PackageId != 0) &&
-                                  (pEffectiveOwn->ExistInPackageNums >= 1) &&
-                                  pEffectiveOwn->bOwnsLicense &&
-                                  !pEffectiveOwn->bLicenseExpired;
-        if (isTrulyOwned) {
-            LuaConfig::MarkOwned(appId);
+        } else {
+            isTrulyOwned = result &&
+                           (pEffectiveOwn->PackageId != kInjectedPackageId) &&
+                           (pEffectiveOwn->PackageId != 0) &&
+                           (pEffectiveOwn->ExistInPackageNums >= 1) &&
+                           pEffectiveOwn->bOwnsLicense &&
+                           !pEffectiveOwn->bLicenseExpired &&
+                           !pEffectiveOwn->bFamilyShared &&
+                           !pEffectiveOwn->bBorrowed;
+            if (isTrulyOwned) {
+                LuaConfig::MarkOwned(appId);
+                {
+                    std::unique_lock wlock(g_sharedLicensesMutex);
+                    g_sharedLicenses.erase(appId);
+                }
+            }
         }
 
         if (LuaConfig::HasDepot(appId, false)) {
@@ -298,37 +315,72 @@ namespace Hooks_Package {
                           queuedRemovalCount, removals.size() - queuedRemovalCount);
     }
 
-    bool IsAppTrulyOwned(AppId_t appId) {
-        if (appId == 0 || appId == k_uAppIdInvalid) return false;
-        if (LuaConfig::IsOwned(appId)) return true;
+    struct LicenseClassification {
+        bool isTrulyOwned = false;
+        bool isShared = false;
+    };
+
+    static LicenseClassification ClassifyAppLicense(AppId_t appId) {
+        if (appId == 0 || appId == k_uAppIdInvalid) return {};
+
+        if (LuaConfig::IsOwned(appId)) {
+            return { .isTrulyOwned = true, .isShared = false };
+        }
+
+        {
+            std::shared_lock lock(g_sharedLicensesMutex);
+            if (g_sharedLicenses.contains(appId)) {
+                return { .isTrulyOwned = false, .isShared = true };
+            }
+        }
 
         void* pUser = g_pCUser.load(std::memory_order_acquire);
-        if (!pUser || !oCheckAppOwnership) return false;
+        if (!pUser || !oCheckAppOwnership) return {};
 
         AppOwnership own{};
         bool result = oCheckAppOwnership(pUser, appId, &own);
+
         const bool isSharedLicense = (own.bFamilyShared || own.bBorrowed) &&
                                      (own.PackageId != 0) &&
                                      (own.PackageId != kInjectedPackageId) &&
                                      (own.ExistInPackageNums >= 1) &&
                                      !own.bLicenseExpired;
         if (isSharedLicense) {
-            own.bLicenseLocked = false;
-            own.bBorrowed = false;
-            own.bOwnsLicense = true;
-            result = true;
+            std::unique_lock lock(g_sharedLicensesMutex);
+            g_sharedLicenses.insert(appId);
+            return { .isTrulyOwned = false, .isShared = true };
         }
 
         const bool isTrulyOwned = result &&
-                                  (own.PackageId != kInjectedPackageId) &&
                                   (own.PackageId != 0) &&
+                                  (own.PackageId != kInjectedPackageId) &&
                                   (own.ExistInPackageNums >= 1) &&
                                   own.bOwnsLicense &&
-                                  !own.bLicenseExpired;
+                                  !own.bLicenseExpired &&
+                                  !own.bFamilyShared &&
+                                  !own.bBorrowed;
         if (isTrulyOwned) {
             LuaConfig::MarkOwned(appId);
-            return true;
+            {
+                std::unique_lock lock(g_sharedLicensesMutex);
+                g_sharedLicenses.erase(appId);
+            }
+            return { .isTrulyOwned = true, .isShared = false };
         }
-        return false;
+
+        return {};
+    }
+
+    bool IsAppTrulyOwned(AppId_t appId) {
+        return ClassifyAppLicense(appId).isTrulyOwned;
+    }
+
+    bool IsSharedLicense(AppId_t appId) {
+        return ClassifyAppLicense(appId).isShared;
+    }
+
+    bool HasValidLicense(AppId_t appId) {
+        const auto license = ClassifyAppLicense(appId);
+        return license.isTrulyOwned || license.isShared;
     }
 }

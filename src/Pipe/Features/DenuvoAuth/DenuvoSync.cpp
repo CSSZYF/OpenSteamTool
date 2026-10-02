@@ -583,13 +583,13 @@ void OnSpawnProcess(AppId_t appId, const char* pExePath, const char* cmdLine) {
         return;
     }
 
-    // 🛑 OWNERSHIP RESTRICTION:
-    // -lua can ONLY extract/generate on accounts that genuinely own the game.
-    // If the account does not genuinely own the app, strictly refuse generation or updating.
-    const bool isOwned = Hooks_Package::IsAppTrulyOwned(appId);
-    if (!isOwned) {
+    // 🛑 LICENSE ENTITLEMENT RESTRICTION:
+    // -lua can ONLY extract/generate on accounts that have a valid license (genuinely owned or family shared).
+    // If the account does not have a valid license, strictly refuse generation or updating.
+    const bool hasValidLicense = Hooks_Package::HasValidLicense(appId);
+    if (!hasValidLicense) {
         if (hasLuaArg) {
-            LOG_WARN("DenuvoSync: -lua specified for appId={}, but app is not genuinely owned by current account — skipping generation", appId);
+            LOG_WARN("DenuvoSync: -lua specified for appId={}, but app does not have a valid license on current account — skipping generation", appId);
         }
         ClearDPlusLaunch(appId);
         return;
@@ -603,7 +603,7 @@ void OnSpawnProcess(AppId_t appId, const char* pExePath, const char* cmdLine) {
         ClearDPlusLaunch(appId);
     }
 
-    // Genuine owner launching with existing Lua OR -lua / -forcedenuvo:
+    // Valid license owner (genuine or family shared) launching with existing Lua OR -lua / -forcedenuvo:
     std::string_view exeSv = pExePath ? pExePath : "";
     exeSv = TrimWhitespace(exeSv);
     while (!exeSv.empty() && (exeSv.front() == '"' || exeSv.front() == '\'')) {
@@ -843,16 +843,16 @@ bool SyncAppTicketToLua(AppId_t appId, const uint8_t* pTicketData, size_t ticket
         return false;
     }
 
-    const std::string newHex = ToHex(pTicketData, ticketSize);
-
-    // 🛑 OWNERSHIP RESTRICTION:
-    // Only genuine owners are allowed to persist AppTickets to disk.
-    // If the current account does not own the app, keep in memory only.
-    if (!Hooks_Package::IsAppTrulyOwned(appId)) {
-        LOG_DEBUG("DenuvoSync: appId={} is not genuinely owned by current account — skipping disk ticket sync", appId);
+    // 🛑 LICENSE ENTITLEMENT RESTRICTION:
+    // Only genuine owners or accounts with a valid family sharing license are allowed to persist AppTickets to disk.
+    // If the current account does not hold a valid license, keep in memory only.
+    if (!Hooks_Package::HasValidLicense(appId)) {
+        LOG_DEBUG("DenuvoSync: appId={} does not have a valid license on current account — skipping disk ticket sync", appId);
         AppTicket::WriteAppOwnershipTicket(appId, std::vector<uint8_t>(pTicketData, pTicketData + ticketSize));
         return false;
     }
+
+    const std::string newHex = ToHex(pTicketData, ticketSize);
 
     const auto luaPath = ResolveAppLuaPath(appId);
     if (luaPath.empty()) {
