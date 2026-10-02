@@ -55,6 +55,18 @@ namespace {
         return "???";
     }
 
+    const std::unordered_set<AppId_t>& GetDefaultAntiCheatAppids() {
+        static const std::unordered_set<AppId_t> kDefaults = {
+            // Valve VAC
+            730, 570, 440, 550, 1422450, 240, 300,
+            // EAC
+            1172470, 252490, 381210, 2073850, 230410, 236390, 976730, 1240440,
+            // BattlEye / ACE / Ricochet / nProtect
+            578080, 359550, 1085660, 1938090, 2195250, 2669320, 553850
+        };
+        return kDefaults;
+    }
+
     Snapshot MakeDefaultSnapshot(const std::string& configPath) {
         Snapshot snapshot;
         const char* storageDir = GetStorageDirectory();
@@ -193,6 +205,42 @@ namespace {
                 }
             }
 
+            // Global injection exclusion list: read primarily from [injects], with fallbacks to [exclude_appids], [inject_blacklist], or [inject]
+            bool hasGlobalExclude = false;
+            std::unordered_set<AppId_t> globalExcludeAppids;
+            auto parseExclude = [&](const toml::table* tblNode) {
+                if (!tblNode) return;
+                auto readArr = [&](std::string_view key) {
+                    if (auto ids = (*tblNode)[key].as_array()) {
+                        hasGlobalExclude = true;
+                        for (auto& id : *ids) {
+                            if (auto v = id.value<int64_t>()) {
+                                globalExcludeAppids.insert(static_cast<AppId_t>(*v));
+                            }
+                        }
+                    }
+                };
+                readArr("exclude_appids");
+                readArr("appids");
+            };
+
+            if (auto inj = tbl["injects"].as_table()) {
+                parseExclude(inj);
+            } else if (auto bl = tbl["exclude_appids"].as_table()) {
+                parseExclude(bl);
+            } else if (auto bl2 = tbl["inject_blacklist"].as_table()) {
+                parseExclude(bl2);
+            } else if (auto bl3 = tbl["inject"].as_table()) {
+                parseExclude(bl3);
+            } else if (auto arr = tbl["exclude_appids"].as_array()) {
+                hasGlobalExclude = true;
+                for (auto& id : *arr) {
+                    if (auto v = id.value<int64_t>()) {
+                        globalExcludeAppids.insert(static_cast<AppId_t>(*v));
+                    }
+                }
+            }
+
             // [[inject]]
             if (auto arr = tbl["inject"].as_array()) {
                 std::filesystem::path configDir = OSTPlatform::Encoding::PathFromUtf8(configPath).parent_path();
@@ -227,9 +275,37 @@ namespace {
                     dll.path = OSTPlatform::Encoding::PathToUtf8(full);
                     if (auto val = (*t)["when_cmdline"].value<std::string>()) dll.whenCmdline = *val;
                     if (auto val = (*t)["all_games"].value<bool>())           dll.allGames   = *val;
-                    if (auto ids = (*t)["when_appids"].as_array())
-                        for (auto& id : *ids)
-                            if (auto v = id.value<int64_t>()) dll.whenAppids.insert(static_cast<AppId_t>(*v));
+                    else                                                      dll.allGames   = false;
+                    if (auto ids = (*t)["when_appids"].as_array()) {
+                        for (auto& id : *ids) {
+                            if (auto v = id.value<int64_t>()) {
+                                dll.whenAppids.insert(static_cast<AppId_t>(*v));
+                            }
+                        }
+                    }
+
+                    // Anti-cheat / compatibility exclusion list:
+                    // 1. If individual [[inject]] has explicit exclude_appids, use it strictly.
+                    // 2. Otherwise, if global [injects].exclude_appids was explicitly configured, use it strictly (no merging).
+                    // 3. Otherwise (unconfigured), fall back to built-in default anti-cheat blacklist.
+                    if (auto ruleExclude = (*t)["exclude_appids"].as_array()) {
+                        for (auto& id : *ruleExclude) {
+                            if (auto v = id.value<int64_t>()) {
+                                dll.excludeAppids.insert(static_cast<AppId_t>(*v));
+                            }
+                        }
+                    } else if (hasGlobalExclude) {
+                        dll.excludeAppids = globalExcludeAppids;
+                    } else {
+                        dll.excludeAppids = GetDefaultAntiCheatAppids();
+                    }
+
+                    // Whitelist priority: if an AppID is explicitly specified in when_appids,
+                    // whitelist takes precedence over exclusion list, so it will not be excluded for this rule.
+                    for (AppId_t whitelistedId : dll.whenAppids) {
+                        dll.excludeAppids.erase(whitelistedId);
+                    }
+
                     snapshot.injectDlls.push_back(std::move(dll));
                 }
             }

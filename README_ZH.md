@@ -131,7 +131,7 @@ forcedenuvo(1361510) -- 强制标记为 Denuvo（等价于启动项 -forcedenuvo
 
 ## 配置（可选）
 
-将 `opensteamtool.example.toml` 重命名为 `opensteamtool.toml`，放置于便携目录根目录或 Steam 根目录。修改后自动热重载。
+将 `opensteamtool.example.toml`（或中文注释版 `opensteamtool.example_zh.toml`）重命名为 `opensteamtool.toml`，放置于便携目录根目录或 Steam 根目录。修改后自动热重载。
 
 ```toml
 [log]
@@ -159,25 +159,42 @@ paths = []
 enabled = false
 # library = "cloud_redirect.dll"
 
-# 可选游戏进程第三方 DLL 注入（表数组，可配置多个）
-[[inject]]
-path = "OnlineFix.dll"
-when_cmdline = "-onlinefix"
-when_appids = [1361510]
-all_games = false
+# 全局游戏注入配置（排除名单）
+[injects]
+# 排除注入的 AppID 名单（显式配置严格按实际排除，不再合并默认列表；未配置则默认保护 ~20 款竞技反作弊游戏）
+# 注意：排除仅跳过向游戏进程注入 DLL，绝不影响游戏的正常解锁与 DLC 模拟！
+exclude_appids = [
+    730,      # Counter-Strike 2 (VAC)
+    570,      # Dota 2 (VAC)
+    1172470,  # Apex Legends (EAC)
+    578080,   # PUBG: BATTLEGROUNDS (BattlEye)
+    # 更多预置项参见 opensteamtool.example_zh.toml
+]
+
+# 独立 DLL 注入规则（表数组，可配置多个，默认全部注释）
+# [[inject]]
+# path = "OnlineFix.dll"
+# all_games = false
+# when_cmdline = "-onlinefix"
+# when_appids = [1361510]
 
 [remote]
 # 可选特征码元数据镜像（默认优先 GitHub，自动回退 jsDelivr）
 # url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
 ```
 
-### 第三方 DLL 注入说明
+### 全局注入设置 (`[injects]`)
+| 字段 | 说明 |
+| :--- | :--- |
+| `exclude_appids` | 排除向其注入 DLL 的 AppID 列表。当注入规则开启 `all_games = true` 时生效。<br>- **显式覆盖原则**：若显式配置了本项（即使列表为空 `[]` 或仅配置单款游戏），则严格按用户实际配置排除，**不再包含默认排除名单**；<br>- **默认保底原则**：若完全未配置本项，且开启了 `all_games = true`，自动采用内置的 20 余款竞技/反作弊网游保底名单（涵盖 CS2、Dota 2、Apex、PUBG、R6S 等）；<br>- **白名单优先原则**：若某 AppID 在此被排除，但在具体 `[[inject]]` 规则的 `when_appids` 中被显式指定，则**白名单优先于排除名单**，该 AppID 在该规则下**不被排除**；<br>**注意：此排除严格仅排除向游戏进程注入第三方 DLL，绝不影响任何游戏的正常解锁与 DLC 模拟（`addappid`、清单下载、票据伪造等 100% 正常运行）！** |
+
+### 第三方 DLL 注入规则 (`[[inject]]`)
 | 字段 | 说明 |
 | :--- | :--- |
 | `path` | DLL 路径。裸文件名优先在 toml 目录、DLL 目录及 Steam 根目录解析，支持绝对路径 |
-| `when_cmdline` | 可选。启动命令行中必须包含的子串 |
-| `when_appids` | 可选。限定目标 AppID 列表 |
-| `all_games` | 可选。`false`（默认）仅对 Lua 解锁游戏生效；`true` 对所有游戏生效 |
+| `all_games` | 可选。`false`（默认且强烈推荐）仅对指定游戏/Lua 解锁单机生效；若设为 `true` 则作为全局注入开关，尝试注入游戏并受上方 `[injects].exclude_appids` 排除保护 |
+| `when_cmdline` | 可选。启动命令行中必须包含的子串（例如 `"-onlinefix"`） |
+| `when_appids` | 可选。白名单机制，限定目标 AppID 列表（例如 `[1361510]`）。**优先于排除名单**：即使目标 AppID 存在于全局或默认排除名单中，一旦在此显式指定，该规则仍会对其生效并注入 |
 
 ### 通过 Lua 获取 Manifest
 若在 `config/lua/` 中定义了以下函数，将优先于配置中的远程 API 调用：

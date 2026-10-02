@@ -61,10 +61,6 @@ timeout_recv_ms    = 10000
 # false (default) -> Bypasses manifest locking for owned games/DLCs, allowing Steam to receive official updates normally.
 #                    Unowned DLCs and secondary accounts without licenses remain strictly manifest-locked.
 # true            -> Enforces manifest locking on all depots in Lua, even if the account owns the license.
-#
-# 是否对当前账号真实拥有的游戏/DLC生效清单锁定（setManifestid）。
-# false (默认)  → 拥有的游戏/DLC不受锁清单限制，允许 Steam 正常接收官方更新；未拥有的 DLC 及未拥有该游戏的小号仍严格生效锁清单。
-# true          → 即使账号拥有该游戏，也生效 Lua 中的清单锁定（适合想在授权号上也冻结游戏版本的用户）。
 lock_owned_games = false
 
 # Whether to automatically synchronize .lua and manifest mirrors when an owned game finishes updating in Steam (without having to launch the game).
@@ -72,12 +68,6 @@ lock_owned_games = false
 #               If not logged into an authorized account or no .lua file configuring addappid exists locally, OST will NEVER take over, generate or touch files.
 # true (default)  -> Automatically synchronize in the background as soon as Steam completes the update download.
 # false           -> Synchronize only when the game is launched ("Play" button).
-#
-# 【前提条件：登入拥有授权的账号，且本地已放置该游戏的 .lua 配置文件（配置了 addappid）】
-# 当登入拥有授权的账号且本地已存在对应 .lua 配置文件（配置了 addappid）时，该游戏在 Steam 中完成更新后，无需点击“开始游戏”，自动在后台静默将最新的清单和 Lua 文件同步好。
-# 注意：若未登入拥有授权的账号，或本地尚无配置了 addappid 的 .lua 配置文件，OST 不会接管该游戏，绝不会自动生成或触碰磁盘。
-# true (默认)   -> 游戏下载更新完毕后，立即在后台自动静默同步。
-# false         -> 仅在点击“开始游戏”时同步。
 auto_sync_on_update = true
 
 [stats]
@@ -95,14 +85,53 @@ enable_api = true
 [lua]
 # paths = []
 
-# Optional library injection into game processes. Each [[inject]] entry is loaded
-# when every condition it sets matches the launch.
-# Example:
-#   [[inject]]
-#   path = "OpenSteamToolHook.dll"      # bare name resolves next to steam.exe; absolute path used as-is
-#   when_cmdline = "-my_special_hook"   # optional: require this substring in the launch command (default: any)
-#   when_appids = [1361510]             # optional: restrict to these appids (default: any)
-#   all_games = false                   # optional: true injects into every game, false only into Lua-added games (default: false)
+[injects]
+# Global DLL injection settings.
+# exclude_appids: AppIDs to strictly exclude from library injection when all_games is true.
+# Explicitly specifying appids here overrides the built-in default list without merging.
+# If omitted entirely, OpenSteamTool defaults to protecting ~20 known competitive multiplayer games (VAC/EAC/BattlEye).
+# Whitelist precedence: if an AppID listed in exclude_appids is explicitly specified in an [[inject]]
+# rule's when_appids, the whitelist takes priority and that AppID will NOT be excluded for that rule.
+# Note: This exclusion ONLY applies to DLL injection into game processes; game unlocking and DLC simulation are never affected.
+exclude_appids = [
+    # --- Valve Anti-Cheat (VAC) core competitive series ---
+    730,      # Counter-Strike 2 (CS2 / CS:GO)
+    570,      # Dota 2
+    440,      # Team Fortress 2
+    550,      # Left 4 Dead 2
+    1422450,  # Deadlock
+    240,      # Counter-Strike: Source
+    300,      # Day of Defeat: Source
+
+    # --- Easy Anti-Cheat (EAC) popular multiplayer series ---
+    1172470,  # Apex Legends
+    252490,   # Rust
+    381210,   # Dead by Daylight
+    2073850,  # THE FINALS
+    230410,   # Warframe
+    236390,   # War Thunder
+    976730,   # Halo: The Master Chief Collection
+    1240440,  # Halo Infinite
+
+    # --- BattlEye / Tencent ACE / other kernel-level anti-cheat series ---
+    578080,   # PUBG: BATTLEGROUNDS
+    359550,   # Tom Clancy's Rainbow Six Siege
+    1085660,  # Destiny 2
+    1938090,  # Call of Duty® (Ricochet)
+    2195250,  # EA SPORTS FC™ 24
+    2669320,  # EA SPORTS FC™ 25
+    553850,   # HELLDIVERS™ 2 (nProtect GameGuard)
+]
+
+# Optional library injection into game processes. Each [[inject]] entry is evaluated
+# when launching a game process.
+#
+# Injection rule example (commented out by default; enable as needed):
+# [[inject]]
+# path = "OnlineFix.dll"              # bare name resolves next to steam.exe; absolute path used as-is
+# all_games = false                   # [IMPORTANT] Must default to false. When set to true, injects into all games except those in exclude_appids.
+# when_cmdline = "-onlinefix"         # Optional: require this substring in launch command (default: any)
+# when_appids = [1361510]             # Whitelist: target specific AppIDs (takes priority over exclude_appids)
 
 [cloud]
 # Optional Steam Cloud save redirection for unlocked ("lua") games, powered by

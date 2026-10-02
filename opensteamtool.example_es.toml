@@ -1,0 +1,157 @@
+# opensteamtool.toml — Configuración de OpenSteamTool
+# Ubicación: <Directorio de Steam>/opensteamtool.toml o directorio portátil
+# Este archivo se carga al iniciar y se recarga en caliente tras guardar cambios.
+
+[log]
+# Nivel de detalle de los registros para todos los archivos de log (solo compilación Debug).
+# Valores válidos: trace, debug, info, warn, error
+level = "debug"
+
+[manifest]
+# API ascendente a consultar para los códigos de solicitud de manifiesto de depósito.
+#   "manifestdex"   → https://manifest.manifestdex.com/{gid}     (predeterminado)
+#   "opensteamtool" → https://manifest.opensteamtool.com/{gid}
+#   "wudrm"         → http://gmrc.wudrm.com/manifest/{gid} (recomendado para usuarios en China)
+#   "steamrun"      → https://manifest.steam.run/api/manifest/{gid}
+# Si <Steam>/config/lua/manifest.lua define fetch_manifest_code(gid) o
+# fetch_manifest_code_ex(app_id, depot_id, gid), dichas funciones Lua tendrán
+# prioridad sobre el ajuste url inferior.
+#
+# --- Referencia de manifest.lua ---
+# El entorno C++ proporciona http_get(url [, headers]) y
+# http_post(url, body [, headers]) para scripts Lua. Ambos devuelven
+# (body_string, status_code) en caso de éxito, o (nil, error_msg) en caso de fallo.
+#
+# -- Ejemplo: intentar wudrm (uint64 en texto plano), respaldo en steamrun (JSON).
+# -- Devuelve una cadena de dígitos (*string*) para evitar pérdidas de precisión doble > 2^53.
+# function fetch_manifest_code(gid)
+#     -- wudrm responde p. ej. con "10570517747114638659"
+#     local body, st = http_get("http://gmrc.wudrm.com/manifest/" .. gid)
+#     if st == 200 and body then return body end
+#     -- steamrun responde con {"content":"1666836470726104466"}
+#     body, st = http_get("https://manifest.steam.run/api/manifest/" .. gid)
+#     if st == 200 and body then
+#         local code = body:match('"content":"(%d+)"')
+#         if code then return code end
+#     end
+#     return nil
+# end
+#
+# -- Variante extendida con app_id y depot_id:
+# function fetch_manifest_code_ex(app_id, depot_id, gid)
+#     local body, st = http_get("https://your-api.com/manifest-code/" .. app_id .. "/" .. gid)
+#     if st == 200 and body and body:match("^%d+$") then
+#         return body
+#     end
+#     return nil
+# end
+url = "manifestdex"
+
+# Tiempos de espera HTTP para solicitudes de manifiestos (milisegundos).
+# timeout_resolve_ms  — Resolución DNS            (predeterminado: 5000)
+# timeout_connect_ms  — Apretón de manos TCP      (predeterminado: 5000)
+# timeout_send_ms     — Transmisión de solicitud  (predeterminado: 10000)
+# timeout_recv_ms     — Descarga del cuerpo       (predeterminado: 10000)
+timeout_resolve_ms = 5000
+timeout_connect_ms = 5000
+timeout_send_ms    = 10000
+timeout_recv_ms    = 10000
+
+# Controla si se aplica el bloqueo de manifiesto de depósitos (setManifestid) en juegos/DLCs que la cuenta actual posee legítimamente.
+# false (predeterminado) -> Omite el bloqueo para juegos/DLCs en propiedad, permitiendo actualizaciones oficiales normales de Steam.
+#                           Los DLCs no adquiridos y cuentas secundarias sin licencia permanecen estrictamente bloqueados.
+# true                  -> Fuerza el bloqueo de manifiesto en todos los depósitos en Lua, incluso si la cuenta posee la licencia.
+lock_owned_games = false
+
+# Sincroniza automáticamente los archivos .lua y espejos de manifiesto cuando un juego en propiedad termina de actualizarse en Steam (sin necesidad de iniciarlo).
+# REQUISITO PREVIO: La cuenta actual iniciada debe poseer la licencia legítima Y debe existir previamente un archivo .lua local con addappid para ese juego.
+#                   Si no se ha iniciado sesión con una cuenta autorizada o no existe dicho archivo .lua, OST NUNCA tomará el control ni modificará archivos.
+# true (predeterminado) -> Sincroniza automáticamente en segundo plano en cuanto Steam finaliza la descarga de la actualización.
+# false                 -> Solo sincroniza cuando se inicia el juego (botón "Jugar").
+auto_sync_on_update = true
+
+[stats]
+# Consulta automáticamente https://stats.opensteamtool.com/{appid} para obtener un
+# SteamID recomendado cuando no exista una anulación en Lua con setStat(appid, "steamid").
+# Prioridad: setStat > API de estadísticas activa y válida > SteamID predeterminado integrado.
+enable_api = true
+
+# Directorios adicionales de configuración Lua (opcional).
+# Los archivos se cargan después de la carpeta predeterminada <Steam>/config/lua.
+# La carpeta predeterminada siempre se carga al final para dar máxima prioridad a los archivos locales del usuario.
+# Ejemplo — cargar una carpeta personalizada en otra unidad:
+#   [lua]
+#   paths = ["D:/mi-configuracion-steam/lua"]
+[lua]
+# paths = []
+
+[injects]
+# Configuración global de inyección de DLL.
+# exclude_appids: AppIDs a excluir estrictamente de la inyección de DLL cuando all_games está en true.
+# Principio de anulación explícita: si se especifica una lista aquí, se usará estrictamente dicha lista sin fusionar la predeterminada.
+# Principio de respaldo predeterminado: si se omite, OST protege por defecto ~20 juegos multijugador competitivos (VAC/EAC/BattlEye).
+# Prioridad de lista blanca: si un AppID excluido aquí se incluye explícitamente en when_appids de una regla [[inject]],
+#                            la lista blanca tiene prioridad y el AppID NO será excluido para esa regla específica.
+# Nota: Esta exclusión SOLO impide la inyección de DLL en el proceso del juego; el desbloqueo de juegos y simulación de DLCs NUNCA se ven afectados.
+exclude_appids = [
+    # --- Serie competitiva principal Valve Anti-Cheat (VAC) ---
+    730,      # Counter-Strike 2 (CS2 / CS:GO)
+    570,      # Dota 2
+    440,      # Team Fortress 2
+    550,      # Left 4 Dead 2
+    1422450,  # Deadlock
+    240,      # Counter-Strike: Source
+    300,      # Day of Defeat: Source
+
+    # --- Serie multijugador popular Easy Anti-Cheat (EAC) ---
+    1172470,  # Apex Legends
+    252490,   # Rust
+    381210,   # Dead by Daylight
+    2073850,  # THE FINALS
+    230410,   # Warframe
+    236390,   # War Thunder
+    976730,   # Halo: The Master Chief Collection
+    1240440,  # Halo Infinite
+
+    # --- BattlEye / Tencent ACE / otros sistemas antitrampas a nivel de kernel ---
+    578080,   # PUBG: BATTLEGROUNDS
+    359550,   # Tom Clancy's Rainbow Six Siege
+    1085660,  # Destiny 2
+    1938090,  # Call of Duty® (Ricochet)
+    2195250,  # EA SPORTS FC™ 24
+    2669320,  # EA SPORTS FC™ 25
+    553850,   # HELLDIVERS™ 2 (nProtect GameGuard)
+]
+
+# Inyección opcional de librerías en procesos de juegos. Cada entrada [[inject]] se evalúa
+# al iniciar un proceso de juego.
+#
+# Ejemplo de regla de inyección (comentada por defecto; activar según sea necesario):
+# [[inject]]
+# path = "OnlineFix.dll"              # el nombre simple se busca junto a steam.exe; admite rutas absolutas
+# all_games = false                   # [IMPORTANTE] Debe ser false por defecto. En true, inyecta en todos los juegos excepto los de exclude_appids.
+# when_cmdline = "-onlinefix"         # Opcional: requiere esta subcadena en la línea de comandos de inicio (por defecto: cualquiera)
+# when_appids = [1361510]             # Lista blanca: restringe a AppIDs específicos (tiene prioridad sobre exclude_appids)
+
+[cloud]
+# Redirección opcional de guardado en la nube de Steam para juegos desbloqueados ("lua"), impulsada por
+# CloudRedirect (https://github.com/Selectively11/CloudRedirect).
+# Al activarse, OpenSteamTool carga cloud_redirect.dll dentro de Steam, registra cada juego con
+# addappid() como aplicación redirigida y enruta sus llamadas RPC de guardado en la nube
+# a través del motor de CloudRedirect (totalmente compatible con el aislamiento de memoria de Diversion).
+#
+# El inicio de sesión en los proveedores (Google Drive / OneDrive / carpeta local) se realiza a través de la
+# aplicación complementaria de CloudRedirect; OpenSteamTool solo aloja la DLL.
+enabled = false
+# Ruta a cloud_redirect.dll. Absoluta o relativa a opensteamtool.toml, al directorio de la DLL o a la raíz de Steam.
+# Por defecto busca junto a opensteamtool.toml, OpenSteamTool.dll y luego en la raíz de Steam.
+# library = "cloud_redirect.dll"
+
+
+[remote]
+# Espejo opcional de metadatos. Dejar sin configurar para usar GitHub con respaldo en jsDelivr.
+# Un espejo personalizado reemplaza las fuentes remotas integradas y debe incluir los
+# tres marcadores de posición: {channel}, {component} y {sha256}.
+#
+# url_template = "https://tu.servidor/{channel}/{component}/{sha256}.toml"
+# url_template = "https://fast.jsdelivr.net/gh/mmxlyo/steam-monitor@{channel}/{component}/{sha256}.toml"

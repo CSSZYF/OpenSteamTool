@@ -51,8 +51,18 @@ namespace {
 
     bool Matches(const Config::InjectDll& dll, const PipeContext& ctx,
                  const std::optional<std::string>& cmdLine) {
-        if (!dll.allGames && !ctx.trackedApp) return false;
-        if (!dll.whenAppids.empty() && !dll.whenAppids.count(ctx.appId)) return false;
+        const bool whitelisted = dll.whenAppids.count(ctx.appId) > 0;
+        if (!dll.allGames && !ctx.trackedApp && !whitelisted) return false;
+
+        // Blacklist strictly applies only to game DLL injection when all_games is true;
+        // game unlocking and DLC simulation (addappid, manifest, etc.) remain 100% active.
+        // Whitelist priority: if explicitly specified in when_appids, the game is never excluded.
+        if (ctx.gameProcess && dll.allGames && !whitelisted && dll.excludeAppids.count(ctx.appId)) {
+            LOG_INJECT_WARN("inject skipped: game appid={} is in exclude_appids (all_games is true)", ctx.appId);
+            return false;
+        }
+
+        if (!dll.whenAppids.empty() && !whitelisted) return false;
         if (!dll.whenCmdline.empty() &&
             (!cmdLine || cmdLine->find(dll.whenCmdline) == std::string::npos)) {
             return false;

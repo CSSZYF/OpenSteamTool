@@ -159,25 +159,42 @@ paths = []
 enabled = false
 # library = "cloud_redirect.dll"
 
-# Optional game DLL injection (array of tables, multiple allowed)
-[[inject]]
-path = "OnlineFix.dll"
-when_cmdline = "-onlinefix"
-when_appids = [1361510]
-all_games = false
+# Global DLL injection configuration (exclusion list)
+[injects]
+# AppIDs to strictly exclude from DLL injection (explicit config overrides built-in defaults; defaults protect ~20 competitive anti-cheat games)
+# Note: Exclusion ONLY skips third-party DLL injection into game processes; game unlocking and DLC simulation are never affected!
+exclude_appids = [
+    730,      # Counter-Strike 2 (VAC)
+    570,      # Dota 2 (VAC)
+    1172470,  # Apex Legends (EAC)
+    578080,   # PUBG: BATTLEGROUNDS (BattlEye)
+    # See opensteamtool.example.toml for the full default list
+]
+
+# Individual library injection rules (array of tables, multiple allowed, commented out by default)
+# [[inject]]
+# path = "OnlineFix.dll"
+# all_games = false
+# when_cmdline = "-onlinefix"
+# when_appids = [1361510]
 
 [remote]
 # Optional pattern metadata mirror (default GitHub with jsDelivr fallback)
 # url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
 ```
 
-### Third-party DLL injection
+### Global Injection Settings (`[injects]`)
 | Key | Explanation |
 | :--- | :--- |
-| `path` | DLL to load. Bare file names resolve next to toml, DLL, or steam.exe; absolute paths used as-is |
-| `when_cmdline` | Optional. Substring required in launch command line |
-| `when_appids` | Optional. Restrict to specific AppIDs |
-| `all_games` | Optional. `false` (default) only injects Lua games; `true` injects all games |
+| `exclude_appids` | List of AppIDs to strictly exclude from DLL injection when `all_games = true`.<br>- **Explicit Override Principle**: If explicitly configured (even with an empty list `[]` or a single game), strictly only these AppIDs are excluded (**default list is not merged**);<br>- **Default Fallback Principle**: If omitted entirely and `all_games = true`, automatically uses the built-in protection list (~20 competitive/anti-cheat titles including CS2, Dota 2, Apex, PUBG, etc.);<br>- **Whitelist Priority**: If an AppID is excluded here but explicitly specified in an `[[inject]]` rule's `when_appids`, the **whitelist takes priority** and the AppID will **not be excluded** for that rule.<br>**Note: This exclusion strictly prevents DLL injection into game processes; game and DLC unlocking (`addappid`, manifests, tickets, etc.) are 100% active and unaffected!** |
+
+### Third-party DLL injection rules (`[[inject]]`)
+| Key | Explanation |
+| :--- | :--- |
+| `path` | DLL to load. Bare file names resolve next to toml, DLL directory, or Steam root; absolute paths used as-is |
+| `all_games` | Optional. `false` (default and strongly recommended) only targets specified games; `true` activates global injection protected by `[injects].exclude_appids` |
+| `when_cmdline` | Optional. Substring required in launch command line (e.g. `"-onlinefix"`) |
+| `when_appids` | Optional. Whitelist mechanism targeting specific AppIDs (e.g. `[1361510]`). **Takes priority over exclusion list**: even if the target AppID is in the exclusion list, explicitly specifying it here ensures this rule injects into it |
 
 ### Manifest via Lua
 If defined in `config/lua/`, these functions take priority over configured remote HTTP APIs:

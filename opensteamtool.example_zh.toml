@@ -1,0 +1,154 @@
+# opensteamtool.toml — OpenSteamTool 配置文件
+# 存放位置：<Steam根目录>/opensteamtool.toml 或便携目录
+# 本文件在启动时加载，保存修改后自动热重载。
+
+[log]
+# 所有日志文件的输出级别（仅 Debug 调试构建生效）。
+# 可选值：trace, debug, info, warn, error
+level = "debug"
+
+[manifest]
+# 查询 Depot 清单请求代码（manifest request code）的上游接口。
+#   "manifestdex"   → https://manifest.manifestdex.com/{gid}     (默认)
+#   "opensteamtool" → https://manifest.opensteamtool.com/{gid}
+#   "wudrm"         → http://gmrc.wudrm.com/manifest/{gid} (国内网络推荐)
+#   "steamrun"      → https://manifest.steam.run/api/manifest/{gid}
+# 若 <Steam>/config/lua/manifest.lua 中定义了 fetch_manifest_code(gid) 或
+# fetch_manifest_code_ex(app_id, depot_id, gid)，这些 Lua 函数优先级高于下方 url 设置。
+#
+# --- manifest.lua 参考 ---
+# C++ 运行时为 Lua 脚本提供了 http_get(url [, headers]) 和
+# http_post(url, body [, headers])。二者在成功时均返回
+# (body_string, status_code)，失败时返回 (nil, error_msg)。
+#
+# -- 示例：优先尝试 wudrm (纯文本 uint64)，失败回退到 steamrun (JSON)。
+# -- 请返回数字字符串（string）以避免超过 2^53 丢失双精度浮点精度。
+# function fetch_manifest_code(gid)
+#     -- wudrm 响应形如 "10570517747114638659"
+#     local body, st = http_get("http://gmrc.wudrm.com/manifest/" .. gid)
+#     if st == 200 and body then return body end
+#     -- steamrun 响应形如 {"content":"1666836470726104466"}
+#     body, st = http_get("https://manifest.steam.run/api/manifest/" .. gid)
+#     if st == 200 and body then
+#         local code = body:match('"content":"(%d+)"')
+#         if code then return code end
+#     end
+#     return nil
+# end
+#
+# -- 包含 app_id 与 depot_id 的扩展函数变体：
+# function fetch_manifest_code_ex(app_id, depot_id, gid)
+#     local body, st = http_get("https://your-api.com/manifest-code/" .. app_id .. "/" .. gid)
+#     if st == 200 and body and body:match("^%d+$") then
+#         return body
+#     end
+#     return nil
+# end
+url = "manifestdex"
+
+# 清单网络请求超时设置（毫秒）。
+# timeout_resolve_ms  — DNS 解析超时        (默认: 5000)
+# timeout_connect_ms  — TCP 握手超时        (默认: 5000)
+# timeout_send_ms     — 请求发送超时        (默认: 10000)
+# timeout_recv_ms     — 响应正文接收超时    (默认: 10000)
+timeout_resolve_ms = 5000
+timeout_connect_ms = 5000
+timeout_send_ms    = 10000
+timeout_recv_ms    = 10000
+
+# 是否对当前登录账户真正拥有正版所有权的游戏/DLC 强制锁定清单 (setManifestid)。
+# false (默认) -> 拥有正版所有权的游戏/DLC 放行清单锁定，Steam 可正常接收官方更新推送；
+#                 未拥有所有权的 DLC 以及副号/无授权账户仍严格执行清单锁定。
+# true         -> 对 Lua 中配置的所有 Depot 强制执行清单锁定，即便拥有正版授权也不例外。
+lock_owned_games = false
+
+# 正版拥有游戏在 Steam 内更新完成时，是否自动同步 .lua 和清单镜像（无需启动游戏）。
+# 前置条件：当前登录账户必须真正持有官方授权，且本地已存在为该游戏配置 addappid 的 .lua 文件。
+#           未登录正版账户或本地无对应 addappid .lua 文件时，OST 绝不接管、生成或修改任何文件。
+# true (默认)  -> Steam 完成更新下载后，立即在后台自动同步更新。
+# false        -> 仅在点击“开始游戏”启动时触发同步。
+auto_sync_on_update = true
+
+[stats]
+# 当本地 Lua 未定义 setStat(appid, "steamid") 覆盖时，
+# 自动向 https://stats.opensteamtool.com/{appid} 查询推荐的预设 SteamID。
+# 优先级：setStat > API 查询有效结果 > 内置硬编码预设 SteamID。
+enable_api = true
+
+# 额外加载的 Lua 配置文件目录（可选）。
+# 在默认的 <Steam>/config/lua 目录之后加载。
+# 默认目录始终最后加载，因此用户的本地个人文件优先级最高。
+# 示例 — 加载其他盘符上的自定义目录：
+#   [lua]
+#   paths = ["D:/my-steam-config/lua"]
+[lua]
+# paths = []
+
+[injects]
+# 全局 DLL 注入设置。
+# exclude_appids: 当 all_games 为 true 时，严格排除注入的目标 AppID 列表。
+# 显式覆盖原则：一旦在此显式指定列表，将严格按此列表排除，不再合并任何内置默认名单。
+# 默认保底原则：若完全不配置本项，OST 默认保护 ~20 款主流多人竞技/反作弊网游（VAC/EAC/BattlEye）。
+# 白名单优先原则：若某 AppID 在此被排除，但在具体 [[inject]] 规则的 when_appids 中显式指定，
+#                则白名单优先，该 AppID 在该条规则下不会被排除。
+# 注意：此排除严格仅跳过向游戏进程注入第三方 DLL，游戏的正常解锁、DLC 模拟与清单加载永远不受任何影响。
+exclude_appids = [
+    # --- Valve Anti-Cheat (VAC) 核心竞技系列 ---
+    730,      # Counter-Strike 2 (CS2 / CS:GO)
+    570,      # Dota 2
+    440,      # Team Fortress 2
+    550,      # Left 4 Dead 2
+    1422450,  # Deadlock
+    240,      # Counter-Strike: Source
+    300,      # Day of Defeat: Source
+
+    # --- Easy Anti-Cheat (EAC) 热门联机系列 ---
+    1172470,  # Apex Legends
+    252490,   # Rust
+    381210,   # Dead by Daylight
+    2073850,  # THE FINALS
+    230410,   # Warframe
+    236390,   # War Thunder
+    976730,   # Halo: The Master Chief Collection
+    1240440,  # Halo Infinite
+
+    # --- BattlEye / 腾讯 ACE / 其他内核级反作弊系列 ---
+    578080,   # PUBG: BATTLEGROUNDS
+    359550,   # Tom Clancy's Rainbow Six Siege
+    1085660,  # Destiny 2
+    1938090,  # Call of Duty® (Ricochet)
+    2195250,  # EA SPORTS FC™ 24
+    2669320,  # EA SPORTS FC™ 25
+    553850,   # HELLDIVERS™ 2 (nProtect GameGuard)
+]
+
+# 可选向游戏进程注入的第三方 DLL（表数组，支持配置多条 [[inject]] 规则）。
+# 启动游戏进程时评估各规则条件。
+#
+# 注入规则示例（默认全部注释；按需取消注释并配置）：
+# [[inject]]
+# path = "OnlineFix.dll"              # 裸文件名在 toml 目录、DLL 目录或 steam.exe 旁解析；支持绝对路径
+# all_games = false                   # [重要] 必须默认为 false。设为 true 时注入全部游戏（但受 exclude_appids 排除保护）
+# when_cmdline = "-onlinefix"         # 可选：游戏启动命令行中必须包含此子串（默认：无限制）
+# when_appids = [1361510]             # 白名单：仅向指定 AppID 注入（优先级高于 exclude_appids 排除名单）
+
+[cloud]
+# 基于 CloudRedirect (https://github.com/Selectively11/CloudRedirect) 的可选 Steam 云存档重定向引擎。
+# 启用后，OpenSteamTool 将在 Steam 进程内加载 cloud_redirect.dll，
+# 将每个由 addappid() 解锁的游戏注册为重定向应用，并将云存档 RPC 调用
+# 路由至 CloudRedirect 的云存档引擎（与 Diversion 内存隔离完全兼容）。
+#
+# 网盘账户登录（Google Drive / OneDrive / 本地同步目录）仍在 CloudRedirect 的独立伴侣客户端中完成，
+# OpenSteamTool 仅负责在 Steam 内托管该 DLL。
+enabled = false
+# cloud_redirect.dll 路径。支持绝对路径，或相对于 opensteamtool.toml、DLL 目录及 Steam 根目录。
+# 默认依次在 opensteamtool.toml 旁、OpenSteamTool.dll 旁及 Steam 根目录搜索。
+# library = "cloud_redirect.dll"
+
+
+[remote]
+# 可选特征码元数据镜像。留空则默认使用 GitHub 并自动回退至 jsDelivr。
+# 自定义镜像将替换内置远程源，且必须包含以下全部三个占位符：{channel}、{component} 与 {sha256}。
+#
+# url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
+# url_template = "https://fast.jsdelivr.net/gh/mmxlyo/steam-monitor@{channel}/{component}/{sha256}.toml"

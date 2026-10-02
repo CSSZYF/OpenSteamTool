@@ -22,7 +22,8 @@ namespace Injector {
         RemoteAllocFailed,
         RemoteThreadFailed,
         LoadLibraryFailed,
-        PayloadNotFound
+        PayloadNotFound,
+        IncompatibleArchitecture
     };
 
     struct ExecutionResult {
@@ -47,6 +48,7 @@ namespace Injector {
     // Process & Module Inspection
     bool IsModulePresent(DWORD pid, std::wstring_view moduleName);
     std::vector<DWORD> SnapshotProcessIds(std::wstring_view processName);
+    void PrioritizeCandidatePids(std::vector<DWORD>& pids);
 
     // Core Injection & Lifecycle Orchestration
     ExecutionResult InjectPayload(DWORD pid, const std::filesystem::path& dllPath, bool isSilent = false);

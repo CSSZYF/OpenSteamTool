@@ -131,7 +131,7 @@ Los nombres de todas las funciones **no distinguen entre mayúsculas y minúscul
 
 ## Configuración (opcional)
 
-Renombra `opensteamtool.example.toml` a `opensteamtool.toml` y colócalo en el directorio portátil o en la raíz de Steam. Se recarga en caliente tras guardar.
+Renombra `opensteamtool.example.toml` (o la versión comentada en español `opensteamtool.example_es.toml`) a `opensteamtool.toml` y colócalo en el directorio portátil o en la raíz de Steam. Se recarga en caliente tras guardar.
 
 ```toml
 [log]
@@ -159,25 +159,42 @@ paths = []
 enabled = false
 # library = "cloud_redirect.dll"
 
-# Inyección opcional de DLL en juegos (tabla de matrices, admite múltiples reglas)
-[[inject]]
-path = "OnlineFix.dll"
-when_cmdline = "-onlinefix"
-when_appids = [1361510]
-all_games = false
+# Configuración global de inyección de DLL (lista de exclusión)
+[injects]
+# AppIDs a excluir estrictamente de la inyección de DLL (la configuración explícita anula la lista predeterminada; el valor por defecto protege ~20 juegos competitivos)
+# Nota: La exclusión SOLO impide la inyección de DLL en el proceso del juego; ¡el desbloqueo de juegos y simulación de DLCs NUNCA se ven afectados!
+exclude_appids = [
+    730,      # Counter-Strike 2 (VAC)
+    570,      # Dota 2 (VAC)
+    1172470,  # Apex Legends (EAC)
+    578080,   # PUBG: BATTLEGROUNDS (BattlEye)
+    # Consulta opensteamtool.example_es.toml para ver la lista completa
+]
+
+# Reglas individuales de inyección de DLL (tabla de matrices, admite múltiples reglas, comentadas por defecto)
+# [[inject]]
+# path = "OnlineFix.dll"
+# all_games = false
+# when_cmdline = "-onlinefix"
+# when_appids = [1361510]
 
 [remote]
 # Espejo opcional de patrones (por defecto GitHub con respaldo en jsDelivr)
 # url_template = "https://tu.servidor/{channel}/{component}/{sha256}.toml"
 ```
 
-### Inyección de DLL de terceros
+### Configuración global de inyección (`[injects]`)
 | Clave | Descripción |
 | :--- | :--- |
-| `path` | DLL a cargar. Los nombres simples se resuelven junto a toml, DLL o steam.exe; admite rutas absolutas |
-| `when_cmdline` | Opcional. Subcadena requerida en la línea de comandos de inicio |
-| `when_appids` | Opcional. Lista de AppIDs a los que restringir la inyección |
-| `all_games` | Opcional. `false` (predeterminado) solo inyecta en juegos Lua; `true` inyecta en todos los juegos |
+| `exclude_appids` | Lista de AppIDs a excluir de la inyección de DLL cuando `all_games = true`.<br>- **Principio de anulación explícita**: si se configura explícitamente (incluso una lista vacía `[]` o un único juego), solo se excluirán dichos AppIDs (**no se fusiona con la lista predeterminada**);<br>- **Principio de respaldo predeterminado**: si se omite y `all_games = true`, protege automáticamente ~20 títulos multijugador competitivos (CS2, Dota 2, Apex, PUBG, etc.);<br>- **Prioridad de lista blanca**: si un AppID está excluido aquí pero se especifica en `when_appids` de una regla `[[inject]]`, la **lista blanca tiene prioridad** y dicho juego **no será excluido** para esa regla.<br>**Nota: Esta exclusión SOLO impide la inyección de DLL en el proceso; el desbloqueo de juegos y DLCs (`addappid`, manifiestos, etc.) funciona al 100% sin afectarse.** |
+
+### Reglas de inyección de DLL de terceros (`[[inject]]`)
+| Clave | Descripción |
+| :--- | :--- |
+| `path` | DLL a cargar. Los nombres simples se resuelven junto a toml, directorio de DLL o Steam; admite rutas absolutas |
+| `all_games` | Opcional. `false` (predeterminado y recomendado) solo inyecta en juegos específicos; `true` activa la inyección global protegida por `[injects].exclude_appids` |
+| `when_cmdline` | Opcional. Subcadena requerida en la línea de comandos de inicio (p. ej. `"-onlinefix"`) |
+| `when_appids` | Opcional. Mecanismo de lista blanca que restringe la inyección a AppIDs específicos (p. ej. `[1361510]`). **Tiene prioridad sobre la lista de exclusión**: incluso si el AppID está excluido, especificarlo aquí asegura que esta regla lo inyecte |
 
 ### Manifest mediante Lua
 Si se definen en `config/lua/`, estas funciones tienen prioridad sobre las API HTTP remotas configuradas:

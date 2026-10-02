@@ -20,10 +20,11 @@ namespace Config {
 
     // [[inject]] entry: a DLL loaded into a matching game process at the IPC handshake.
     struct InjectDll {
-        std::string                 path;        // resolved absolute path
-        std::string                 whenCmdline; // substring required in the game command line
-        std::unordered_set<AppId_t> whenAppids;  // appids this entry applies to
-        bool                        allGames = false;  // false: only Lua-unlocked games
+        std::string                 path;          // resolved absolute path
+        std::string                 whenCmdline;   // substring required in the game command line
+        std::unordered_set<AppId_t> whenAppids;    // appids this entry applies to
+        std::unordered_set<AppId_t> excludeAppids; // appids to exclude when allGames is true
+        bool                        allGames = false; // false: only Lua-unlocked games
     };
 
     struct CloudSettings {
