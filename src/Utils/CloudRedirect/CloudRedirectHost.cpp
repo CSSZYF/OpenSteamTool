@@ -54,6 +54,14 @@ namespace {
     CR_InstallVtableHooks_t g_installVtableHooks = nullptr;
 
     std::atomic<OnlineFixAppResolver> g_onlineFixResolver{nullptr};
+    std::atomic<LicenseChecker> g_licenseChecker{nullptr};
+
+    bool IsAppLicensed(uint32_t appId) {
+        if (const auto checker = g_licenseChecker.load(std::memory_order_relaxed)) {
+            return checker(appId);
+        }
+        return LuaConfig::IsOwned(appId);
+    }
 
     // Routes CloudRedirect's notifications into OpenSteamTool's log instead of
     // popping a MessageBox from inside Steam.
@@ -105,11 +113,11 @@ namespace {
     std::vector<AppId_t> CollectRedirectedAppIds() {
         std::vector<AppId_t> depots = LuaConfig::GetAllDepotIds();
         std::erase_if(depots, [](AppId_t id) {
-            return LuaConfig::IsOwned(id);
+            return IsAppLicensed(id);
         });
         const auto resolver = g_onlineFixResolver.load(std::memory_order_relaxed);
         const AppId_t fixAppId = resolver ? resolver() : 0;
-        if (fixAppId != 0 && !LuaConfig::IsOwned(fixAppId) && std::find(depots.begin(), depots.end(), fixAppId) == depots.end()) {
+        if (fixAppId != 0 && !IsAppLicensed(fixAppId) && std::find(depots.begin(), depots.end(), fixAppId) == depots.end()) {
             depots.push_back(fixAppId);
         }
         return depots;
@@ -262,12 +270,16 @@ void SetOnlineFixAppResolver(OnlineFixAppResolver resolver) {
     g_onlineFixResolver.store(resolver, std::memory_order_release);
 }
 
+void SetLicenseChecker(LicenseChecker checker) {
+    g_licenseChecker.store(checker, std::memory_order_release);
+}
+
 bool IsActive() {
     return g_active.load(std::memory_order_acquire);
 }
 
 bool IsApp(uint32_t appId) {
-    if (LuaConfig::IsOwned(appId)) return false;
+    if (IsAppLicensed(appId)) return false;
     if (!g_active.load(std::memory_order_acquire)) return false;
     try {
         if (g_isApp && g_isApp(appId)) return true;
@@ -285,7 +297,7 @@ bool IsApp(uint32_t appId) {
 }
 
 void AddApp(uint32_t appId) {
-    if (LuaConfig::IsOwned(appId)) return;
+    if (IsAppLicensed(appId)) return;
     if (!g_active.load(std::memory_order_acquire) || !g_addApp) return;
     try {
         g_addApp(appId);
@@ -342,7 +354,7 @@ void NotifyAppRunning(uint32_t appId, bool running) {
 }
 
 void NotifyStatsStored(uint32_t appId) {
-    if (LuaConfig::IsOwned(appId)) return;
+    if (IsAppLicensed(appId)) return;
     if (!g_active.load(std::memory_order_acquire) || !g_notifyStatsStored) return;
     try {
         g_notifyStatsStored(appId);
@@ -354,7 +366,7 @@ void NotifyStatsStored(uint32_t appId) {
 }
 
 uint32_t GetAchievements(uint32_t appId, AchievementBlock* out, uint32_t maxBlocks) {
-    if (LuaConfig::IsOwned(appId)) return 0;
+    if (IsAppLicensed(appId)) return 0;
     if (!g_active.load(std::memory_order_acquire) || !g_getAchievements) return 0;
     try {
         return g_getAchievements(appId, out, maxBlocks);
@@ -372,6 +384,7 @@ void Shutdown() {
     if (!g_active.exchange(false)) return;
     g_cachedAccountId.store(0, std::memory_order_release);
     g_onlineFixResolver.store(nullptr, std::memory_order_release);
+    g_licenseChecker.store(nullptr, std::memory_order_release);
     if (g_shutdownFn) {
         try {
             g_shutdownFn();

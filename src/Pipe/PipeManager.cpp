@@ -168,7 +168,6 @@ void OnHandshake(CPipeClient* pipe) {
     ctx.appId = appId;
     ctx.gameProcess = gameProcess;
     ctx.trackedApp = trackedApp;
-    ctx.owned = trackedApp && LuaConfig::IsOwned(appId);
 
     LOG_PIPE_INFO("PipeManager: handshake {} process={} appid={} appIdFromPipe={} gameProcess={} trackedApp={} snapshot={}",
                   pipeKey.DebugString(), processKey.DebugString(), appId,

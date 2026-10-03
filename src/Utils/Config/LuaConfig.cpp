@@ -790,6 +790,13 @@ namespace LuaConfig{
         }
     }
 
+    void UnmarkOwned(AppId_t AppId) {
+        std::unique_lock lock(g_configSharedMutex);
+        if (OwnedAppIdSet.erase(AppId) > 0) {
+            LOG_PACKAGE_INFO("Unmarking app {} as owned", AppId);
+        }
+    }
+
     void ClearOwned() {
         std::unique_lock lock(g_configSharedMutex);
         OwnedAppIdSet.clear();

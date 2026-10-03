@@ -159,6 +159,9 @@ namespace {
                     return;
                 }
             }
+            if (LuaConfig::IsOwned(appId)) {
+                LuaConfig::UnmarkOwned(appId);
+            }
             std::unique_lock wlock(g_sharedLicensesMutex);
             if (g_sharedLicenses.insert(appId).second) {
                 g_hasSharedLicenses.store(true, std::memory_order_release);
@@ -169,9 +172,10 @@ namespace {
                 }
             }
         } else if (lc.isTrulyOwned) {
-            if (!LuaConfig::IsOwned(appId)) {
-                LuaConfig::MarkOwned(appId);
+            if (LuaConfig::IsOwned(appId)) {
+                return;
             }
+            LuaConfig::MarkOwned(appId);
             if (g_hasSharedLicenses.load(std::memory_order_acquire) ||
                 g_hasUnlicensedApps.load(std::memory_order_acquire)) {
                 std::unique_lock wlock(g_sharedLicensesMutex);
@@ -189,6 +193,9 @@ namespace {
                 if (g_unlicensedApps.contains(appId)) {
                     return;
                 }
+            }
+            if (LuaConfig::IsOwned(appId)) {
+                LuaConfig::UnmarkOwned(appId);
             }
             std::unique_lock wlock(g_sharedLicensesMutex);
             if (g_sharedLicenses.erase(appId) > 0) {

@@ -216,6 +216,7 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
     ConfigFileWatcher::SetLicenseChangedCallback(&Hooks_Package::NotifyLicenseChanged);
     LuaFileWatcher::SetLicenseChangedCallback(&Hooks_Package::NotifyLicenseChanged);
     AppTicket::SetSourceTicketProvider(&Hooks_Decryption::GetCacheAppOwnershipTicket);
+    CloudRedirectHost::SetLicenseChecker(&Hooks_Package::HasValidLicense);
     CloudRedirectHost::SetOnlineFixAppResolver([]() -> uint32_t {
         return Hooks_Misc::IsOnlineFixActive() ? Hooks_Misc::ResolveAppId() : 0;
     });

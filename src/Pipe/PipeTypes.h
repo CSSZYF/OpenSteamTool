@@ -73,7 +73,6 @@ namespace PipeManager {
         // These flags are resolved once in PipeManager and consumed by features.
         bool gameProcess = false;
         bool trackedApp = false;
-        bool owned = false;
     };
 
 } // namespace PipeManager

@@ -21,6 +21,10 @@ namespace CloudRedirectHost {
     using OnlineFixAppResolver = uint32_t (*)();
     void SetOnlineFixAppResolver(OnlineFixAppResolver resolver);
 
+    // External license checker (IoC decoupling: checks owned or family-shared licenses)
+    using LicenseChecker = bool (*)(uint32_t appId);
+    void SetLicenseChecker(LicenseChecker checker);
+
     // Re-push the current unlocked-app set to CloudRedirect. Called after a Lua
     // hot-reload so the redirected set tracks addappid() changes.
     void SyncAppSet();

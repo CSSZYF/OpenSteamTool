@@ -196,13 +196,14 @@ namespace {
                     std::lock_guard<std::mutex> lock(g_freshEticketMutex);
                     g_freshEticket[appId] = std::move(*fresh);
                     haveFresh = true;
+                } else {
+                    std::lock_guard<std::mutex> lock(g_freshEticketMutex);
+                    g_freshEticket.erase(appId);
                 }
+            } else {
+                std::lock_guard<std::mutex> lock(g_freshEticketMutex);
+                g_freshEticket.erase(appId);
             }
-        }
-
-        if (!haveFresh) {
-            std::lock_guard<std::mutex> lock(g_freshEticketMutex);
-            haveFresh = g_freshEticket.find(appId) != g_freshEticket.end();
         }
 
         if (!haveFresh && !AppTicket::HasCachedEncryptedTicket(appId)) {
