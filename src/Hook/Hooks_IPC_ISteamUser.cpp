@@ -191,7 +191,7 @@ namespace {
             // spoof (also sourced from the cache via MemoryThenForge)
             // — no error-54 risk. This fixes error 05 for games launched more than
             // 30 min after activation (stored ticket expired, fresh mint is current).
-            if (!LuaConfig::IsOwned(appId) && existingSteamId != 0) {
+            if (existingSteamId != 0) {
                 if (auto fresh = EticketClient::FetchFreshEticket(appId, nonce, existingSteamId)) {
                     std::lock_guard<std::mutex> lock(g_freshEticketMutex);
                     g_freshEticket[appId] = std::move(*fresh);
