@@ -163,7 +163,7 @@ namespace {
             if (g_sharedLicenses.insert(appId).second) {
                 g_hasSharedLicenses.store(true, std::memory_order_release);
             }
-            if (g_hasUnlicensedApps.load(std::memory_order_relaxed)) {
+            if (g_hasUnlicensedApps.load(std::memory_order_acquire)) {
                 if (g_unlicensedApps.erase(appId) > 0) {
                     g_hasUnlicensedApps.store(!g_unlicensedApps.empty(), std::memory_order_release);
                 }
@@ -172,8 +172,8 @@ namespace {
             if (!LuaConfig::IsOwned(appId)) {
                 LuaConfig::MarkOwned(appId);
             }
-            if (g_hasSharedLicenses.load(std::memory_order_relaxed) ||
-                g_hasUnlicensedApps.load(std::memory_order_relaxed)) {
+            if (g_hasSharedLicenses.load(std::memory_order_acquire) ||
+                g_hasUnlicensedApps.load(std::memory_order_acquire)) {
                 std::unique_lock wlock(g_sharedLicensesMutex);
                 if (g_sharedLicenses.erase(appId) > 0) {
                     g_hasSharedLicenses.store(!g_sharedLicenses.empty(), std::memory_order_release);
@@ -183,13 +183,7 @@ namespace {
                 }
             }
         } else {
-            // Neither shared nor owned: evict from shared and cache in unlicensed
-            if (g_hasSharedLicenses.load(std::memory_order_acquire)) {
-                std::unique_lock wlock(g_sharedLicensesMutex);
-                if (g_sharedLicenses.erase(appId) > 0) {
-                    g_hasSharedLicenses.store(!g_sharedLicenses.empty(), std::memory_order_release);
-                }
-            }
+            // Neither shared nor owned: check negative cache fast path
             if (g_hasUnlicensedApps.load(std::memory_order_acquire)) {
                 std::shared_lock rlock(g_sharedLicensesMutex);
                 if (g_unlicensedApps.contains(appId)) {
@@ -197,6 +191,9 @@ namespace {
                 }
             }
             std::unique_lock wlock(g_sharedLicensesMutex);
+            if (g_sharedLicenses.erase(appId) > 0) {
+                g_hasSharedLicenses.store(!g_sharedLicenses.empty(), std::memory_order_release);
+            }
             if (g_unlicensedApps.insert(appId).second) {
                 g_hasUnlicensedApps.store(true, std::memory_order_release);
             }
@@ -209,6 +206,7 @@ namespace {
             g_pCUser.store(pObj, std::memory_order_release);
             LOG_PACKAGE_DEBUG("CheckAppOwnership: captured CUser {}", pObj);
             if (currentCUser != nullptr) {
+                LuaConfig::ClearOwned();
                 std::unique_lock wlock(g_sharedLicensesMutex);
                 g_sharedLicenses.clear();
                 g_unlicensedApps.clear();

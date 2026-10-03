@@ -790,6 +790,11 @@ namespace LuaConfig{
         }
     }
 
+    void ClearOwned() {
+        std::unique_lock lock(g_configSharedMutex);
+        OwnedAppIdSet.clear();
+    }
+
     std::vector<AppId_t> GetAllDepotIds() {
         std::shared_lock lock(g_configSharedMutex);
         std::vector<AppId_t> DepotIds;

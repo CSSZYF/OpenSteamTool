@@ -112,6 +112,12 @@ namespace AppTicket {
         return {};
     }
 
+    bool HasCachedEncryptedTicket(AppId_t appId) {
+        std::shared_lock lock(g_ticketMutex);
+        auto it = g_tickets.find(appId);
+        return it != g_tickets.end() && !it->second.eTicket.empty();
+    }
+
     bool WriteAppOwnershipTicket(AppId_t appId, const std::vector<uint8_t>& data) {
         std::unique_lock lock(g_ticketMutex);
         auto& entry = g_tickets[appId];

@@ -1,4 +1,5 @@
 #include "Hooks_NetPacket.h"
+#include "Hooks_Package.h"
 #include "Utils/SteamMetadata/ManifestClient.h"
 #include "Hooks_Misc.h"
 #include "HookMacros.h"
@@ -248,8 +249,8 @@ namespace Hooks_NetPacket_UserStats {
             }
         }
 
-        // Truly owned games must pass through to official servers untouched
-        if (LuaConfig::IsOwned(appId)) {
+        // Truly owned and family shared games must pass through to official servers untouched
+        if (Hooks_Package::HasValidLicense(appId)) {
             return false;
         }
 
@@ -335,8 +336,8 @@ namespace Hooks_NetPacket_UserStats {
             }
         }
 
-        // Owned games and unmanaged games (e.g. family sharing without Lua) must pass untouched
-        if (!hasPending || LuaConfig::IsOwned(pending.appId) ||
+        // Truly owned / family shared games and unmanaged games must pass untouched
+        if (!hasPending || Hooks_Package::HasValidLicense(pending.appId) ||
             (!LuaConfig::HasDepot(pending.appId) && !CloudRedirectHost::IsApp(pending.appId))) {
             LOG_ACHIEVEMENT_DEBUG("Player::GetUserStats response: unmanaged appid {} (or no match), skip", pending.appId);
             return;
@@ -431,7 +432,7 @@ namespace Hooks_NetPacket_UserStats {
                 req.set_game_id(appId);
             }
         }
-        if (LuaConfig::IsOwned(appId)) {
+        if (Hooks_Package::HasValidLicense(appId)) {
             return false;
         }
         if (!LuaConfig::HasDepot(appId) && !CloudRedirectHost::IsApp(appId)) {
@@ -479,7 +480,7 @@ namespace Hooks_NetPacket_UserStats {
                 appId = resolved;
             }
         }
-        if (LuaConfig::IsOwned(appId)) {
+        if (Hooks_Package::HasValidLicense(appId)) {
             return false;
         }
         if (!LuaConfig::HasDepot(appId) && !CloudRedirectHost::IsApp(appId)) {
@@ -545,7 +546,7 @@ namespace Hooks_NetPacket_UserStats {
                 appId = resolved;
             }
         }
-        if (LuaConfig::IsOwned(appId)) {
+        if (Hooks_Package::HasValidLicense(appId)) {
             return;
         }
         if (!LuaConfig::HasDepot(appId) && !CloudRedirectHost::IsApp(appId)) {
@@ -1541,7 +1542,7 @@ namespace {
                 const AppId_t resolved = Hooks_Misc::ResolveAppId();
                 if (resolved != 0) appId = resolved;
             }
-            if (appId != 0 && !LuaConfig::IsOwned(appId) &&
+            if (appId != 0 && !Hooks_Package::HasValidLicense(appId) &&
                 (LuaConfig::HasDepot(appId) || CloudRedirectHost::IsApp(appId))) {
                 CloudRedirectHost::NotifyStatsStored(appId);
             }

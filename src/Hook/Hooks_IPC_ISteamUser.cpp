@@ -205,8 +205,7 @@ namespace {
             haveFresh = g_freshEticket.find(appId) != g_freshEticket.end();
         }
 
-        std::vector<uint8_t> ticket = AppTicket::GetCachedEncryptedTicket(appId);
-        if (ticket.empty() && !haveFresh) {
+        if (!haveFresh && !AppTicket::HasCachedEncryptedTicket(appId)) {
             LOG_IPC_DEBUG("RequestEncryptedAppTicket: AppId={} - no cached eticket, skip", appId);
             return;
         }

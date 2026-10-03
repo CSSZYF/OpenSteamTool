@@ -46,6 +46,9 @@ namespace AppTicket {
     // Returns an empty vector when no ticket is available.
     std::vector<uint8_t> GetCachedEncryptedTicket(AppId_t appId);
 
+    // Fast zero-copy check if an encrypted app ticket exists in memory cache.
+    bool HasCachedEncryptedTicket(AppId_t appId);
+
     // Fast zero-copy query for the SteamID embedded inside the AppTicket.
     uint64_t GetTicketSteamID(AppId_t appId);
 

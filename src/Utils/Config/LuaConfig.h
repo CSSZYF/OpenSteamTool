@@ -13,6 +13,7 @@ namespace LuaConfig{
     bool HasDepot(AppId_t appId, bool excludeOwned = true);
     bool IsOwned(AppId_t appId);
     void MarkOwned(AppId_t appId);
+    void ClearOwned();
     std::vector<AppId_t> GetAllDepotIds();
     std::vector<uint8> GetDecryptionKey(AppId_t appId);
     uint64_t GetAccessToken(AppId_t appId);
