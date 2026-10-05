@@ -84,15 +84,21 @@ opensteamtool_add_ipc_codegen(IPC_GEN
 # ---------------------------------------------------------------------------
 set(PROTO_SRC "${CMAKE_CURRENT_SOURCE_DIR}/proto/steam_messages.proto")
 set(PROTO_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/$<CONFIG>")
+file(RELATIVE_PATH REL_BIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
+if(REL_BIN_DIR STREQUAL "")
+    set(REL_BIN_DIR ".")
+endif()
+set(REL_PROTO_GEN_DIR "${REL_BIN_DIR}/generated/$<CONFIG>")
 
 add_custom_command(
     OUTPUT "${PROTO_GEN_DIR}/steam_messages.pb.cc"
            "${PROTO_GEN_DIR}/steam_messages.pb.h"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PROTO_GEN_DIR}"
     COMMAND $<TARGET_FILE:protoc>
-        "--cpp_out=$<$<CONFIG:Release>:lite:>${PROTO_GEN_DIR}"
-        "-I${CMAKE_CURRENT_SOURCE_DIR}/proto"
-        "${PROTO_SRC}"
+        "--cpp_out=$<$<CONFIG:Release>:lite:>${REL_PROTO_GEN_DIR}"
+        "-Iproto"
+        "proto/steam_messages.proto"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     DEPENDS "${PROTO_SRC}" protoc
     COMMENT "Generating protobuf C++ sources"
     VERBATIM
@@ -218,6 +224,9 @@ add_library(xinput1_4 SHARED
 # ---------------------------------------------------------------------------
 if(TARGET ost-Injector)
     add_dependencies(OpenSteamTool ost-Injector)
+endif()
+if(TARGET extract_tickets)
+    add_dependencies(OpenSteamTool extract_tickets)
 endif()
 
 

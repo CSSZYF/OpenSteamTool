@@ -20,10 +20,17 @@ namespace ProcessInspector {
         "gameoverlayui64.exe",
     };
 
+    inline constexpr std::array<std::string_view, 3> kToolProcessNames = {
+        "extract_tickets.exe",
+        "ost-injector.exe",
+        "injector.exe",
+    };
+
     struct ProcessEnvironment {
         std::optional<AppId_t> steamOverlayGameIdAppId;
         std::optional<AppId_t> steamGameIdAppId;
         std::optional<AppId_t> steamAppId;
+        bool isOstTool = false;
 
         AppId_t ResolveAppId() const {
             if (steamOverlayGameIdAppId) return *steamOverlayGameIdAppId;
@@ -37,10 +44,11 @@ namespace ProcessInspector {
 
         std::string DebugString() const {
             return std::format(
-                "SteamAppId={} SteamGameId={} SteamOverlayGameId={} resolvedAppId={}",
+                "SteamAppId={} SteamGameId={} SteamOverlayGameId={} isOstTool={} resolvedAppId={}",
                 steamAppId.value_or(k_uAppIdInvalid),
                 steamGameIdAppId.value_or(k_uAppIdInvalid),
                 steamOverlayGameIdAppId.value_or(k_uAppIdInvalid),
+                isOstTool,
                 ResolveAppId());
         }
     };
@@ -51,6 +59,7 @@ namespace ProcessInspector {
         std::string imagePath;
         std::string imageName;
         bool steamClientProcess = false;
+        bool isToolProcess = false;
         bool likelyGameProcess = false;
         ProcessEnvironment environment;
 
@@ -60,11 +69,12 @@ namespace ProcessInspector {
 
         std::string DebugString() const {
             return std::format(
-                "pid={} creation={} image={} steamClientProcess={} likelyGameProcess={} env=[{}]",
+                "pid={} creation={} image={} steamClientProcess={} isToolProcess={} likelyGameProcess={} env=[{}]",
                 pid,
                 std::format("{} filetime={}",OSTPlatform::Process::FormatCreationTime(creationTime),creationTime),
                 imageName.empty() ? "-" : imageName,
                 steamClientProcess,
+                isToolProcess,
                 likelyGameProcess,
                 environment.DebugString());
         }
@@ -72,6 +82,7 @@ namespace ProcessInspector {
 
     std::optional<uint64> GetProcessCreationTime(PID_t pid);
     bool IsSteamProcessName(std::string_view name);
+    bool IsToolProcessName(std::string_view name);
     ProcessEnvironment ReadSteamEnvironment(PID_t pid);
     ProcessSnapshot InspectProcess(PID_t pid);
 

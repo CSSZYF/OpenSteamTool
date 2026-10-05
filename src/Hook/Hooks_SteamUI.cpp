@@ -6,6 +6,7 @@
 #include "Utils/Config/Config.h"
 #include "Utils/Config/LuaConfig.h"
 #include "Hook/Hooks_Package.h"
+#include "Pipe/PipeManager.h"
 #include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
 #include "OSTPlatform/include/Thread.h"
 #include <algorithm>
@@ -683,6 +684,7 @@ namespace
                 const uint32_t lastChangeNum = entryIt->second.changeNumber;
 
                 const bool wasUpdating = (lastState & k_EAppStateUpdatingMask) != 0;
+                const bool wasRunning = (lastState & k_EAppStateAppRunning) != 0;
                 const bool isNowFullyInstalled = ((currentState & k_EAppStateUpdatingMask) == 0) &&
                                                  ((currentState & k_EAppStateFullyInstalled) != 0);
 
@@ -696,7 +698,14 @@ namespace
                 else if (isNowFullyInstalled && currentChangeNum != lastChangeNum) {
                     if (lastChangeNum == 0) {
                         entryIt->second.changeNumber = currentChangeNum;
-                    } else if ((currentState & k_EAppStateAppRunning) == 0) {
+                    } else if (wasRunning || (currentState & k_EAppStateAppRunning) != 0) {
+                        // 游戏处于运行中或刚刚退出运行，ChangeNumber 变更是由于启动、游玩时长或云存档同步，绝非游戏清单更新
+                        entryIt->second = { currentState, currentChangeNum };
+                    } else if (PipeManager::WasToolActiveRecently(appId, std::chrono::seconds(3))) {
+                        // 变更由外部提取工具（如 extract_tickets）短暂连接触发，严格跳过写盘同步
+                        LOG_STEAMUI_DEBUG("AutoSync: appId={} state changed after recent tool extraction — skipping background sync", appId);
+                        entryIt->second = { currentState, currentChangeNum };
+                    } else {
                         entryIt->second = { currentState, currentChangeNum };
                         std::erase(g_activeUpdatingApps, appId);
                         safeEnqueue(appId);

@@ -122,6 +122,44 @@ namespace {
         return k_uAppIdInvalid;
     }
 
+    struct ToolSession {
+        ProcessKey process;
+        AppId_t appId = k_uAppIdInvalid;
+        std::chrono::steady_clock::time_point lastSeen{};
+    };
+
+    std::mutex g_toolMutex;
+    std::unordered_map<PipeKey, ToolSession, PipeKeyHash> g_toolPipes;
+    std::unordered_map<AppId_t, std::chrono::steady_clock::time_point> g_toolRecentApps;
+
+    void PruneToolPipesLocked(std::chrono::steady_clock::time_point now) {
+        for (auto it = g_toolPipes.begin(); it != g_toolPipes.end(); ) {
+            auto currentCreation = ProcessInspector::GetProcessCreationTime(it->first.pid);
+            if (!currentCreation || *currentCreation != it->second.process.creationTime) {
+                if (it->second.appId != k_uAppIdInvalid && it->second.appId != 0) {
+                    g_toolRecentApps[it->second.appId] = now;
+                }
+                it = g_toolPipes.erase(it);
+                continue;
+            }
+            ++it;
+        }
+
+        std::erase_if(g_toolRecentApps, [&](const auto& pair) {
+            return (now - pair.second) > std::chrono::minutes(5);
+        });
+    }
+
+    void RecordToolSession(const PipeKey& pipeKey, const ProcessKey& processKey, AppId_t appId) {
+        std::scoped_lock lock(g_toolMutex);
+        const auto now = std::chrono::steady_clock::now();
+        PruneToolPipesLocked(now);
+        g_toolPipes[pipeKey] = { processKey, appId, now };
+        if (appId != k_uAppIdInvalid && appId != 0) {
+            g_toolRecentApps[appId] = now;
+        }
+    }
+
 } // namespace
 
 void OnHandshake(CPipeClient* pipe) {
@@ -154,13 +192,15 @@ void OnHandshake(CPipeClient* pipe) {
     bool appIdFromPipe = false;
     const AppId_t appId = ResolveAppIdWithRetry(snapshot, appIdFromPipe);
     const bool isDPlus = DenuvoAuth::IsDPlusLaunch(appId);
-    const bool trackedApp = appId != k_uAppIdInvalid && (LuaConfig::HasDepot(appId, false) || isDPlus);
+    const bool isTool = snapshot.isToolProcess;
+    const bool trackedApp = !isTool && appId != k_uAppIdInvalid && (LuaConfig::HasDepot(appId, false) || isDPlus);
 
     // likelyGameProcess is env-derived (needs SteamAppId exported), so it's false
     // for env-less games. A pipe that resolves to a CONFIGURED depot is a tracked
     // game regardless, and DenuvoAuth::Apply requires gameProcess && trackedApp —
     // so treat a tracked depot as a game process even without the env.
-    const bool gameProcess = snapshot.likelyGameProcess || trackedApp;
+    // Tool processes (like extract_tickets.exe) are strictly excluded from game handling.
+    const bool gameProcess = !isTool && (snapshot.likelyGameProcess || trackedApp);
 
     PipeContext ctx{};
     ctx.pipe = pipe;
@@ -169,13 +209,76 @@ void OnHandshake(CPipeClient* pipe) {
     ctx.gameProcess = gameProcess;
     ctx.trackedApp = trackedApp;
 
-    LOG_PIPE_INFO("PipeManager: handshake {} process={} appid={} appIdFromPipe={} gameProcess={} trackedApp={} snapshot={}",
+    LOG_PIPE_INFO("PipeManager: handshake {} process={} appid={} appIdFromPipe={} isTool={} gameProcess={} trackedApp={} snapshot={}",
                   pipeKey.DebugString(), processKey.DebugString(), appId,
-                  appIdFromPipe, gameProcess, trackedApp, snapshot.DebugString());
+                  appIdFromPipe, isTool, gameProcess, trackedApp, snapshot.DebugString());
 
-    // Feature side effects run without holding the registry lock.
-    DenuvoAuth::Apply(ctx);
-    Injection::Apply(ctx);
+    if (isTool) {
+        RecordToolSession(pipeKey, processKey, appId);
+    } else {
+        // Feature side effects run only for non-tool processes without holding the registry lock.
+        DenuvoAuth::Apply(ctx);
+        Injection::Apply(ctx);
+    }
+}
+
+bool IsToolPipe(const CPipeClient* pipe, AppId_t appId) {
+    if (!pipe) return false;
+    const PipeKey pipeKey = MakePipeKey(pipe);
+    if (pipeKey.pid == 0) return false;
+
+    {
+        std::scoped_lock lock(g_toolMutex);
+        auto it = g_toolPipes.find(pipeKey);
+        if (it != g_toolPipes.end()) {
+            const auto now = std::chrono::steady_clock::now();
+            it->second.lastSeen = now;
+            if (appId != k_uAppIdInvalid && appId != 0) {
+                it->second.appId = appId;
+                g_toolRecentApps[appId] = now;
+            } else if (it->second.appId != k_uAppIdInvalid && it->second.appId != 0) {
+                g_toolRecentApps[it->second.appId] = now;
+            }
+            return true;
+        }
+    }
+
+    const auto snapshot = ResolveProcess(pipeKey.pid);
+    if (snapshot.isToolProcess) {
+        const ProcessKey procKey = MakeProcessKey(snapshot);
+        const AppId_t effectiveAppId = (appId != k_uAppIdInvalid && appId != 0) ? appId : snapshot.ResolveAppId();
+        RecordToolSession(pipeKey, procKey, effectiveAppId);
+        return true;
+    }
+    return false;
+}
+
+bool WasToolActiveRecently(AppId_t appId, std::chrono::milliseconds window) {
+    if (appId == 0 || appId == k_uAppIdInvalid) return false;
+
+    std::scoped_lock lock(g_toolMutex);
+    const auto now = std::chrono::steady_clock::now();
+    PruneToolPipesLocked(now);
+
+    for (const auto& [key, session] : g_toolPipes) {
+        if (session.appId == appId) {
+            if ((now - session.lastSeen) <= window) {
+                return true;
+            }
+        }
+    }
+
+    auto itRecent = g_toolRecentApps.find(appId);
+    if (itRecent != g_toolRecentApps.end()) {
+        if ((now - itRecent->second) <= window) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsToolActiveForApp(AppId_t appId) {
+    return WasToolActiveRecently(appId, std::chrono::seconds(3));
 }
 
 } // namespace PipeManager
