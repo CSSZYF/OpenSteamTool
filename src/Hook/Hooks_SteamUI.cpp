@@ -7,6 +7,7 @@
 #include "Utils/Config/LuaConfig.h"
 #include "Hook/Hooks_Package.h"
 #include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
+#include "OSTPlatform/include/Thread.h"
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -264,7 +265,7 @@ namespace
         std::mutex m_queueMutex;
         std::condition_variable m_cv;
         std::atomic<bool> m_stopping{false};
-        std::thread m_workerThread;
+        OSTPlatform::Thread::SafeThread m_workerThread;
 
         void WorkerLoop() {
             while (true) {
@@ -332,6 +333,10 @@ namespace
         }
 
     public:
+        ~AutoSyncWorkerPool() {
+            Detach();
+        }
+
         void Start() {
             if (m_workerThread.joinable()) return;
             m_stopping.store(false, std::memory_order_relaxed);
@@ -339,7 +344,7 @@ namespace
         }
 
         void Stop() {
-            m_stopping.store(true, std::memory_order_relaxed);
+            m_stopping.store(true, std::memory_order_release);
             m_cv.notify_all();
             if (m_workerThread.joinable()) {
                 m_workerThread.join();
@@ -352,6 +357,14 @@ namespace
             {
                 std::lock_guard<std::mutex> inFlightLock(g_inFlightMutex);
                 g_inFlightSyncs.clear();
+            }
+        }
+
+        void Detach() {
+            m_stopping.store(true, std::memory_order_release);
+            m_cv.notify_all();
+            if (m_workerThread.joinable()) {
+                m_workerThread.detach();
             }
         }
 
@@ -519,7 +532,7 @@ namespace
 
     class InstalledScannerPool {
     private:
-        std::thread m_thread;
+        OSTPlatform::Thread::SafeThread m_thread;
         std::mutex m_mutex;
         std::condition_variable m_cv;
         std::atomic<bool> m_stopping{false};
@@ -538,6 +551,10 @@ namespace
         }
 
     public:
+        ~InstalledScannerPool() {
+            Detach();
+        }
+
         void Start() {
             if (m_thread.joinable()) return;
             m_stopping.store(false, std::memory_order_relaxed);
@@ -545,14 +562,23 @@ namespace
         }
 
         void Stop() {
-            m_stopping.store(true, std::memory_order_relaxed);
+            m_stopping.store(true, std::memory_order_release);
             m_cv.notify_all();
             if (m_thread.joinable()) {
                 m_thread.join();
             }
         }
 
+        void Detach() {
+            m_stopping.store(true, std::memory_order_release);
+            m_cv.notify_all();
+            if (m_thread.joinable()) {
+                m_thread.detach();
+            }
+        }
+
         void TriggerRescan() {
+            if (m_stopping.load(std::memory_order_relaxed)) return;
             m_rescanRequested.store(true, std::memory_order_relaxed);
             std::lock_guard<std::mutex> lock(m_mutex);
             m_cv.notify_one();
@@ -935,6 +961,12 @@ namespace Hooks_SteamUI
         g_autoSyncWorkerPool.Stop();
         g_trackedStates.clear();
         g_activeUpdatingApps.clear();
+    }
+
+    void DetachWorkerThreads()
+    {
+        g_installedScannerPool.Detach();
+        g_autoSyncWorkerPool.Detach();
     }
 
 

@@ -6,4 +6,6 @@ namespace HookManager {
 
     void InstallClientHooks();
     void UninstallClientHooks();
+
+    void DetachWorkerThreads();
 }

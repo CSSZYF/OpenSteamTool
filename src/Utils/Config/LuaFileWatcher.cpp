@@ -4,6 +4,7 @@
 #include "Utils/Logging/Log.h"
 #include "OSTPlatform/include/DirectoryWatch.h"
 #include "OSTPlatform/include/Encoding.h"
+#include "OSTPlatform/include/Thread.h"
 
 #include <algorithm>
 #include <atomic>
@@ -29,7 +30,7 @@ struct FileChange {
 };
 
 std::atomic<bool> g_running{false};
-std::thread g_watcherThread;
+OSTPlatform::Thread::SafeThread g_watcherThread;
 std::vector<std::string> g_watchDirs;
 
 constexpr uint32_t kDebounceMs = 500;
@@ -296,10 +297,16 @@ void Start(const std::vector<std::string>& directories) {
 }
 
 void Stop() {
-    if (!g_running) return;
-    g_running = false;
+    g_running.store(false, std::memory_order_release);
     if (g_watcherThread.joinable()) {
         g_watcherThread.join();
+    }
+}
+
+void Detach() {
+    g_running.store(false, std::memory_order_release);
+    if (g_watcherThread.joinable()) {
+        g_watcherThread.detach();
     }
 }
 

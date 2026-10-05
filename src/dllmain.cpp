@@ -276,6 +276,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, PVOID pvReserved)
             HookManager::UninstallUIHooks();
             HookManager::UninstallClientHooks();
             CloudRedirectHost::Shutdown();
+        } else {
+            // Process termination (ExitProcess): The OS has already terminated all secondary
+            // threads. Never join or wait on mutexes held by terminated threads under the loader
+            // lock. Proactively detach all joinable worker threads so CRT static destruction
+            // does not invoke std::terminate() -> abort().
+            ConfigFileWatcher::Detach();
+            LuaFileWatcher::Detach();
+            HookManager::DetachWorkerThreads();
         }
     }
 

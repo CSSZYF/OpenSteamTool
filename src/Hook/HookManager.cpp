@@ -37,4 +37,8 @@ namespace HookManager {
         VehCommon::DisarmAll();
         VehCommon::RemoveHandler();
     }
+
+    void DetachWorkerThreads() {
+        Hooks_SteamUI::DetachWorkerThreads();
+    }
 }

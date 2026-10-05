@@ -5,6 +5,7 @@
 #include "Utils/Logging/Log.h"
 #include "OSTPlatform/include/DirectoryWatch.h"
 #include "OSTPlatform/include/Encoding.h"
+#include "OSTPlatform/include/Thread.h"
 #include "dllmain.h"
 
 #include <atomic>
@@ -19,7 +20,7 @@ namespace {
 
 std::atomic<LicenseChangedCallback> g_licenseChangedCb{nullptr};
 std::atomic<bool> g_running{false};
-std::thread g_watcherThread;
+OSTPlatform::Thread::SafeThread g_watcherThread;
 std::string g_configPath;
 std::string g_defaultLuaDir;
 
@@ -168,10 +169,16 @@ void Start(const std::string& configPath, const std::string& defaultLuaDir) {
 }
 
 void Stop() {
-    if (!g_running) return;
-    g_running = false;
+    g_running.store(false, std::memory_order_release);
     if (g_watcherThread.joinable()) {
         g_watcherThread.join();
+    }
+}
+
+void Detach() {
+    g_running.store(false, std::memory_order_release);
+    if (g_watcherThread.joinable()) {
+        g_watcherThread.detach();
     }
 }
 

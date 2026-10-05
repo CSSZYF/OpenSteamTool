@@ -7,6 +7,7 @@
 namespace Hooks_SteamUI {
     void Install();
     void Uninstall();
+    void DetachWorkerThreads();
 
     // Queues an appId for removal from the library UI
     void QueueRemoval(AppId_t appId);
