@@ -2,6 +2,7 @@
 #include "Log.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -97,14 +98,21 @@ bool GameListManager::JumpToPage(size_t pageNum) {
 }
 
 bool GameListManager::ExportCsv(std::string_view accountName, std::string* outPath) const {
-    std::string filename = "gameslist-" + std::string{accountName} + ".csv";
+    std::string safeName{accountName};
+    for (char& c : safeName) {
+        if (c == '\\' || c == '/' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') {
+            c = '_';
+        }
+    }
+    std::string filename = "gameslist-" + safeName + ".csv";
     if (outPath) {
         *outPath = filename;
     }
 
-    std::ofstream ofs(filename, std::ios::binary | std::ios::trunc);
+    std::filesystem::path filePath(filename);
+    std::ofstream ofs(filePath, std::ios::binary | std::ios::trunc);
     if (!ofs.is_open()) {
-        LOG_ERROR("GameList", "无法创建表格文件: gameslist-{}.csv", MaskAccount(accountName));
+        LOG_ERROR("GameList", "无法创建表格文件: {}", filePath.string());
         return false;
     }
 

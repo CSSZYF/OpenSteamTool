@@ -382,8 +382,6 @@ void OnlineSession::RunAccountSelectionMenu() {
                                     TuiEngine::ShowMessageModal("登录失败", loginRes.errorMessage);
                                 }
                             }
-                        } else {
-                            TokenStorage::DeleteAccount(acc.accountName);
                         }
                     }
                     needFullClear = true;

@@ -118,41 +118,6 @@ struct ScopedHKey {
     [[nodiscard]] bool IsValid() const noexcept { return key != nullptr; }
 };
 
-// RAII wrapper for Windows FindFirstFile/FindNextFile HANDLE
-struct ScopedFindHandle {
-    HANDLE handle{INVALID_HANDLE_VALUE};
-
-    ScopedFindHandle() = default;
-    explicit ScopedFindHandle(HANDLE h) noexcept : handle(h) {}
-
-    ~ScopedFindHandle() noexcept {
-        if (handle != INVALID_HANDLE_VALUE && handle != nullptr) {
-            FindClose(handle);
-        }
-    }
-
-    ScopedFindHandle(const ScopedFindHandle&) = delete;
-    ScopedFindHandle& operator=(const ScopedFindHandle&) = delete;
-
-    ScopedFindHandle(ScopedFindHandle&& other) noexcept : handle(other.handle) {
-        other.handle = INVALID_HANDLE_VALUE;
-    }
-
-    ScopedFindHandle& operator=(ScopedFindHandle&& other) noexcept {
-        if (this != &other) {
-            if (handle != INVALID_HANDLE_VALUE && handle != nullptr) {
-                FindClose(handle);
-            }
-            handle = other.handle;
-            other.handle = INVALID_HANDLE_VALUE;
-        }
-        return *this;
-    }
-
-    operator HANDLE() const noexcept { return handle; }
-    [[nodiscard]] bool IsValid() const noexcept { return handle != INVALID_HANDLE_VALUE && handle != nullptr; }
-};
-
 // RAII guard for Steam client session, loaded module, and process environment
 struct SteamSessionGuard {
     ISteamClient* client{nullptr};

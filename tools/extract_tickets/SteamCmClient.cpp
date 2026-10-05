@@ -116,7 +116,7 @@ void SteamCmClient::UnpackMultiMsg(std::span<const uint8_t> bodySpan) {
             destLen = sizeUnzipped;
             res = tinf_uncompress(payload.data(), &destLen, messageBody.data(), static_cast<unsigned int>(messageBody.size()));
         }
-        if (res == TINF_BUF_ERROR) {
+        while (res == TINF_BUF_ERROR && payload.size() < 64 * 1024 * 1024) {
             destLen = static_cast<unsigned int>(payload.size() * 2);
             payload.resize(destLen);
             if (messageBody.size() >= 2 && messageBody[0] == 0x1F && messageBody[1] == 0x8B) {
@@ -740,13 +740,13 @@ std::optional<std::string> SteamCmClient::DownloadManifestOnline(
     }
 
     std::string fileName = std::format("{}_{}.manifest", depotId, manifestId);
-    std::string localPath = JoinPath(destDir, fileName);
+    std::filesystem::path localPath = std::filesystem::path(destDir) / fileName;
 
     // Fast check if already exists in destination
-    DWORD attr = GetFileAttributesA(localPath.c_str());
-    if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
-        LOG_INFO("SteamCM", "清单文件已存在于目标目录: {}", localPath);
-        return localPath;
+    std::error_code checkEc;
+    if (std::filesystem::is_regular_file(localPath, checkEc)) {
+        LOG_INFO("SteamCM", "清单文件已存在于目标目录: {}", localPath.string());
+        return localPath.string();
     }
 
     std::string reqCode = FetchManifestRequestCode(appId, depotId, manifestId);
@@ -826,12 +826,12 @@ std::optional<std::string> SteamCmClient::DownloadManifestOnline(
     }
 
     if (!WriteBinaryFile(localPath, payload)) {
-        LOG_WARN("SteamCM", "保存清单文件失败: {}", localPath);
+        LOG_WARN("SteamCM", "保存清单文件失败: {}", localPath.string());
         return std::nullopt;
     }
 
     LOG_INFO("SteamCM", "成功直接在线下载并保存清单文件: {} ({} 字节)", fileName, payload.size());
-    return localPath;
+    return localPath.string();
 }
 
 ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {

@@ -1,5 +1,4 @@
 #include "LuaFallbackParser.h"
-#include "RaiiGuards.h"
 #include "Utils.h"
 
 #include <algorithm>
@@ -15,10 +14,10 @@ namespace OST::ExtractTickets {
 namespace {
 
 void ParseTomlLuaPaths(const std::string& tomlFilePath, std::vector<std::string>& outPaths) {
-    std::ifstream file(tomlFilePath);
+    std::filesystem::path tomlPath(tomlFilePath);
+    std::ifstream file(tomlPath);
     if (!file) return;
 
-    std::filesystem::path tomlPath(tomlFilePath);
     std::filesystem::path baseDir = tomlPath.parent_path();
 
     std::string line;
@@ -212,28 +211,30 @@ void ParseLuaContent(std::string_view content, uint32_t targetAppId, LuaFallback
 }
 
 void ScanManifestFilesInDir(const std::string& dir, LuaFallbackData& out) {
-    std::string pattern = JoinPath(dir, "*.manifest");
-    WIN32_FIND_DATAA fd{};
-    ScopedFindHandle hFind{FindFirstFileA(pattern.c_str(), &fd)};
-    if (!hFind.IsValid()) return;
+    std::error_code ec;
+    std::filesystem::path dirP(dir);
+    if (!std::filesystem::exists(dirP, ec) || !std::filesystem::is_directory(dirP, ec)) return;
 
-    do {
-        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-            std::string_view fname{fd.cFileName};
-            size_t under = fname.find('_');
-            size_t dot = fname.rfind('.');
-            if (under != std::string_view::npos && dot != std::string_view::npos && dot > under + 1) {
-                std::string_view depotStr = fname.substr(0, under);
-                std::string_view candidateMan = fname.substr(under + 1, dot - under - 1);
-                if (auto dId = ParseAppId(depotStr)) {
-                    if (IsValidManifestId(candidateMan)) {
-                        out.manifestFiles[*dId] = JoinPath(dir, fname);
-                        out.depotManifests.try_emplace(*dId, std::string(candidateMan));
+    for (const auto& entry : std::filesystem::directory_iterator(dirP, ec)) {
+        if (ec) break;
+        if (entry.is_regular_file(ec)) {
+            std::string fname = entry.path().filename().string();
+            if (fname.ends_with(".manifest")) {
+                size_t under = fname.find('_');
+                size_t dot = fname.rfind('.');
+                if (under != std::string_view::npos && dot != std::string_view::npos && dot > under + 1) {
+                    std::string_view depotStr = std::string_view(fname).substr(0, under);
+                    std::string_view candidateMan = std::string_view(fname).substr(under + 1, dot - under - 1);
+                    if (auto dId = ParseAppId(depotStr)) {
+                        if (IsValidManifestId(candidateMan)) {
+                            out.manifestFiles[*dId] = entry.path().string();
+                            out.depotManifests.try_emplace(*dId, std::string(candidateMan));
+                        }
                     }
                 }
             }
         }
-    } while (FindNextFileA(hFind, &fd));
+    }
 }
 
 } // namespace
@@ -246,7 +247,7 @@ std::vector<std::string> GetOstLuaSearchDirectories(const std::string& steamPath
         std::string norm = NormalizeDir(path);
         if (norm.empty()) return;
 
-        DWORD attr = GetFileAttributesA(norm.c_str());
+        DWORD attr = GetFileAttributesW(std::filesystem::path(norm).c_str());
         if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
             if (std::none_of(dirs.begin(), dirs.end(), [&](const std::string& existing) {
                 return _stricmp(existing.c_str(), norm.c_str()) == 0;
@@ -325,17 +326,17 @@ LuaFallbackData ParseLuaFallbackData(const std::string& steamPath, uint32_t targ
     // First, look specifically for <targetAppId>.lua and dedicated <targetAppId>/ folder
     for (const auto& dir : searchDirs) {
         std::string directFile = JoinPath(dir, targetLuaName);
-        DWORD attr = GetFileAttributesA(directFile.c_str());
+        DWORD attr = GetFileAttributesW(std::filesystem::path(directFile).c_str());
         if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
             matchedFiles.push_back(directFile);
             manifestDirs.push_back(dir);
         }
 
         std::string subDir = JoinPath(dir, std::to_string(targetAppId));
-        DWORD subAttr = GetFileAttributesA(subDir.c_str());
+        DWORD subAttr = GetFileAttributesW(std::filesystem::path(subDir).c_str());
         if (subAttr != INVALID_FILE_ATTRIBUTES && (subAttr & FILE_ATTRIBUTE_DIRECTORY)) {
             std::string subFile = JoinPath(subDir, targetLuaName);
-            if (GetFileAttributesA(subFile.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            if (GetFileAttributesW(std::filesystem::path(subFile).c_str()) != INVALID_FILE_ATTRIBUTES) {
                 matchedFiles.push_back(subFile);
             }
             manifestDirs.push_back(subDir);
@@ -345,22 +346,25 @@ LuaFallbackData ParseLuaFallbackData(const std::string& steamPath, uint32_t targ
     // If no direct <targetAppId>.lua was found, scan all .lua files in the search directories
     if (matchedFiles.empty()) {
         for (const auto& dir : searchDirs) {
-            std::string pattern = JoinPath(dir, "*.lua");
-            WIN32_FIND_DATAA fd{};
-            ScopedFindHandle hFind{FindFirstFileA(pattern.c_str(), &fd)};
-            if (hFind.IsValid()) {
-                do {
-                    if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-                        matchedFiles.push_back(JoinPath(dir, fd.cFileName));
+            std::error_code dirEc;
+            std::filesystem::path dirP(dir);
+            if (!std::filesystem::exists(dirP, dirEc) || !std::filesystem::is_directory(dirP, dirEc)) continue;
+
+            for (const auto& entry : std::filesystem::directory_iterator(dirP, dirEc)) {
+                if (dirEc) break;
+                if (entry.is_regular_file(dirEc)) {
+                    std::string fname = entry.path().filename().string();
+                    if (fname.ends_with(".lua")) {
+                        matchedFiles.push_back(entry.path().string());
                         manifestDirs.push_back(dir);
                     }
-                } while (FindNextFileA(hFind, &fd));
+                }
             }
         }
     }
 
     for (const auto& filePath : matchedFiles) {
-        std::ifstream file(filePath, std::ios::binary);
+        std::ifstream file(std::filesystem::path(filePath), std::ios::binary);
         if (!file) continue;
 
         file.seekg(0, std::ios::end);

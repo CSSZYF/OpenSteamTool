@@ -525,7 +525,7 @@ bool WebSocketClient::Receive(std::vector<uint8_t>& outData, bool& isBinary, DWO
     }
 
     outData.clear();
-    std::vector<uint8_t> chunk(8192);
+    std::vector<uint8_t> chunk(65536);
 
     while (true) {
         DWORD bytesRead = 0;

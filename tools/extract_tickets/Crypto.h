@@ -18,7 +18,7 @@ namespace OST::ExtractTickets {
 // ============================================================================
 class SecureString {
 public:
-    SecureString() = default;
+    SecureString();
     explicit SecureString(std::string_view str);
     ~SecureString();
 

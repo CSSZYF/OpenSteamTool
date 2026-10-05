@@ -17,9 +17,9 @@ std::unordered_map<uint32_t, uint64_t> ParseAppInfoTokens(
         return tokens;
     }
 
-    const std::string appinfoPath = JoinPath(steamPath, "appcache\\appinfo.vdf");
+    const auto appinfoPath = std::filesystem::path(steamPath) / "appcache" / "appinfo.vdf";
     ScopedHandle hFile{CreateFileW(
-        std::filesystem::path(appinfoPath).c_str(),
+        appinfoPath.c_str(),
         GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr,
@@ -124,6 +124,25 @@ std::unordered_map<uint32_t, uint64_t> ParseAppInfoTokens(
 }
 
 namespace {
+
+void ParseStringTableV41(const uint8_t* data, size_t totalBytes, uint64_t stringTableOffset, std::vector<std::string_view>& outTable) {
+    if (stringTableOffset < 16 || stringTableOffset + 4 > totalBytes) return;
+
+    uint32_t numStrings = 0;
+    std::memcpy(&numStrings, data + stringTableOffset, sizeof(uint32_t));
+    outTable.reserve((std::min)(numStrings, 65536U));
+
+    size_t sOff = static_cast<size_t>(stringTableOffset) + 4;
+    for (uint32_t i = 0; i < numStrings && sOff < totalBytes; ++i) {
+        const char* sStart = reinterpret_cast<const char*>(data + sOff);
+        size_t sLen = 0;
+        while (sOff + sLen < totalBytes && data[sOff + sLen] != '\0') {
+            ++sLen;
+        }
+        outTable.emplace_back(sStart, sLen);
+        sOff += sLen + 1;
+    }
+}
 
 struct VdfReader {
     const uint8_t* p{nullptr};
@@ -305,9 +324,9 @@ std::optional<ParsedAppInfoData> ParseAppInfoDepots(
 
     if (steamPath.empty() || appId == 0) return std::nullopt;
 
-    const std::string appinfoPath = JoinPath(steamPath, "appcache\\appinfo.vdf");
+    const auto appinfoPath = std::filesystem::path(steamPath) / "appcache" / "appinfo.vdf";
     ScopedHandle hFile{CreateFileW(
-        std::filesystem::path(appinfoPath).c_str(),
+        appinfoPath.c_str(),
         GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr,
@@ -349,21 +368,7 @@ std::optional<ParsedAppInfoData> ParseAppInfoDepots(
             std::memcpy(&stringTableOffset, data + 8, sizeof(uint64_t));
             if (stringTableOffset >= 16 && stringTableOffset + 4 <= totalBytes) {
                 appsEnd = static_cast<size_t>(stringTableOffset);
-
-                uint32_t numStrings = 0;
-                std::memcpy(&numStrings, data + stringTableOffset, sizeof(uint32_t));
-                stringTable.reserve(std::min(numStrings, 65536U));
-
-                size_t sOff = static_cast<size_t>(stringTableOffset) + 4;
-                for (uint32_t i = 0; i < numStrings && sOff < totalBytes; ++i) {
-                    const char* sStart = reinterpret_cast<const char*>(data + sOff);
-                    size_t sLen = 0;
-                    while (sOff + sLen < totalBytes && data[sOff + sLen] != '\0') {
-                        ++sLen;
-                    }
-                    stringTable.emplace_back(sStart, sLen);
-                    sOff += sLen + 1;
-                }
+                ParseStringTableV41(data, totalBytes, stringTableOffset, stringTable);
             }
             offset = 16;
         }
@@ -420,9 +425,9 @@ std::unordered_map<uint32_t, std::string> ParseAppNames(
     std::unordered_map<uint32_t, std::string> names;
     if (steamPath.empty() || targetAppIds.empty()) return names;
 
-    const std::string appinfoPath = JoinPath(steamPath, "appcache\\appinfo.vdf");
+    const auto appinfoPath = std::filesystem::path(steamPath) / "appcache" / "appinfo.vdf";
     ScopedHandle hFile{CreateFileW(
-        std::filesystem::path(appinfoPath).c_str(),
+        appinfoPath.c_str(),
         GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr,
@@ -464,21 +469,7 @@ std::unordered_map<uint32_t, std::string> ParseAppNames(
             std::memcpy(&stringTableOffset, data + 8, sizeof(uint64_t));
             if (stringTableOffset >= 16 && stringTableOffset + 4 <= totalBytes) {
                 appsEnd = static_cast<size_t>(stringTableOffset);
-
-                uint32_t numStrings = 0;
-                std::memcpy(&numStrings, data + stringTableOffset, sizeof(uint32_t));
-                stringTable.reserve((std::min)(numStrings, 65536U));
-
-                size_t sOff = static_cast<size_t>(stringTableOffset) + 4;
-                for (uint32_t i = 0; i < numStrings && sOff < totalBytes; ++i) {
-                    const char* sStart = reinterpret_cast<const char*>(data + sOff);
-                    size_t sLen = 0;
-                    while (sOff + sLen < totalBytes && data[sOff + sLen] != '\0') {
-                        ++sLen;
-                    }
-                    stringTable.emplace_back(sStart, sLen);
-                    sOff += sLen + 1;
-                }
+                ParseStringTableV41(data, totalBytes, stringTableOffset, stringTable);
             }
             offset = 16;
         }

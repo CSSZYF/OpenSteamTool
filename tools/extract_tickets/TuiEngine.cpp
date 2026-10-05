@@ -1,4 +1,6 @@
 #include "TuiEngine.h"
+#include "Crypto.h"
+#include "Utils.h"
 
 #include <conio.h>
 #include <algorithm>
@@ -272,6 +274,20 @@ bool TuiEngine::ShowConfirmModal(std::string_view title,
                                  std::string_view question,
                                  std::string_view detail,
                                  bool defaultYes) {
+    if (!g_tuiActive) {
+        std::cout << "\n[" << title << "] " << question;
+        if (!detail.empty()) std::cout << "\n" << detail;
+        std::cout << "\n确认? [" << (defaultYes ? "Y/n" : "y/N") << "]: ";
+        std::cout.flush();
+        std::string s;
+        if (std::getline(std::cin, s)) {
+            s = std::string(TrimWhitespace(s));
+            if (s.empty()) return defaultYes;
+            return (s[0] == 'y' || s[0] == 'Y');
+        }
+        return defaultYes;
+    }
+
     int w = 80, h = 25;
     GetScreenSize(w, h);
 
@@ -340,6 +356,16 @@ bool TuiEngine::ShowConfirmModal(std::string_view title,
 void TuiEngine::ShowMessageModal(std::string_view title,
                                  std::string_view message,
                                  std::string_view detail) {
+    if (!g_tuiActive) {
+        std::cout << "\n[" << title << "] " << message;
+        if (!detail.empty()) std::cout << "\n" << detail;
+        std::cout << "\n按 Enter 键继续...";
+        std::cout.flush();
+        std::string s;
+        std::getline(std::cin, s);
+        return;
+    }
+
     int w = 80, h = 25;
     GetScreenSize(w, h);
 
@@ -385,6 +411,26 @@ std::optional<std::string> TuiEngine::PromptInputModal(std::string_view title,
                                                        std::string_view prompt,
                                                        std::string_view defaultValue,
                                                        bool isPassword) {
+    if (!g_tuiActive) {
+        if (isPassword) {
+            std::string promptStr = std::string(prompt);
+            SecureString pwd = ReadPasswordFromConsole(promptStr.c_str());
+            return pwd.Empty() ? std::nullopt : std::optional<std::string>(std::string(pwd.Data()));
+        }
+        std::cout << "\n" << prompt;
+        if (!defaultValue.empty()) {
+            std::cout << " [" << defaultValue << "]";
+        }
+        std::cout << ": ";
+        std::cout.flush();
+        std::string s;
+        if (std::getline(std::cin, s)) {
+            if (s.empty() && !defaultValue.empty()) s = defaultValue;
+            return s;
+        }
+        return std::nullopt;
+    }
+
     int w = 80, h = 25;
     GetScreenSize(w, h);
 

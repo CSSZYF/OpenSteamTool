@@ -38,6 +38,10 @@ constexpr uint32_t kSteamProtoMask = 0x80000000;
 
 class ProtoWriter {
 public:
+    ProtoWriter() {
+        m_buf.reserve(128);
+    }
+
     void WriteVarint(uint64_t val) {
         while (val >= 0x80) {
             m_buf.push_back(static_cast<uint8_t>((val & 0x7F) | 0x80));
@@ -191,26 +195,15 @@ inline std::vector<uint8_t> PackSteamMsg(
     const uint32_t rawMsg = static_cast<uint32_t>(eMsg) | kSteamProtoMask;
     const uint32_t hdrLen = static_cast<uint32_t>(hdrBytes.size());
 
-    std::vector<uint8_t> packet;
-    packet.reserve(8 + hdrLen + bodyBytes.size());
-
-    // Write rawMsg (4B, little-endian)
-    packet.push_back(static_cast<uint8_t>(rawMsg & 0xFF));
-    packet.push_back(static_cast<uint8_t>((rawMsg >> 8) & 0xFF));
-    packet.push_back(static_cast<uint8_t>((rawMsg >> 16) & 0xFF));
-    packet.push_back(static_cast<uint8_t>((rawMsg >> 24) & 0xFF));
-
-    // Write hdrLen (4B, little-endian)
-    packet.push_back(static_cast<uint8_t>(hdrLen & 0xFF));
-    packet.push_back(static_cast<uint8_t>((hdrLen >> 8) & 0xFF));
-    packet.push_back(static_cast<uint8_t>((hdrLen >> 16) & 0xFF));
-    packet.push_back(static_cast<uint8_t>((hdrLen >> 24) & 0xFF));
-
-    // Write header bytes
-    packet.insert(packet.end(), hdrBytes.begin(), hdrBytes.end());
-
-    // Write body bytes
-    packet.insert(packet.end(), bodyBytes.begin(), bodyBytes.end());
+    std::vector<uint8_t> packet(8 + hdrLen + bodyBytes.size());
+    std::memcpy(packet.data(), &rawMsg, 4);
+    std::memcpy(packet.data() + 4, &hdrLen, 4);
+    if (hdrLen > 0) {
+        std::memcpy(packet.data() + 8, hdrBytes.data(), hdrLen);
+    }
+    if (!bodyBytes.empty()) {
+        std::memcpy(packet.data() + 8 + hdrLen, bodyBytes.data(), bodyBytes.size());
+    }
 
     return packet;
 }

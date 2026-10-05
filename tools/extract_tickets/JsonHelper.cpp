@@ -242,13 +242,60 @@ std::vector<OwnedGameInfo> JsonHelper::ParseOwnedGames(std::string_view json) {
     size_t arrayStart = json.find('[', gamesPos);
     if (arrayStart == std::string_view::npos) return games;
 
-    size_t pos = arrayStart + 1;
-    while (pos < json.size()) {
-        size_t objStart = json.find('{', pos);
-        if (objStart == std::string_view::npos) break;
+    // Track bracket depth to locate true end of games array
+    size_t arrayEnd = std::string_view::npos;
+    int bracketDepth = 0;
+    bool inStr = false;
+    bool escaped = false;
+    for (size_t i = arrayStart; i < json.size(); ++i) {
+        char c = json[i];
+        if (escaped) { escaped = false; continue; }
+        if (c == '\\' && inStr) { escaped = true; continue; }
+        if (c == '"') { inStr = !inStr; continue; }
+        if (inStr) continue;
 
-        size_t objEnd = json.find('}', objStart);
-        if (objEnd == std::string_view::npos) break;
+        if (c == '[') {
+            bracketDepth++;
+        } else if (c == ']') {
+            bracketDepth--;
+            if (bracketDepth == 0) {
+                arrayEnd = i;
+                break;
+            }
+        }
+    }
+    if (arrayEnd == std::string_view::npos) {
+        arrayEnd = json.size();
+    }
+
+    size_t pos = arrayStart + 1;
+    while (pos < arrayEnd) {
+        size_t objStart = json.find('{', pos);
+        if (objStart == std::string_view::npos || objStart >= arrayEnd) break;
+
+        size_t objEnd = std::string_view::npos;
+        int braceDepth = 0;
+        inStr = false;
+        escaped = false;
+        for (size_t i = objStart; i < arrayEnd; ++i) {
+            char c = json[i];
+            if (escaped) { escaped = false; continue; }
+            if (c == '\\' && inStr) { escaped = true; continue; }
+            if (c == '"') { inStr = !inStr; continue; }
+            if (inStr) continue;
+
+            if (c == '{') {
+                braceDepth++;
+            } else if (c == '}') {
+                braceDepth--;
+                if (braceDepth == 0) {
+                    objEnd = i;
+                    break;
+                }
+            }
+        }
+
+        if (objEnd == std::string_view::npos || objEnd >= arrayEnd) break;
 
         std::string_view itemJson = json.substr(objStart, objEnd - objStart + 1);
 

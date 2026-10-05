@@ -17,18 +17,29 @@ namespace OST::ExtractTickets {
 // SecureString Implementation
 // ============================================================================
 
-SecureString::SecureString(std::string_view str) : m_data(str) {}
+SecureString::SecureString() {
+    m_data.reserve(128);
+}
+
+SecureString::SecureString(std::string_view str) {
+    m_data.reserve((std::max)(static_cast<size_t>(128), str.size()));
+    m_data.assign(str);
+}
 
 SecureString::~SecureString() {
     Clear();
 }
 
-SecureString::SecureString(const SecureString& other) : m_data(other.m_data) {}
+SecureString::SecureString(const SecureString& other) {
+    m_data.reserve((std::max)(static_cast<size_t>(128), other.m_data.size()));
+    m_data.assign(other.m_data);
+}
 
 SecureString& SecureString::operator=(const SecureString& other) {
     if (this != &other) {
         Clear();
-        m_data = other.m_data;
+        m_data.reserve((std::max)(static_cast<size_t>(128), other.m_data.size()));
+        m_data.assign(other.m_data);
     }
     return *this;
 }
@@ -45,7 +56,8 @@ SecureString& SecureString::operator=(SecureString&& other) noexcept {
 
 void SecureString::Assign(std::string_view str) {
     Clear();
-    m_data = str;
+    m_data.reserve((std::max)(static_cast<size_t>(128), str.size()));
+    m_data.assign(str);
 }
 
 void SecureString::Append(char c) {
@@ -61,8 +73,8 @@ void SecureString::PopBack() {
 }
 
 void SecureString::Clear() {
-    if (!m_data.empty()) {
-        SecureZeroMemory(m_data.data(), m_data.size());
+    if (m_data.capacity() > 0) {
+        SecureZeroMemory(m_data.data(), m_data.capacity());
         m_data.clear();
     }
 }

@@ -150,17 +150,17 @@ bool RunLocalExtractionWorker(uint32_t appId, bool forceEticket) {
         return ExtractLocalApp(appId, forceEticket, true);
     }
 
-    DWORD waitRes = WaitForSingleObject(pi.hProcess, 15000);
+    ScopedHandle hProcess{pi.hProcess};
+    ScopedHandle hThread{pi.hThread};
+
+    DWORD waitRes = WaitForSingleObject(hProcess, 15000);
     DWORD exitCode = 1;
     if (waitRes == WAIT_OBJECT_0) {
-        GetExitCodeProcess(pi.hProcess, &exitCode);
+        GetExitCodeProcess(hProcess, &exitCode);
     } else {
         LOG_WARN("Main", "Worker 子进程执行超时，强制终止");
-        TerminateProcess(pi.hProcess, 1);
+        TerminateProcess(hProcess, 1);
     }
-
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
 
     return exitCode == 0;
 }

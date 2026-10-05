@@ -36,8 +36,8 @@ bool WriteOutputs(uint32_t appId,
     }
 
     bool ok{true};
-    if (ownership && !ownership->empty()) ok = WriteBinaryFile(JoinPath(dir, "appticket.bin"), *ownership) && ok;
-    if (encrypted && !encrypted->empty()) ok = WriteBinaryFile(JoinPath(dir, "eticket.bin"), *encrypted) && ok;
+    if (ownership && !ownership->empty()) ok = WriteBinaryFile(dirPath / "appticket.bin", *ownership) && ok;
+    if (encrypted && !encrypted->empty()) ok = WriteBinaryFile(dirPath / "eticket.bin", *encrypted) && ok;
 
     // Copy manifest files (.manifest) if found in depotcache
     std::vector<std::string> copiedManifests;

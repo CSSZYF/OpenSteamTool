@@ -509,6 +509,7 @@ bool ExtractTicketsFromLocalClient(
     auto steamPathOpt = FindSteamInstallPath();
     if (!steamPathOpt || steamPathOpt->empty()) return false;
 
+    SteamSessionGuard guard{nullptr, 0, 0, nullptr};
     std::string appIdStr = std::to_string(appId);
     SetEnvironmentVariableA("SteamAppId", appIdStr.c_str());
     SetEnvironmentVariableA("OST_TOOL_EXTRACTION", "1");
@@ -516,12 +517,9 @@ bool ExtractTicketsFromLocalClient(
     std::string steamClientPath;
     HMODULE hClient = LoadSteamClient64(*steamPathOpt, steamClientPath);
     if (!hClient) {
-        SetEnvironmentVariableA("SteamAppId", nullptr);
-        SetEnvironmentVariableA("OST_TOOL_EXTRACTION", nullptr);
         return false;
     }
-
-    SteamSessionGuard guard{nullptr, 0, 0, hClient};
+    guard.module = hClient;
 
     ISteamClient* client = CreateSteamClient(hClient);
     if (!client) {

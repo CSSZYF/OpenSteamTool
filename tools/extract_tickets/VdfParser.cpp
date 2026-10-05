@@ -1,5 +1,4 @@
 #include "VdfParser.h"
-#include "RaiiGuards.h"
 #include "Utils.h"
 
 #include <algorithm>
@@ -16,7 +15,7 @@ std::vector<std::string> FindSteamLibraryFolders(const std::string& steamPath) {
         libraries.push_back(NormalizeDir(steamPath));
     }
 
-    const std::string libraryVdfPath = JoinPath(steamPath, "steamapps\\libraryfolders.vdf");
+    const std::filesystem::path libraryVdfPath = std::filesystem::path(steamPath) / "steamapps" / "libraryfolders.vdf";
     std::ifstream file(libraryVdfPath);
     if (!file) return libraries;
 
@@ -67,8 +66,8 @@ bool IsAppInstalledLocally(const std::string& steamPath, uint32_t appId) {
     const std::string manifestName = "appmanifest_" + std::to_string(appId) + ".acf";
     const auto libraries = FindSteamLibraryFolders(steamPath);
     for (const auto& lib : libraries) {
-        const std::string manifestPath = JoinPath(lib, "steamapps\\" + manifestName);
-        const DWORD attr = GetFileAttributesA(manifestPath.c_str());
+        const std::filesystem::path manifestPath = std::filesystem::path(lib) / "steamapps" / manifestName;
+        const DWORD attr = GetFileAttributesW(manifestPath.c_str());
         if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
             return true;
         }
@@ -161,7 +160,7 @@ void ParseAcfDepots(const std::string& acfPath,
                     std::unordered_map<uint32_t, std::string>& outDepots,
                     std::unordered_set<uint32_t>& outDlcIds,
                     std::unordered_map<uint32_t, uint32_t>& outDepotToDlc) {
-    std::ifstream file(acfPath);
+    std::ifstream file{std::filesystem::path(acfPath)};
     if (!file) return;
 
     std::string line;
@@ -260,7 +259,7 @@ void ParseAcfDepots(const std::string& acfPath,
 
 std::unordered_map<uint32_t, std::string> ParseConfigVdfDepotKeys(const std::string& steamPath) {
     std::unordered_map<uint32_t, std::string> depotKeys;
-    const std::string configPath = JoinPath(steamPath, "config\\config.vdf");
+    const std::filesystem::path configPath = std::filesystem::path(steamPath) / "config" / "config.vdf";
     std::ifstream file(configPath);
     if (!file) return depotKeys;
 
