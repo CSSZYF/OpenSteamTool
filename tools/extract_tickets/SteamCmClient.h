@@ -50,6 +50,9 @@ public:
     // Requests PICS AppInfo product metadata (eMsg 8903)
     [[nodiscard]] std::optional<ParsedAppInfoData> RequestPicsProductInfo(uint32_t appId, uint64_t accessToken = 0);
 
+    // Fast batch resolution of official app/DLC names via Steam CM PICS (eMsg 8903)
+    [[nodiscard]] std::unordered_map<uint32_t, std::string> RequestPicsAppNames(const std::vector<uint32_t>& appIds);
+
     // Sets or clears playing state via CMsgClientGamesPlayed (eMsg 742) for session license activation
     bool SetGamePlayed(uint32_t appId);
 

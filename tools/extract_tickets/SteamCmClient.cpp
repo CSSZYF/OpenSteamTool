@@ -2,7 +2,6 @@
 #include "AppInfoParser.h"
 #include "JsonHelper.h"
 #include "Log.h"
-#include "LuaFallbackParser.h"
 #include "TuiEngine.h"
 #include "Utils.h"
 #include "tinf.h"
@@ -25,6 +24,14 @@ namespace {
             hex += std::format("{:02x}", b);
         }
         return hex;
+    }
+
+    std::string FetchAppNameFromStore(uint32_t appId) {
+        WinHttpTransport http;
+        HttpResponse resp = http.Get(std::format("https://store.steampowered.com/api/appdetails?appids={}&filters=basic", appId));
+        if (!resp.IsSuccess()) return "";
+        auto nameOpt = JsonHelper::GetString(resp.body, "name");
+        return nameOpt.value_or("");
     }
 
     std::vector<std::string> QueryCmWebSockets() {
@@ -595,6 +602,63 @@ std::optional<ParsedAppInfoData> SteamCmClient::RequestPicsProductInfo(uint32_t 
     return std::nullopt;
 }
 
+std::unordered_map<uint32_t, std::string> SteamCmClient::RequestPicsAppNames(
+    const std::vector<uint32_t>& appIds) {
+
+    std::unordered_map<uint32_t, std::string> outNames;
+    if (appIds.empty() || !IsConnected()) return outNames;
+
+    constexpr size_t kBatchSize = 50;
+    for (size_t i = 0; i < appIds.size(); i += kBatchSize) {
+        const size_t chunkEnd = std::min(i + kBatchSize, appIds.size());
+
+        ProtoWriter body;
+        for (size_t j = i; j < chunkEnd; ++j) {
+            ProtoWriter appReq;
+            appReq.WriteUInt32(1, appIds[j]); // appid = 1
+            appReq.WriteBool(3, true);        // only_public = 3 (public common section contains name)
+            body.WriteSubMessage(2, appReq);  // apps = 2 (repeated)
+        }
+        body.WriteBool(3, false); // meta_data_only = 3
+
+        const uint64_t jobId = ++m_nextJobId;
+        if (!SendProtoMsg(ESteamMsg::ClientPICSProductInfoRequest, body, jobId)) {
+            continue;
+        }
+
+        std::vector<uint8_t> respBody;
+        if (!ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientPICSProductInfoResponse), respBody, 8000)) {
+            continue;
+        }
+
+        ProtoReader reader(respBody);
+        ProtoField field;
+        while (reader.ReadNext(field)) {
+            if (field.fieldNumber == 1 || field.fieldNumber == 2) {
+                ProtoReader appReader(field.bytesVal);
+                ProtoField appField;
+                uint32_t rAppId = 0;
+                std::span<const uint8_t> buffer;
+                while (appReader.ReadNext(appField)) {
+                    if (appField.fieldNumber == 1) { // appid
+                        rAppId = static_cast<uint32_t>(appField.varintVal);
+                    } else if (appField.fieldNumber == 5) { // buffer
+                        buffer = appField.bytesVal;
+                    }
+                }
+                if (rAppId > 0 && !buffer.empty()) {
+                    auto appInfo = ParseBinaryVdfAppInfo(buffer, rAppId);
+                    if (appInfo && !appInfo->name.empty()) {
+                        outNames[rAppId] = std::move(appInfo->name);
+                    }
+                }
+            }
+        }
+    }
+
+    return outNames;
+}
+
 bool SteamCmClient::SetGamePlayed(uint32_t appId) {
     if (!IsConnected()) return false;
     ProtoWriter body;
@@ -891,19 +955,6 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
         SetGamePlayed(0);
     }
 
-    // 2.2 本地 Steam 客户端会话兜底：若所有权票据缺失，尝试通过本地 Steam 客户端运行时同步凭证
-    if (!creds.appOwnershipTicket) {
-        LOG_INFO("SteamCM", "尝试从本地 Steam 客户端提取 AppID {} 凭据兜底...", appId);
-        bool localExtracted = ExtractTicketsFromLocalClient(appId, creds.appOwnershipTicket, creds.encryptedAppTicket);
-        (void)localExtracted;
-        if (creds.appOwnershipTicket && !TuiEngine::IsActive()) {
-            std::cout << "     [OK] 从本地客户端同步到所有权票据 (" << creds.appOwnershipTicket->size() << " 字节)\n";
-        }
-        if (creds.encryptedAppTicket && !TuiEngine::IsActive()) {
-            std::cout << "     [OK] 从本地客户端同步到加密票据 (" << creds.encryptedAppTicket->size() << " 字节)\n";
-        }
-    }
-
     if (!creds.appOwnershipTicket) {
         LOG_INFO("SteamCM", "未能获取所有权票据 (账号未直接拥有或属于共享借用；OpenSteamTool 将在运行时自动执行 AppID 7 伪造兜底)");
     }
@@ -911,35 +962,24 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
         LOG_INFO("SteamCM", "未能获取加密票据 (无加密运行时授权需求或未拥有)");
     }
 
-    // 3. 收集该游戏拥有的所有 Depots、清单号与 DLC
-    auto steamPathOpt = FindSteamInstallPath();
-    std::string steamPath = steamPathOpt ? *steamPathOpt : "";
-
-    std::vector<DlcInfo> localDlcs;
-    std::vector<DepotKeyInfo> depotKeys = ExtractDepotDecryptionKeys(
-        steamPath, appId, nullptr, 0, 0, localDlcs);
-
-    creds.dlcs = std::move(localDlcs);
-
-    // 从本地 appinfo.vdf 或 Steam CM PICS 获取完整结构 (Depots, GID, DLC)
-    std::optional<ParsedAppInfoData> appInfoData;
-    if (!steamPath.empty()) {
-        appInfoData = ParseAppInfoDepots(steamPath, appId);
-    }
-    if (!appInfoData) {
-        uint64_t appToken = 0;
-        auto tokMap = RequestAppTokens({ appId });
-        if (tokMap.contains(appId)) appToken = tokMap[appId];
-        appInfoData = RequestPicsProductInfo(appId, appToken);
+    // 3. 纯官方云端向 Steam CM PICS 请求完整产品元数据 (包含全部 Depots、清单号与所有 DLC 列表)
+    LOG_DEBUG("SteamCM", "正在向 Steam CM 查询 AppID {} 的 64 位 PICS 访问令牌...", appId);
+    uint64_t appToken = 0;
+    auto tokMap = RequestAppTokens({ appId });
+    if (tokMap.contains(appId)) {
+        appToken = tokMap[appId];
     }
 
+    LOG_DEBUG("SteamCM", "正在向 Steam CM PICS 请求官方产品元数据 (AppID={}, token={})...", appId, appToken);
+    auto appInfoData = RequestPicsProductInfo(appId, appToken);
+
+    std::vector<DepotKeyInfo> depotKeys;
     if (appInfoData) {
-        LOG_INFO("SteamCM", "获得游戏 [{}] 完整 AppInfo (共 {} 个 Depot, {} 个 DLC)",
-                 appId, appInfoData->depots.size(), appInfoData->dlcAppIds.size());
+        LOG_INFO("SteamCM", "获得官方 AppInfo 数据 (共 {} 个 Depot, {} 个 DLC)",
+                 appInfoData->depots.size(), appInfoData->dlcAppIds.size());
 
+        // 3.1 识别所有 DLC（包含无独立 Depot 的 DLC，例如季票、豪华版升级包、皮肤包、原声音乐等）
         std::unordered_set<uint32_t> knownDlcSet;
-        for (const auto& d : creds.dlcs) knownDlcSet.insert(d.dlcId);
-
         for (uint32_t dlcId : appInfoData->dlcAppIds) {
             if (dlcId != appId && !knownDlcSet.contains(dlcId)) {
                 knownDlcSet.insert(dlcId);
@@ -949,6 +989,7 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
             }
         }
 
+        // 3.2 提取官方 Depot 与关联清单 ID (GID)
         for (const auto& dInfo : appInfoData->depots) {
             auto it = std::find_if(depotKeys.begin(), depotKeys.end(),
                                    [&](const DepotKeyInfo& k) { return k.depotId == dInfo.depotId; });
@@ -968,14 +1009,16 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
             }
         }
 
-        std::unordered_set<uint32_t> missingDlcNames;
+        // 3.3 纯官方云端批量解析所有 DLC 名称 (Steam CM PICS 公开元数据查询 + Store WebAPI 补充兜底)
+        std::vector<uint32_t> missingDlcNames;
         for (const auto& d : creds.dlcs) {
             if (d.name.empty()) {
-                missingDlcNames.insert(d.dlcId);
+                missingDlcNames.push_back(d.dlcId);
             }
         }
-        if (!missingDlcNames.empty() && !steamPath.empty()) {
-            auto resolved = ParseAppNames(steamPath, missingDlcNames);
+        if (!missingDlcNames.empty()) {
+            LOG_DEBUG("SteamCM", "正在向 Steam CM PICS 批量查询 {} 个 DLC 官方名称...", missingDlcNames.size());
+            auto resolved = RequestPicsAppNames(missingDlcNames);
             for (auto& d : creds.dlcs) {
                 if (d.name.empty()) {
                     auto it = resolved.find(d.dlcId);
@@ -984,10 +1027,20 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
                     }
                 }
             }
+
+            // 官方 Store WebAPI 补充兜底 (针对极少数 CM PICS 未返回公共名称的 DLC)
+            for (auto& d : creds.dlcs) {
+                if (d.name.empty()) {
+                    std::string storeName = FetchAppNameFromStore(d.dlcId);
+                    if (!storeName.empty()) {
+                        d.name = std::move(storeName);
+                    }
+                }
+            }
         }
     }
 
-    // 4. 收集所有需要向 Steam CM 补充查询密钥的 Depot ID
+    // 4. 纯官方云端向 Steam CM 查询全部 Depot 解密密钥
     std::unordered_set<uint32_t> depotsNeedingKeys;
     depotsNeedingKeys.insert(appId);
     for (const auto& dk : depotKeys) {
@@ -1032,29 +1085,16 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
         }
     }
 
-    // 5. 本地 depotcache 清单查找 + 智能在线清单下载
-    std::string outDir = std::to_string(appId);
-    std::vector<std::string> depotcacheDirs;
-    depotcacheDirs.push_back(outDir); // 优先检查当前 AppID 目标目录
-    if (!steamPath.empty()) {
-        auto sysDirs = GetDepotcacheDirs(steamPath);
-        depotcacheDirs.insert(depotcacheDirs.end(), sysDirs.begin(), sysDirs.end());
-    }
-
+    // 5. 纯云端清单文件拉取 (优先检查输出目录，未下载则直接从 Steam 官方 CDN 拉取)
+    const std::string outDir = std::to_string(appId);
     for (auto& dk : depotKeys) {
-        if (dk.manifestFilePath.empty() && !depotcacheDirs.empty()) {
-            dk.manifestFilePath = FindDepotManifestFile(depotcacheDirs, dk.depotId, dk.manifestId);
-        }
-
-        // 若本地没有清单文件且拥有有效清单号，直接通过 Steam 官方 CDN 在线拉取！
-        if (dk.manifestFilePath.empty() && IsValidManifestId(dk.manifestId)) {
+        if (IsValidManifestId(dk.manifestId)) {
             auto downloaded = DownloadManifestOnline(appId, dk.depotId, dk.manifestId, outDir);
             if (downloaded) {
                 dk.manifestFilePath = *downloaded;
             }
         }
     }
-
 
     // 剔除无有效密钥、无清单文件且无有效清单ID的空项
     std::erase_if(depotKeys, [](const DepotKeyInfo& dk) {
@@ -1074,7 +1114,7 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
         }
     }
 
-    // 6. 查询 64 位 PICS AccessTokens (AppID + 全部 DLC)
+    // 6. 纯官方云端查询 64 位 PICS AccessTokens (AppID + 全部 DLC)
     LOG_DEBUG("SteamCM", "正在查询 64 位 PICS AccessToken (AppID={})...", appId);
     if (!TuiEngine::IsActive()) {
         std::cout << "  -> 正在查询 64 位 PICS AccessToken...\n";
@@ -1086,23 +1126,8 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
         targetAppIds.insert(dlc.dlcId);
     }
 
-    if (!steamPath.empty()) {
-        creds.appTokens = ParseAppInfoTokens(steamPath, &targetAppIds);
-    }
-
-    const auto luaFallback = ParseLuaFallbackData(steamPath, appId);
-    for (const auto& [tId, tVal] : luaFallback.appTokens) {
-        if (tVal != 0) {
-            creds.appTokens.try_emplace(tId, tVal);
-        }
-    }
-
-    std::vector<uint32_t> tokensToQuery;
-    for (uint32_t tApp : targetAppIds) {
-        if (!creds.appTokens.contains(tApp) || creds.appTokens[tApp] == 0) {
-            tokensToQuery.push_back(tApp);
-        }
-    }
+    std::vector<uint32_t> tokensToQuery(targetAppIds.begin(), targetAppIds.end());
+    std::sort(tokensToQuery.begin(), tokensToQuery.end());
 
     if (!tokensToQuery.empty()) {
         auto cmTokens = RequestAppTokens(tokensToQuery);

@@ -261,6 +261,18 @@ std::vector<OwnedGameInfo> SteamAuthService::FetchOwnedGames(
                     if (steamPathOpt && !steamPathOpt->empty()) {
                         resolvedNames = ParseAppNames(*steamPathOpt, missingNameAppIds);
                     }
+                    for (uint32_t mId : missingNameAppIds) {
+                        if (!resolvedNames.contains(mId) || resolvedNames[mId].empty()) {
+                            std::string storeUrl = std::format("https://store.steampowered.com/api/appdetails?appids={}&filters=basic", mId);
+                            HttpResponse sResp = m_http.Get(storeUrl);
+                            if (sResp.IsSuccess()) {
+                                auto nameOpt = JsonHelper::GetString(sResp.body, "name");
+                                if (nameOpt && !nameOpt->empty()) {
+                                    resolvedNames[mId] = std::move(*nameOpt);
+                                }
+                            }
+                        }
+                    }
                 }
 
                 for (auto& sg : sharedGames) {
