@@ -1,6 +1,8 @@
 #include "SteamSession.h"
+#include "Log.h"
 #include "LuaFallbackParser.h"
 #include "RaiiGuards.h"
+#include "TuiEngine.h"
 #include "Utils.h"
 
 #include <algorithm>
@@ -105,25 +107,34 @@ std::optional<std::vector<uint8_t>> ExtractAppOwnershipTicket(
             &signatureOffset,
             &signatureSize)};
         if (written2 == 0 || written2 > buffer.size()) {
-            std::cerr << "[INFO] 未能获取 AppID " << appId << " 的所有权票据 (账号可能未拥有或本地未缓存) / "
-                      << "GetAppOwnershipTicketData returned no ticket for AppID " << appId
-                      << " (account may not own the app or not cached locally).\n";
+            if (!TuiEngine::IsActive()) {
+                std::cerr << "[INFO] 未能获取 AppID " << appId << " 的所有权票据 (账号可能未拥有或本地未缓存) / "
+                          << "GetAppOwnershipTicketData returned no ticket for AppID " << appId
+                          << " (account may not own the app or not cached locally).\n";
+            }
+            LOG_INFO("SteamSession", "未能获取 AppID {} 的所有权票据", appId);
             return std::nullopt;
         }
         written = written2;
     } else if (written == 0) {
-        std::cerr << "[INFO] 未能获取 AppID " << appId << " 的所有权票据 (账号可能未拥有或本地未缓存) / "
-                  << "GetAppOwnershipTicketData returned no ticket for AppID " << appId
-                  << " (account may not own the app or not cached locally).\n";
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "[INFO] 未能获取 AppID " << appId << " 的所有权票据 (账号可能未拥有或本地未缓存) / "
+                      << "GetAppOwnershipTicketData returned no ticket for AppID " << appId
+                      << " (account may not own the app or not cached locally).\n";
+        }
+        LOG_INFO("SteamSession", "未能获取 AppID {} 的所有权票据", appId);
         return std::nullopt;
     }
 
     buffer.resize(written);
-    std::cout << "Ownership ticket " << written << " bytes"
-              << " (appIdOffset=" << appIdOffset
-              << " steamIdOffset=" << steamIdOffset
-              << " signatureOffset=" << signatureOffset
-              << " signatureSize=" << signatureSize << ")\n";
+    if (!TuiEngine::IsActive()) {
+        std::cout << "Ownership ticket " << written << " bytes"
+                  << " (appIdOffset=" << appIdOffset
+                  << " steamIdOffset=" << steamIdOffset
+                  << " signatureOffset=" << signatureOffset
+                  << " signatureSize=" << signatureSize << ")\n";
+    }
+    LOG_INFO("SteamSession", "Ownership ticket: {} bytes", written);
     return buffer;
 }
 
@@ -183,18 +194,27 @@ std::optional<std::vector<uint8_t>> ExtractEncryptedAppTicket(
     uint32_t cbTicket{0};
     steamUser->GetEncryptedAppTicket(nullptr, 0, &cbTicket);
     if (cbTicket == 0) {
-        std::cerr << "[WARN] 加密票据为空 / Encrypted app ticket is empty.\n";
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "[WARN] 加密票据为空 / Encrypted app ticket is empty.\n";
+        }
+        LOG_WARN("SteamSession", "加密票据为空");
         return std::nullopt;
     }
 
     std::vector<uint8_t> buffer(cbTicket);
     if (!steamUser->GetEncryptedAppTicket(buffer.data(), static_cast<int>(buffer.size()), &cbTicket)) {
-        std::cerr << "[WARN] 获取 EncryptedAppTicket 数据失败 / GetEncryptedAppTicket failed.\n";
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "[WARN] 获取 EncryptedAppTicket 数据失败 / GetEncryptedAppTicket failed.\n";
+        }
+        LOG_WARN("SteamSession", "获取 EncryptedAppTicket 数据失败");
         return std::nullopt;
     }
 
     buffer.resize(cbTicket);
-    std::cout << "Encrypted ticket " << cbTicket << " bytes\n";
+    if (!TuiEngine::IsActive()) {
+        std::cout << "Encrypted ticket " << cbTicket << " bytes\n";
+    }
+    LOG_INFO("SteamSession", "Encrypted ticket: {} bytes", cbTicket);
     return buffer;
 }
 

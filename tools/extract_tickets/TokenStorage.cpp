@@ -35,7 +35,8 @@ namespace {
             oss << acc.accountName << '\t'
                 << acc.steamId << '\t'
                 << acc.lastLoginTime << '\t'
-                << acc.refreshToken << '\n';
+                << acc.refreshToken << '\t'
+                << acc.accessToken << '\n';
         }
         return oss.str();
     }
@@ -54,9 +55,26 @@ namespace {
 
             if (std::getline(lineStream, acc.accountName, '\t') &&
                 std::getline(lineStream, steamIdStr, '\t') &&
-                std::getline(lineStream, timeStr, '\t') &&
-                std::getline(lineStream, acc.refreshToken)) {
+                std::getline(lineStream, timeStr, '\t')) {
                 
+                if (std::getline(lineStream, acc.refreshToken, '\t')) {
+                    // Has 5th field: accessToken
+                    std::getline(lineStream, acc.accessToken);
+                } else {
+                    // 4th field without trailing tab
+                    acc.refreshToken = "";
+                }
+
+                if (acc.refreshToken.empty()) {
+                    // Try parsing 4th field without tab delimiter
+                    std::istringstream fallbackStream(line);
+                    std::string dummy1, dummy2, dummy3;
+                    std::getline(fallbackStream, dummy1, '\t');
+                    std::getline(fallbackStream, dummy2, '\t');
+                    std::getline(fallbackStream, dummy3, '\t');
+                    std::getline(fallbackStream, acc.refreshToken);
+                }
+
                 try {
                     acc.steamId = std::stoull(steamIdStr);
                     acc.lastLoginTime = std::stoll(timeStr);

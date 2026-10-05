@@ -77,6 +77,10 @@ public:
                                 size_t current, size_t total,
                                 std::string_view label = "");
 
+    static bool IsActive() noexcept;
+    static void SetActive(bool active) noexcept;
+    static void EraseToEndOfLine();
+
     // Input reading
     static KeyEvent ReadKey();
 };
@@ -85,6 +89,7 @@ class TuiSessionGuard {
 public:
     explicit TuiSessionGuard(bool active = true) : m_active(active) {
         if (m_active) {
+            TuiEngine::SetActive(true);
             TuiEngine::EnableVirtualTerminal();
             TuiEngine::EnterAlternateScreen();
             TuiEngine::ShowCursor(false);
@@ -96,6 +101,7 @@ public:
         if (m_active) {
             TuiEngine::ShowCursor(true);
             TuiEngine::ExitAlternateScreen();
+            TuiEngine::SetActive(false);
         }
     }
 

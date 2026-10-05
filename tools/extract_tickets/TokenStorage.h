@@ -11,6 +11,7 @@ struct CachedAccount {
     std::string accountName;
     uint64_t steamId{0};
     std::string refreshToken;
+    std::string accessToken;
     int64_t lastLoginTime{0};
 };
 

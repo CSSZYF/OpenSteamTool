@@ -1,4 +1,5 @@
 #include "Log.h"
+#include "TuiEngine.h"
 
 #include <chrono>
 #include <fstream>
@@ -109,7 +110,6 @@ std::string MaskKeyHex(std::string_view hexKey) {
 }
 
 void InitLogging(const std::string& logFileName) {
-#if defined(_DEBUG) || !defined(NDEBUG)
     std::lock_guard<std::mutex> lock(g_logMutex);
     if (!g_loggingInitialized) {
         g_logFile.open(logFileName, std::ios::app);
@@ -121,9 +121,6 @@ void InitLogging(const std::string& logFileName) {
             g_logFile.flush();
         }
     }
-#else
-    (void)logFileName;
-#endif
 }
 
 void CloseLogging() {
@@ -138,9 +135,7 @@ void CloseLogging() {
 void LogMessage(LogLevel level, std::string_view tag, std::string_view message) {
     std::lock_guard<std::mutex> lock(g_logMutex);
 
-#if defined(_DEBUG) || !defined(NDEBUG)
     if (!g_loggingInitialized) {
-        // Auto-init for debug builds
         g_logFile.open("extract_tickets_debug.log", std::ios::app);
         g_loggingInitialized = true;
     }
@@ -155,14 +150,15 @@ void LogMessage(LogLevel level, std::string_view tag, std::string_view message) 
         g_logFile << line << "\n";
         g_logFile.flush();
     }
-#else
-    // Release mode: only output Warnings and Errors to console
-    if (level == LogLevel::Warn) {
-        std::cerr << "[WARN] " << message << "\n";
-    } else if (level == LogLevel::Error) {
-        std::cerr << "[ERROR] " << message << "\n";
+
+    // Only output to console if TUI is NOT active
+    if (!TuiEngine::IsActive()) {
+        if (level == LogLevel::Warn) {
+            std::cerr << "[WARN] " << message << "\n";
+        } else if (level == LogLevel::Error) {
+            std::cerr << "[ERROR] " << message << "\n";
+        }
     }
-#endif
 }
 
 } // namespace OST::ExtractTickets

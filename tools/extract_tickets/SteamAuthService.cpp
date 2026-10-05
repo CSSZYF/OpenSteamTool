@@ -182,12 +182,15 @@ std::optional<std::string> SteamAuthService::RefreshAccessToken(
         return std::nullopt;
     }
 
+    LOG_DEBUG("SteamAuth", "GenerateAccessTokenForApp 响应 (HTTP {}): {}", resp.statusCode, resp.body);
+
     auto accessOpt = JsonHelper::GetString(resp.body, "access_token");
     if (accessOpt && !accessOpt->empty()) {
         LOG_DEBUG("SteamAuth", "AccessToken 刷新成功: {}", MaskToken(*accessOpt));
         return accessOpt;
     }
 
+    LOG_WARN("SteamAuth", "响应体中未包含 access_token: {}", resp.body);
     return std::nullopt;
 }
 
@@ -267,6 +270,7 @@ SteamLoginResult SteamAuthService::LoginWithCredentials(
     cached.accountName = std::string{accountName};
     cached.steamId = result.steamId;
     cached.refreshToken = result.refreshToken;
+    cached.accessToken = result.accessToken;
     cached.lastLoginTime = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 
     TokenStorage::UpsertAccount(cached);

@@ -42,17 +42,17 @@ bool ExtractLocalApp(uint32_t appId, bool forceEticket, bool inTui = false) {
     std::string steamPath = steamPathOpt ? *steamPathOpt : "";
 
     const bool isInstalled = IsAppInstalledLocally(steamPath, appId);
-    const bool injectAppId = isInstalled || forceEticket;
+    const bool injectAppId = forceEticket;
 
     if (injectAppId) {
         const std::string appIdStr{std::to_string(appId)};
         SetEnvironmentVariableA("SteamAppId", appIdStr.c_str());
-        if (!isInstalled && forceEticket && !inTui) {
+        if (!inTui) {
             std::cout << "[WARN] 已启用 --force-eticket 强制注入未安装游戏的运行时环境。\n"
                       << "       --force-eticket enabled for uninstalled app runtime context injection.\n\n";
         }
     } else if (!inTui) {
-        std::cout << "[INFO] 目标 AppID " << appId << " 未在本地库中安装，已启用【安全提取模式】。\n";
+        std::cout << "[INFO] 目标 AppID " << appId << " 已启用【安全提取模式】(不注入游戏运行时，防止 Steam 误报运行)。\n";
     }
 
     std::string steamClientPath;
@@ -71,6 +71,7 @@ bool ExtractLocalApp(uint32_t appId, bool forceEticket, bool inTui = false) {
         ownership = ExtractAppOwnershipTicket(client, pipe, user, appId);
         if (injectAppId) {
             encrypted = ExtractEncryptedAppTicket(client, pipe, user, appId);
+            SetEnvironmentVariableA("SteamAppId", nullptr);
         }
     }
 
@@ -102,7 +103,14 @@ bool ExtractLocalApp(uint32_t appId, bool forceEticket, bool inTui = false) {
 }
 
 namespace {
-    void RenderLevel1Tui(std::string_view inputAppId) {
+    struct Level1Layout {
+        int top{0};
+        int left{0};
+        int boxW{80};
+        int boxH{17};
+    };
+
+    Level1Layout DrawLevel1Frame() {
         int w = 80, h = 25;
         TuiEngine::GetScreenSize(w, h);
         TuiEngine::ClearScreen();
@@ -125,10 +133,6 @@ namespace {
         TuiEngine::MoveCursor(top + 6, left + 4);
         std::cout << "\x1b[1;36m请输入目标游戏 AppID:\x1b[0m";
 
-        TuiEngine::MoveCursor(top + 7, left + 4);
-        std::string boxContent = std::format("[ {:<16} ]", std::string{inputAppId} + "_");
-        std::cout << "\x1b[1;30;47m" << boxContent << "\x1b[0m  \x1b[90m(纯数字，输入完毕按 Enter 开始提取)\x1b[0m";
-
         TuiEngine::MoveCursor(top + 10, left + 4);
         std::cout << "\x1b[90m" << std::string(boxW - 8, '-') << "\x1b[0m";
 
@@ -142,6 +146,14 @@ namespace {
         std::cout << "• 按 \x1b[1;31m[Q]\x1b[0m 键 ── \x1b[37m退出程序\x1b[0m";
 
         TuiEngine::DrawFooter("[Enter] 开始提取   [O] 切换在线模式   [Q/ESC] 退出程序");
+        return {top, left, boxW, boxH};
+    }
+
+    void UpdateLevel1Input(const Level1Layout& layout, std::string_view inputAppId) {
+        TuiEngine::MoveCursor(layout.top + 7, layout.left + 4);
+        std::string boxContent = std::format("[ {:<16} ]", std::string{inputAppId} + "_");
+        std::cout << "\x1b[1;30;47m" << boxContent << "\x1b[0m  \x1b[90m(纯数字，输入完毕按 Enter 开始提取)\x1b[0m   ";
+        std::cout.flush();
     }
 } // namespace
 
@@ -212,16 +224,18 @@ int Run(int argc, char** argv) {
     // Interactive TUI session
     TuiSessionGuard tuiGuard(true);
     std::string inputAppId;
+    auto layout = DrawLevel1Frame();
+    UpdateLevel1Input(layout, inputAppId);
 
     while (true) {
-        RenderLevel1Tui(inputAppId);
-
         KeyEvent ev = TuiEngine::ReadKey();
 
         // Single-key 'o' or 'O' directly jumps to Online Mode (no Enter required!)
         if (ev.code == KeyCode::Char && (ev.ch == 'o' || ev.ch == 'O')) {
             OnlineSession::RunInteractive();
             inputAppId.clear();
+            layout = DrawLevel1Frame();
+            UpdateLevel1Input(layout, inputAppId);
             continue;
         }
 
@@ -235,6 +249,7 @@ int Run(int argc, char** argv) {
         if (ev.code == KeyCode::Char && ev.ch >= '0' && ev.ch <= '9') {
             if (inputAppId.size() < 10) {
                 inputAppId.push_back(ev.ch);
+                UpdateLevel1Input(layout, inputAppId);
             }
             continue;
         }
@@ -243,6 +258,7 @@ int Run(int argc, char** argv) {
         if (ev.code == KeyCode::Backspace) {
             if (!inputAppId.empty()) {
                 inputAppId.pop_back();
+                UpdateLevel1Input(layout, inputAppId);
             }
             continue;
         }
@@ -267,6 +283,8 @@ int Run(int argc, char** argv) {
                 }
                 // Reset input to return to fresh startup state
                 inputAppId.clear();
+                layout = DrawLevel1Frame();
+                UpdateLevel1Input(layout, inputAppId);
             }
             continue;
         }

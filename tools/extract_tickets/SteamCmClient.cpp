@@ -1,5 +1,6 @@
 #include "SteamCmClient.h"
 #include "Log.h"
+#include "TuiEngine.h"
 #include "Utils.h"
 
 #include <chrono>
@@ -84,18 +85,24 @@ bool SteamCmClient::ConnectAndLogon(uint64_t steamId, std::string_view accessTok
     Disconnect();
     m_steamId = steamId;
 
-    std::cout << "[NET] 正在连接 Steam CM 服务器 (wss://cm.steampowered.com/cmsocket/)...\n";
-    LOG_DEBUG("SteamCM", "正在建立 WebSocket 通道...");
+    LOG_DEBUG("SteamCM", "正在建立 WebSocket 通道连接 Steam CM 服务器 (wss://cm.steampowered.com/cmsocket/)...");
+    if (!TuiEngine::IsActive()) {
+        std::cout << "[NET] 正在连接 Steam CM 服务器 (wss://cm.steampowered.com/cmsocket/)...\n";
+    }
 
     if (!m_ws.Connect("wss://cm.steampowered.com/cmsocket/", 10000)) {
         LOG_ERROR("SteamCM", "连接 Steam CM 服务器失败");
-        std::cerr << "[ERROR] 无法连接 Steam CM 网关服务器，请检查网络。\n";
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "[ERROR] 无法连接 Steam CM 网关服务器，请检查网络。\n";
+        }
         return false;
     }
 
-    std::cout << "[NET] 通信信道已建立，正在执行会话握手登录...\n";
-    LOG_DEBUG("SteamCM", "正在发送 CMsgClientLogon (steamId={}, token={})",
+    LOG_DEBUG("SteamCM", "通信信道已建立，正在执行会话握手登录 (steamId={}, token={})...",
               MaskSteamId(m_steamId), MaskToken(accessToken));
+    if (!TuiEngine::IsActive()) {
+        std::cout << "[NET] 通信信道已建立，正在执行会话握手登录...\n";
+    }
 
     ProtoWriter logonBody;
     logonBody.WriteUInt32(1, 65580);                      // protocol_version
@@ -110,7 +117,7 @@ bool SteamCmClient::ConnectAndLogon(uint64_t steamId, std::string_view accessTok
 
     std::vector<uint8_t> respBody;
     if (!ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientLogonResponse), respBody, 12000)) {
-        LOG_ERROR("SteamCM", "未收到 CMsgClientLogonResponse 响应");
+        LOG_ERROR("SteamCM", "未收到 CMsgClientLogonResponse 响应 (握手超时)");
         Disconnect();
         return false;
     }
@@ -128,15 +135,30 @@ bool SteamCmClient::ConnectAndLogon(uint64_t steamId, std::string_view accessTok
     }
 
     if (eresult != 1) { // 1 == k_EResultOK
-        LOG_ERROR("SteamCM", "CM 登录被拒绝 (eresult={})", eresult);
-        std::cerr << "[ERROR] CM 登录失败 (EResult=" << eresult << ")，可能授权已过期。\n";
+        std::string reason;
+        switch (eresult) {
+            case 2:  reason = "通用失败 (Fail)"; break;
+            case 5:  reason = "访问被拒绝 / 权限不足 (AccessDenied)"; break;
+            case 6:  reason = "账号已在其他位置登录 (LoggedInElsewhere)"; break;
+            case 8:  reason = "无效或过期的授权令牌 (InvalidToken)"; break;
+            case 15: reason = "无权限 (AccessDenied)"; break;
+            case 20: reason = "服务暂不可用 (ServiceUnavailable)"; break;
+            case 25: reason = "登录频率受限 (LimitExceeded)"; break;
+            default: reason = std::format("错误代码 {}", eresult); break;
+        }
+        LOG_ERROR("SteamCM", "CM 登录被拒绝 (eresult={}, {})", eresult, reason);
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "[ERROR] CM 登录失败 (EResult=" << eresult << ", " << reason << ")，可能授权已过期。\n";
+        }
         Disconnect();
         return false;
     }
 
     m_isLoggedOn = true;
     LOG_INFO("SteamCM", "CM WebSocket 登录成功！SteamID: {}", MaskSteamId(m_steamId));
-    std::cout << "[OK] Steam CM 登录就绪！(SteamID: " << m_steamId << ")\n";
+    if (!TuiEngine::IsActive()) {
+        std::cout << "[OK] Steam CM 登录就绪！(SteamID: " << m_steamId << ")\n";
+    }
     return true;
 }
 
@@ -326,33 +348,63 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
     ExtractedAppCredentials creds;
     creds.appId = appId;
 
-    std::cout << "  -> 正在向 Steam CM 请求 AppOwnershipTicket...\n";
+    LOG_DEBUG("SteamCM", "正在向 Steam CM 请求 AppOwnershipTicket (AppID={})...", appId);
+    if (!TuiEngine::IsActive()) {
+        std::cout << "  -> 正在向 Steam CM 请求 AppOwnershipTicket...\n";
+    }
     creds.appOwnershipTicket = RequestAppOwnershipTicket(appId);
     if (creds.appOwnershipTicket) {
-        std::cout << "     [OK] 提取到所有权票据 (" << creds.appOwnershipTicket->size() << " 字节)\n";
+        LOG_INFO("SteamCM", "提取到所有权票据 ({} 字节)", creds.appOwnershipTicket->size());
+        if (!TuiEngine::IsActive()) {
+            std::cout << "     [OK] 提取到所有权票据 (" << creds.appOwnershipTicket->size() << " 字节)\n";
+        }
     } else {
-        std::cout << "     [INFO] 未能获取所有权票据 (账号可能未直接拥有该独立包)\n";
+        LOG_INFO("SteamCM", "未能获取所有权票据 (账号可能未直接拥有该独立包)");
+        if (!TuiEngine::IsActive()) {
+            std::cout << "     [INFO] 未能获取所有权票据 (账号可能未直接拥有该独立包)\n";
+        }
     }
 
-    std::cout << "  -> 正在向 Steam CM 请求 EncryptedAppTicket...\n";
+    LOG_DEBUG("SteamCM", "正在向 Steam CM 请求 EncryptedAppTicket (AppID={})...", appId);
+    if (!TuiEngine::IsActive()) {
+        std::cout << "  -> 正在向 Steam CM 请求 EncryptedAppTicket...\n";
+    }
     creds.encryptedAppTicket = RequestEncryptedAppTicket(appId);
     if (creds.encryptedAppTicket) {
-        std::cout << "     [OK] 提取到加密票据 (" << creds.encryptedAppTicket->size() << " 字节)\n";
+        LOG_INFO("SteamCM", "提取到加密票据 ({} 字节)", creds.encryptedAppTicket->size());
+        if (!TuiEngine::IsActive()) {
+            std::cout << "     [OK] 提取到加密票据 (" << creds.encryptedAppTicket->size() << " 字节)\n";
+        }
     } else {
-        std::cout << "     [INFO] 未能获取加密票据 (无加密运行时授权需求或未拥有)\n";
+        LOG_INFO("SteamCM", "未能获取加密票据 (无加密运行时授权需求或未拥有)");
+        if (!TuiEngine::IsActive()) {
+            std::cout << "     [INFO] 未能获取加密票据 (无加密运行时授权需求或未拥有)\n";
+        }
     }
 
-    std::cout << "  -> 正在向 Steam CM 查询 Depot 解密密钥...\n";
+    LOG_DEBUG("SteamCM", "正在向 Steam CM 查询 Depot 解密密钥 (AppID={})...", appId);
+    if (!TuiEngine::IsActive()) {
+        std::cout << "  -> 正在向 Steam CM 查询 Depot 解密密钥...\n";
+    }
     std::vector<uint32_t> initialDepots = { appId };
     creds.depotKeys = RequestDepotKeys(appId, initialDepots);
     if (!creds.depotKeys.empty()) {
-        std::cout << "     [OK] 提取到 " << creds.depotKeys.size() << " 个 Depot 解密密钥\n";
+        LOG_INFO("SteamCM", "提取到 {} 个 Depot 解密密钥", creds.depotKeys.size());
+        if (!TuiEngine::IsActive()) {
+            std::cout << "     [OK] 提取到 " << creds.depotKeys.size() << " 个 Depot 解密密钥\n";
+        }
     }
 
-    std::cout << "  -> 正在查询 64 位 PICS AccessToken...\n";
+    LOG_DEBUG("SteamCM", "正在查询 64 位 PICS AccessToken (AppID={})...", appId);
+    if (!TuiEngine::IsActive()) {
+        std::cout << "  -> 正在查询 64 位 PICS AccessToken...\n";
+    }
     creds.appTokens = RequestAppTokens({ appId });
     if (!creds.appTokens.empty()) {
-        std::cout << "     [OK] 提取到 PICS 访问令牌\n";
+        LOG_INFO("SteamCM", "提取到 PICS 访问令牌 (共 {} 个)", creds.appTokens.size());
+        if (!TuiEngine::IsActive()) {
+            std::cout << "     [OK] 提取到 PICS 访问令牌\n";
+        }
     }
 
     return creds;

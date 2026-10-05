@@ -1,4 +1,6 @@
 #include "OutputWriter.h"
+#include "Log.h"
+#include "TuiEngine.h"
 #include "Utils.h"
 
 #include <algorithm>
@@ -279,65 +281,74 @@ bool WriteOutputs(uint32_t appId,
         ok = false;
     }
 
-    std::cout << "Wrote " << dir << "\\ (" << std::to_string(appId) << ".lua, tickets.txt";
-    if (ownership && !ownership->empty()) std::cout << ", appticket.bin";
-    if (encrypted && !encrypted->empty()) std::cout << ", eticket.bin";
-    for (const auto& mName : copiedManifests) {
-        std::cout << ", " << mName;
-    }
-    std::cout << ")\n";
-
-    if (!dlcs.empty()) {
-        std::cout << "[INFO] 已提取 " << dlcs.size() << " 个拥有的 DLC / Extracted " << dlcs.size() << " owned DLC(s):\n";
-        for (const auto& dlc : dlcs) {
-            std::cout << "       DLC " << dlc.dlcId;
-            if (!dlc.name.empty()) {
-                std::cout << ": " << dlc.name;
-            }
-            std::cout << "\n";
+    if (!TuiEngine::IsActive()) {
+        std::cout << "Wrote " << dir << "\\ (" << std::to_string(appId) << ".lua, tickets.txt";
+        if (ownership && !ownership->empty()) std::cout << ", appticket.bin";
+        if (encrypted && !encrypted->empty()) std::cout << ", eticket.bin";
+        for (const auto& mName : copiedManifests) {
+            std::cout << ", " << mName;
         }
-    } else {
-        std::cout << "[INFO] 未检测到该游戏拥有的 DLC / No owned DLCs found for AppID " << appId << ".\n";
+        std::cout << ")\n";
+
+        if (!dlcs.empty()) {
+            std::cout << "[INFO] 已提取 " << dlcs.size() << " 个拥有的 DLC / Extracted " << dlcs.size() << " owned DLC(s):\n";
+            for (const auto& dlc : dlcs) {
+                std::cout << "       DLC " << dlc.dlcId;
+                if (!dlc.name.empty()) {
+                    std::cout << ": " << dlc.name;
+                }
+                std::cout << "\n";
+            }
+        } else {
+            std::cout << "[INFO] 未检测到该游戏拥有的 DLC / No owned DLCs found for AppID " << appId << ".\n";
+        }
+
+        const size_t keyCount = std::count_if(depotKeys.begin(), depotKeys.end(), [](const DepotKeyInfo& dk) {
+            return !dk.hexKey.empty();
+        });
+        if (keyCount > 0) {
+            std::cout << "[INFO] 已提取 " << keyCount << " 个 Depot 解密密钥 / Extracted " << keyCount << " depot decryption key(s):\n";
+            for (const auto& dk : depotKeys) {
+                if (!dk.hexKey.empty()) {
+                    std::cout << "       Depot " << dk.depotId << ": " << dk.hexKey << "\n";
+                }
+            }
+        } else {
+            std::cout << "[INFO] 未在 config.vdf 中找到缓存的 Depot 解密密钥 / No cached depot decryption keys found in config.vdf for AppID " << appId << ".\n";
+            std::cout << "[TIP] 若该游戏需要 Depot 密钥，请在 Steam 中启动一次安装/更新以生成缓存，然后重新运行提取工具。\n"
+                      << "      If this game requires depot keys, start installing/updating it once in Steam to cache them, then run extract_tickets again.\n";
+        }
+
+        if (!copiedManifests.empty()) {
+            std::cout << "[INFO] 已提取 " << copiedManifests.size() << " 个清单文件 (.manifest) / Extracted " << copiedManifests.size() << " depot manifest file(s) (.manifest):\n";
+            for (const auto& mName : copiedManifests) {
+                std::cout << "       " << mName << "\n";
+            }
+        } else {
+            std::cout << "[INFO] 未在 depotcache 中找到缓存的清单文件 (.manifest) / No cached .manifest files found in depotcache for AppID " << appId << ".\n";
+        }
+
+        if (!relevantTokens.empty()) {
+            std::cout << "[INFO] 已提取 " << relevantTokens.size() << " 个访问令牌 (AccessToken) / Extracted "
+                      << relevantTokens.size() << " access token(s):\n";
+            for (const auto& [tId, tVal] : relevantTokens) {
+                std::cout << "       AppID " << tId << ": " << tVal << "\n";
+            }
+        } else {
+            std::cout << "[INFO] 未在 appinfo.vdf 中找到非零访问令牌 (该游戏可能无需 Access Token) / "
+                      << "No non-zero access token found in appinfo.vdf for AppID " << appId
+                      << " (this game may not require an access token).\n";
+        }
+
+        std::cout << "[INFO] 配置文件已生成 / Ready-to-use Lua script saved to: " << luaPath << "\n";
     }
 
     const size_t keyCount = std::count_if(depotKeys.begin(), depotKeys.end(), [](const DepotKeyInfo& dk) {
         return !dk.hexKey.empty();
     });
-    if (keyCount > 0) {
-        std::cout << "[INFO] 已提取 " << keyCount << " 个 Depot 解密密钥 / Extracted " << keyCount << " depot decryption key(s):\n";
-        for (const auto& dk : depotKeys) {
-            if (!dk.hexKey.empty()) {
-                std::cout << "       Depot " << dk.depotId << ": " << dk.hexKey << "\n";
-            }
-        }
-    } else {
-        std::cout << "[INFO] 未在 config.vdf 中找到缓存的 Depot 解密密钥 / No cached depot decryption keys found in config.vdf for AppID " << appId << ".\n";
-        std::cout << "[TIP] 若该游戏需要 Depot 密钥，请在 Steam 中启动一次安装/更新以生成缓存，然后重新运行提取工具。\n"
-                  << "      If this game requires depot keys, start installing/updating it once in Steam to cache them, then run extract_tickets again.\n";
-    }
-
-    if (!copiedManifests.empty()) {
-        std::cout << "[INFO] 已提取 " << copiedManifests.size() << " 个清单文件 (.manifest) / Extracted " << copiedManifests.size() << " depot manifest file(s) (.manifest):\n";
-        for (const auto& mName : copiedManifests) {
-            std::cout << "       " << mName << "\n";
-        }
-    } else {
-        std::cout << "[INFO] 未在 depotcache 中找到缓存的清单文件 (.manifest) / No cached .manifest files found in depotcache for AppID " << appId << ".\n";
-    }
-
-    if (!relevantTokens.empty()) {
-        std::cout << "[INFO] 已提取 " << relevantTokens.size() << " 个访问令牌 (AccessToken) / Extracted "
-                  << relevantTokens.size() << " access token(s):\n";
-        for (const auto& [tId, tVal] : relevantTokens) {
-            std::cout << "       AppID " << tId << ": " << tVal << "\n";
-        }
-    } else {
-        std::cout << "[INFO] 未在 appinfo.vdf 中找到非零访问令牌 (该游戏可能无需 Access Token) / "
-                  << "No non-zero access token found in appinfo.vdf for AppID " << appId
-                  << " (this game may not require an access token).\n";
-    }
-
-    std::cout << "[INFO] 配置文件已生成 / Ready-to-use Lua script saved to: " << luaPath << "\n";
+    LOG_INFO("OutputWriter", "输出文件已写入: {}/ (DLCs={}, DepotKeys={}, Manifests={}, Tokens={})",
+             dir, dlcs.size(), keyCount, copiedManifests.size(), relevantTokens.size());
+    LOG_INFO("OutputWriter", "Lua 配置文件已保存至: {}", luaPath);
     return ok;
 }
 

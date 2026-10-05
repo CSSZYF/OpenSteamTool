@@ -7,6 +7,18 @@
 
 namespace OST::ExtractTickets {
 
+namespace {
+    bool g_tuiActive = false;
+}
+
+bool TuiEngine::IsActive() noexcept {
+    return g_tuiActive;
+}
+
+void TuiEngine::SetActive(bool active) noexcept {
+    g_tuiActive = active;
+}
+
 void TuiEngine::EnableVirtualTerminal() {
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     if (hOut == INVALID_HANDLE_VALUE) return;
@@ -20,7 +32,7 @@ void TuiEngine::EnableVirtualTerminal() {
 }
 
 void TuiEngine::EnterAlternateScreen() {
-    std::cout << "\x1b[?1049h\x1b[H";
+    std::cout << "\x1b[?1049h\x1b[2J\x1b[H";
     std::cout.flush();
 }
 
@@ -39,8 +51,14 @@ void TuiEngine::MoveCursor(int row, int col) {
 }
 
 void TuiEngine::ClearScreen() {
-    std::cout << "\x1b[2J\x1b[H";
+    // Reposition cursor to top-left without clearing the entire buffer to black.
+    // Avoids high-frequency terminal screen flashing on keystrokes and updates.
+    std::cout << "\x1b[H";
     std::cout.flush();
+}
+
+void TuiEngine::EraseToEndOfLine() {
+    std::cout << "\x1b[K";
 }
 
 void TuiEngine::GetScreenSize(int& outWidth, int& outHeight) {

@@ -46,11 +46,7 @@ inline void LogTrace(std::string_view tag, std::format_string<Args...> fmt, Args
 
 template <typename... Args>
 inline void LogDebug(std::string_view tag, std::format_string<Args...> fmt, Args&&... args) {
-#if defined(_DEBUG) || !defined(NDEBUG)
     LogMessage(LogLevel::Debug, tag, std::format(fmt, std::forward<Args>(args)...));
-#else
-    (void)tag;
-#endif
 }
 
 template <typename... Args>

@@ -171,6 +171,14 @@ namespace {
 
         TuiEngine::DrawFooter("[Enter] 提取选中/输入   [A] 批量提取全部   [L] 导出CSV表格   [N/B/←/→] 翻页   [Q] 登出");
     }
+
+    void UpdateLevel3Input(int top, int left, int boxH, std::string_view inputAppId) {
+        TuiEngine::MoveCursor(top + boxH - 2, left + 4);
+        std::cout << "\x1b[1;37m[目标 AppID 快速提取]: \x1b[1;30;47m[ "
+                  << std::format("{:<12}", std::string{inputAppId} + "_")
+                  << " ]\x1b[0m  \x1b[90m(直接输入纯数字回车，或回车提取高亮选中项)\x1b[0m   ";
+        std::cout.flush();
+    }
 } // namespace
 
 int OnlineSession::RunInteractive() {
@@ -272,9 +280,19 @@ void OnlineSession::RunAccountSelectionMenu() {
                 } else if (selected >= 1 && selected <= accounts.size()) {
                     // Cached account
                     const auto& acc = accounts[selected - 1];
-                    auto accessOpt = authService.RefreshAccessToken(acc.steamId, acc.refreshToken);
-                    if (accessOpt) {
-                        RunInSessionExtraction(acc.accountName, acc.steamId, *accessOpt);
+                    std::string activeToken = acc.accessToken;
+                    if (activeToken.empty()) {
+                        auto accessOpt = authService.RefreshAccessToken(acc.steamId, acc.refreshToken);
+                        if (accessOpt) {
+                            activeToken = *accessOpt;
+                            CachedAccount updated = acc;
+                            updated.accessToken = activeToken;
+                            TokenStorage::UpsertAccount(updated);
+                        }
+                    }
+
+                    if (!activeToken.empty()) {
+                        RunInSessionExtraction(acc.accountName, acc.steamId, activeToken);
                     } else {
                         bool relogin = TuiEngine::ShowConfirmModal(
                             "授权令牌失效",
@@ -323,10 +341,23 @@ void OnlineSession::RunInSessionExtraction(
     SteamAuthService authService;
     SteamCmClient cmClient;
 
+    int w = 80, h = 25;
+    TuiEngine::GetScreenSize(w, h);
+    const int modalW = 64, modalH = 6;
+    const int top = (h - modalH) / 2, left = (w - modalW) / 2;
+    TuiEngine::DrawBox(top, left, modalW, modalH, "Steam 正在接入网关");
+    TuiEngine::MoveCursor(top + 2, left + 4);
+    std::cout << "\x1b[1;36m正在建立安全 WebSocket CM 会话 (wss://cm.steampowered.com/cmsocket/)...\x1b[0m";
+    std::cout.flush();
+
     if (!cmClient.ConnectAndLogon(steamId, accessToken)) {
         TuiEngine::ShowMessageModal("连接失败", "无法建立 Steam CM WebSocket 会话", "请检查网络或代理连接");
         return;
     }
+
+    TuiEngine::MoveCursor(top + 2, left + 4);
+    std::cout << "\x1b[1;32m登录成功！正在同步当前账号拥有的正版游戏列表...\x1b[0m          ";
+    std::cout.flush();
 
     auto games = authService.FetchOwnedGames(steamId, accessToken);
     if (games.empty()) {
@@ -441,6 +472,12 @@ void OnlineSession::RunInSessionExtraction(
         if (ev.code == KeyCode::Char && ev.ch >= '0' && ev.ch <= '9') {
             if (inputAppId.size() < 10) {
                 inputAppId.push_back(ev.ch);
+                int w = 80, h = 25;
+                TuiEngine::GetScreenSize(w, h);
+                const int boxH = std::clamp(h - 4, 22, 28);
+                const int top = 2;
+                const int left = (w - std::clamp(w - 4, 76, 120)) / 2;
+                UpdateLevel3Input(top, left, boxH, inputAppId);
             }
             continue;
         }
@@ -449,6 +486,12 @@ void OnlineSession::RunInSessionExtraction(
         if (ev.code == KeyCode::Backspace) {
             if (!inputAppId.empty()) {
                 inputAppId.pop_back();
+                int w = 80, h = 25;
+                TuiEngine::GetScreenSize(w, h);
+                const int boxH = std::clamp(h - 4, 22, 28);
+                const int top = 2;
+                const int left = (w - std::clamp(w - 4, 76, 120)) / 2;
+                UpdateLevel3Input(top, left, boxH, inputAppId);
             }
             continue;
         }

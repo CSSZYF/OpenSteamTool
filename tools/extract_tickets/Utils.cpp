@@ -1,5 +1,7 @@
 #include "Utils.h"
+#include "Log.h"
 #include "RaiiGuards.h"
+#include "TuiEngine.h"
 
 #include <algorithm>
 #include <cctype>
@@ -126,6 +128,7 @@ std::string ToHexString(std::span<const uint8_t> data) {
 }
 
 void PrintHex(const char* label, std::span<const uint8_t> data) {
+    if (TuiEngine::IsActive()) return;
     std::cout << label << " (" << data.size() << " bytes):\n";
 
     constexpr size_t kBytesPerRow = 16;
@@ -238,13 +241,13 @@ std::optional<std::string> FindSteamInstallPath() {
 
     if (auto path = QueryRegistryString(HKEY_CURRENT_USER, kSteamKey, "SteamPath")) {
         std::string norm = NormalizeDir(*path);
-        std::cout << "Found SteamPath in HKEY_CURRENT_USER: " << norm << "\n";
+        LOG_DEBUG("SteamPath", "Found SteamPath in HKEY_CURRENT_USER: {}", norm);
         return norm;
     }
 
     if (auto path = QueryRegistryString(HKEY_LOCAL_MACHINE, kSteamKey, "InstallPath")) {
         std::string norm = NormalizeDir(*path);
-        std::cout << "Found InstallPath in HKEY_LOCAL_MACHINE: " << norm << "\n";
+        LOG_DEBUG("SteamPath", "Found InstallPath in HKEY_LOCAL_MACHINE: {}", norm);
         return norm;
     }
 
@@ -256,7 +259,7 @@ std::optional<std::string> FindSteamInstallPath() {
         std::string checkExe = JoinPath(p, "steam.exe");
         DWORD attr = GetFileAttributesA(checkExe.c_str());
         if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
-            std::cout << "Found Steam install path at default location: " << p << "\n";
+            LOG_DEBUG("SteamPath", "Found Steam install path at default location: {}", p);
             return NormalizeDir(p);
         }
     }
