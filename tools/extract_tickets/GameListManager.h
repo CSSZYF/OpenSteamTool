@@ -16,7 +16,9 @@ public:
     [[nodiscard]] size_t TotalGames() const noexcept { return m_games.size(); }
     [[nodiscard]] size_t TotalPages() const noexcept;
     [[nodiscard]] size_t CurrentPage() const noexcept { return m_currentPage; }
+    [[nodiscard]] size_t PageSize() const noexcept { return m_pageSize; }
     [[nodiscard]] const std::vector<OwnedGameInfo>& Games() const noexcept { return m_games; }
+    [[nodiscard]] std::vector<OwnedGameInfo> GetPageItems(size_t pageIndex) const;
 
     // Renders the current page to the console with border and indices
     void PrintCurrentPage() const;

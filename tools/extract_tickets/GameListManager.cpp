@@ -127,4 +127,12 @@ bool GameListManager::ExportCsv(std::string_view accountName, std::string* outPa
     return true;
 }
 
+std::vector<OwnedGameInfo> GameListManager::GetPageItems(size_t pageIndex) const {
+    const size_t total = m_games.size();
+    const size_t startIdx = pageIndex * m_pageSize;
+    if (startIdx >= total) return {};
+    const size_t endIdx = (std::min)(startIdx + m_pageSize, total);
+    return std::vector<OwnedGameInfo>(m_games.begin() + startIdx, m_games.begin() + endIdx);
+}
+
 } // namespace OST::ExtractTickets

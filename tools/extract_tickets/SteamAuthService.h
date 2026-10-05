@@ -67,6 +67,11 @@ public:
         uint64_t steamId,
         std::string_view refreshToken);
 
+    // High-level login with credentials (handles 2FA prompt in TUI/console)
+    [[nodiscard]] SteamLoginResult LoginWithCredentials(
+        std::string_view accountName,
+        const SecureString& password);
+
     // High-level interactive login flow (prompts for password and 2FA in console)
     [[nodiscard]] SteamLoginResult InteractiveLogin(std::string_view accountName);
 

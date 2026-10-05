@@ -1,5 +1,6 @@
 #include "SteamAuthService.h"
 #include "Log.h"
+#include "TuiEngine.h"
 
 #include <chrono>
 #include <iomanip>
@@ -212,79 +213,75 @@ std::vector<OwnedGameInfo> SteamAuthService::FetchOwnedGames(
     return games;
 }
 
-SteamLoginResult SteamAuthService::InteractiveLogin(std::string_view accountName) {
+SteamLoginResult SteamAuthService::LoginWithCredentials(
+    std::string_view accountName,
+    const SecureString& password) {
+
     SteamLoginResult failResult;
     failResult.accountName = accountName;
 
-    std::cout << "[AUTH] 正在向 Valve 服务器验证账号: " << accountName << "\n";
     auto rsaKey = GetPasswordRsaKey(accountName);
     if (!rsaKey) {
         failResult.errorMessage = "无法从 Steam 服务器获取安全 RSA 公钥";
-        std::cerr << "[ERROR] " << failResult.errorMessage << "\n";
+        LOG_WARN("SteamAuth", "{}", failResult.errorMessage);
         return failResult;
     }
 
-    SecureString password = ReadPasswordFromConsole("请输入 Steam 登录密码: ");
-    if (password.Empty()) {
-        failResult.errorMessage = "密码不能为空";
-        std::cerr << "[ERROR] " << failResult.errorMessage << "\n";
-        return failResult;
-    }
-
-    std::cout << "[AUTH] 正在发起安全身份校验...\n";
     auto session = BeginAuthSession(accountName, password, *rsaKey);
-    // Password is now wiped from RAM
-    password.Clear();
-
     if (!session) {
         failResult.errorMessage = "发起认证会话失败，请检查账号密码是否正确";
-        std::cerr << "[ERROR] " << failResult.errorMessage << "\n";
+        LOG_WARN("SteamAuth", "{}", failResult.errorMessage);
         return failResult;
     }
 
     bool needs2FA = false;
     for (int cType : session->allowedConfirmations) {
         if (cType == 2) { // DeviceCode (Steam Mobile Authenticator TOTP)
-            std::cout << "[2FA] 账号已启用手机令牌。请输入 5 位动态验证码: ";
-            std::string code;
-            std::cin >> code;
-            SubmitSteamGuardCode(*session, code, 2);
+            auto codeOpt = TuiEngine::PromptInputModal("Steam Guard 手机令牌", "账号已启用手机令牌，请输入 5 位动态验证码:");
+            if (codeOpt && !codeOpt->empty()) {
+                SubmitSteamGuardCode(*session, *codeOpt, 2);
+            }
             needs2FA = true;
             break;
         } else if (cType == 1) { // EmailCode
-            std::cout << "[2FA] 验证码已发送至您的注册邮箱。请输入邮箱验证码: ";
-            std::string code;
-            std::cin >> code;
-            SubmitSteamGuardCode(*session, code, 1);
+            auto codeOpt = TuiEngine::PromptInputModal("Steam Guard 邮箱验证", "验证码已发送至您的注册邮箱，请输入邮箱验证码:");
+            if (codeOpt && !codeOpt->empty()) {
+                SubmitSteamGuardCode(*session, *codeOpt, 1);
+            }
             needs2FA = true;
             break;
         } else if (cType == 3) { // DeviceConfirmation (Steam App prompt)
-            std::cout << "[2FA] 请在手机 Steam App 上点击【确认登录】...\n";
+            TuiEngine::ShowMessageModal("Steam 手机确认", "请在手机 Steam App 上点击【确认登录】", "点击后按 Enter 键继续...");
             needs2FA = true;
+            break;
         }
     }
 
-    std::cout << "[AUTH] 正在等待 Valve 服务器确认会话授权...\n";
     auto result = PollAuthSession(*session, accountName);
     if (!result.success) {
-        std::cerr << "[ERROR] " << result.errorMessage << "\n";
+        LOG_WARN("SteamAuth", "{}", result.errorMessage);
         return result;
     }
 
-    std::cout << "[OK] 登录成功！(SteamID: " << result.steamId << ")\n";
-
-    // Cache the refresh token with Windows DPAPI
     CachedAccount cached;
     cached.accountName = std::string{accountName};
     cached.steamId = result.steamId;
     cached.refreshToken = result.refreshToken;
     cached.lastLoginTime = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 
-    if (TokenStorage::UpsertAccount(cached)) {
-        std::cout << "[AUTH] 已使用 Windows DPAPI 安全缓存登录状态 (下次可免密一键提取)。\n";
-    }
-
+    TokenStorage::UpsertAccount(cached);
     return result;
+}
+
+SteamLoginResult SteamAuthService::InteractiveLogin(std::string_view accountName) {
+    SecureString password = ReadPasswordFromConsole("请输入 Steam 登录密码: ");
+    if (password.Empty()) {
+        SteamLoginResult fail;
+        fail.accountName = accountName;
+        fail.errorMessage = "密码不能为空";
+        return fail;
+    }
+    return LoginWithCredentials(accountName, password);
 }
 
 } // namespace OST::ExtractTickets

@@ -28,6 +28,7 @@ add_executable(extract_tickets
     extract_tickets/SteamCmClient.cpp
     extract_tickets/GameListManager.cpp
     extract_tickets/OnlineSession.cpp
+    extract_tickets/TuiEngine.cpp
 )
 target_compile_features(extract_tickets PRIVATE cxx_std_20)
 if(MSVC)

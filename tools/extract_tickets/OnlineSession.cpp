@@ -5,11 +5,11 @@
 #include "SteamAuthService.h"
 #include "SteamCmClient.h"
 #include "TokenStorage.h"
+#include "TuiEngine.h"
 #include "Utils.h"
 
-#include <conio.h>
 #include <chrono>
-#include <iomanip>
+#include <format>
 #include <iostream>
 #include <thread>
 
@@ -29,6 +29,148 @@ namespace {
                            tmVal.tm_year + 1900, tmVal.tm_mon + 1, tmVal.tm_mday,
                            tmVal.tm_hour, tmVal.tm_min);
     }
+
+    void RenderLevel2Tui(const std::vector<CachedAccount>& accounts, size_t selected) {
+        int w = 80, h = 25;
+        TuiEngine::GetScreenSize(w, h);
+        TuiEngine::ClearScreen();
+
+        TuiEngine::DrawHeader("Steam 在线凭据中心 (Windows DPAPI 内核级硬件保护)",
+                              std::format("已保存 {} 个账号", accounts.size()));
+
+        const int boxW = std::clamp(w - 4, 76, 110);
+        const int boxH = std::clamp(h - 4, 18, 26);
+        const int top = 2;
+        const int left = (w - boxW) / 2;
+
+        TuiEngine::DrawBox(top, left, boxW, boxH, "请选择 Steam 账号进行在线提取");
+
+        // Subtitle explanation
+        TuiEngine::MoveCursor(top + 2, left + 4);
+        std::cout << "\x1b[90m所有凭据均采用 Windows DPAPI 硬件绑定加密，仅保存会话 Token，绝不持久化任何明文密码。\x1b[0m";
+
+        // Item 0: [+] 登录新账号 (Default)
+        TuiEngine::MoveCursor(top + 4, left + 4);
+        if (selected == 0) {
+            std::cout << "\x1b[1;30;46m > [+] 登录新账号 (Log in to a new account) [默认 / Enter 直接输入] \x1b[0m";
+        } else {
+            std::cout << "\x1b[1;37m   [+] 登录新账号 (Log in to a new account) [默认 / Enter 直接输入]\x1b[0m";
+        }
+
+        // Cached accounts
+        for (size_t i = 0; i < accounts.size(); ++i) {
+            const auto& acc = accounts[i];
+            const size_t itemIdx = i + 1;
+            TuiEngine::MoveCursor(top + 5 + static_cast<int>(i), left + 4);
+
+            std::string lineText = std::format("   [{}] {}  (上次登录: {}) [DPAPI 加密有效]",
+                                               itemIdx, acc.accountName, FormatTimestamp(acc.lastLoginTime));
+            if (selected == itemIdx) {
+                lineText[1] = '>';
+                std::cout << "\x1b[1;30;46m" << TuiEngine::Pad(lineText, static_cast<size_t>(boxW - 8)) << "\x1b[0m";
+            } else {
+                std::cout << "\x1b[37m" << lineText << "\x1b[0m";
+            }
+        }
+
+        // Optional wipe all
+        if (!accounts.empty()) {
+            const size_t wipeIdx = accounts.size() + 1;
+            TuiEngine::MoveCursor(top + 6 + static_cast<int>(accounts.size()), left + 4);
+            std::string wipeText = "   [x] 彻底粉碎全部账号缓存 (Wipe All Caches)";
+            if (selected == wipeIdx) {
+                wipeText[1] = '>';
+                std::cout << "\x1b[1;37;41m" << TuiEngine::Pad(wipeText, static_cast<size_t>(boxW - 8)) << "\x1b[0m";
+            } else {
+                std::cout << "\x1b[91m" << wipeText << "\x1b[0m";
+            }
+        }
+
+        // Bottom help card
+        TuiEngine::MoveCursor(top + boxH - 4, left + 4);
+        std::cout << "\x1b[90m" << std::string(boxW - 8, '-') << "\x1b[0m";
+        TuiEngine::MoveCursor(top + boxH - 3, left + 4);
+        if (selected == 0) {
+            std::cout << "\x1b[33m提示: 按 Enter 即可输入新账号、密码及 2FA 动态码登录；登录后自动保存加密缓存。\x1b[0m";
+        } else if (selected <= accounts.size()) {
+            std::cout << "\x1b[32m提示: 按 Enter 立即免密授权登录；按 [D] 删除选中缓存；按 [Q/ESC] 返回首页。\x1b[0m";
+        } else {
+            std::cout << "\x1b[31m提示: 危险操作！按 Enter 将执行零填充覆写粉碎本地所有已保存的账号凭据。\x1b[0m";
+        }
+
+        TuiEngine::DrawFooter("[↑/↓] 移动光标   [Enter] 确认选择   [D] 删除选中账号   [Q/ESC] 返回首页");
+    }
+
+    void RenderLevel3Tui(const GameListManager& gameMgr,
+                         size_t selectedRow,
+                         std::string_view inputAppId,
+                         std::string_view accountName,
+                         uint64_t steamId) {
+        int w = 80, h = 25;
+        TuiEngine::GetScreenSize(w, h);
+        TuiEngine::ClearScreen();
+
+        std::string title = std::format("Steam 账号: {} (SteamID: {})", accountName, steamId);
+        std::string tag = std::format("第 {} / {} 页 (共 {} 款游戏)",
+                                      gameMgr.CurrentPage() + 1,
+                                      gameMgr.TotalPages(),
+                                      gameMgr.TotalGames());
+        TuiEngine::DrawHeader(title, tag);
+
+        const int boxW = std::clamp(w - 4, 76, 120);
+        const int boxH = std::clamp(h - 4, 22, 28);
+        const int top = 2;
+        const int left = (w - boxW) / 2;
+
+        TuiEngine::DrawBox(top, left, boxW, boxH, "已拥有正版游戏列表 (支持纯数字 AppID 提取与翻页)");
+
+        // Table header
+        const size_t nameColWidth = (boxW > 36) ? static_cast<size_t>(boxW - 32) : 20;
+        TuiEngine::MoveCursor(top + 2, left + 2);
+        std::string nameTitle = TuiEngine::Pad("游戏名称 (Game Title)", nameColWidth);
+        std::string hdr = std::format(" {:<4} │ {:<10} │ {} │ {:<6} ",
+                                      "序号", "AppID", nameTitle, "状态");
+        std::cout << "\x1b[1;37;44m" << hdr << "\x1b[0m";
+
+        TuiEngine::MoveCursor(top + 3, left + 2);
+        std::cout << "\x1b[90m" << std::string(boxW - 4, '-') << "\x1b[0m";
+
+        // Rows
+        const auto pageGames = gameMgr.GetPageItems(gameMgr.CurrentPage());
+        const size_t startIndex = gameMgr.CurrentPage() * gameMgr.PageSize();
+
+        for (size_t r = 0; r < 20; ++r) {
+            TuiEngine::MoveCursor(top + 4 + static_cast<int>(r), left + 2);
+            if (r < pageGames.size()) {
+                const auto& g = pageGames[r];
+                const size_t globalIdx = startIndex + r + 1;
+                std::string truncatedName = TuiEngine::TruncateToWidth(g.name, nameColWidth);
+                std::string paddedName = TuiEngine::Pad(truncatedName, nameColWidth);
+
+                std::string rowStr = std::format(" {:>3}  │ {:<10} │ {} │ 就绪   ",
+                                                 globalIdx, g.appId, paddedName);
+                if (r == selectedRow) {
+                    rowStr[0] = '>';
+                    std::cout << "\x1b[1;30;46m" << rowStr << "\x1b[0m";
+                } else {
+                    std::cout << "\x1b[37m" << rowStr << "\x1b[0m";
+                }
+            } else {
+                std::cout << std::string(boxW - 4, ' ');
+            }
+        }
+
+        // Direct AppID input box line
+        TuiEngine::MoveCursor(top + boxH - 3, left + 2);
+        std::cout << "\x1b[90m" << std::string(boxW - 4, '-') << "\x1b[0m";
+
+        TuiEngine::MoveCursor(top + boxH - 2, left + 4);
+        std::cout << "\x1b[1;37m[目标 AppID 快速提取]: \x1b[1;30;47m[ "
+                  << std::format("{:<12}", std::string{inputAppId} + "_")
+                  << " ]\x1b[0m  \x1b[90m(直接输入纯数字回车，或回车提取高亮选中项)\x1b[0m";
+
+        TuiEngine::DrawFooter("[Enter] 提取选中/输入   [A] 批量提取全部   [L] 导出CSV表格   [N/B/←/→] 翻页   [Q] 登出");
+    }
 } // namespace
 
 int OnlineSession::RunInteractive() {
@@ -41,132 +183,116 @@ void OnlineSession::RunAccountSelectionMenu() {
 
     while (true) {
         auto accounts = TokenStorage::LoadAccounts();
-
-        // Menu items:
-        // Index 0: [+] 登录新账号 (Log in to a new account) [默认]
-        // Index 1 .. accounts.size(): Cached accounts
-        // Index accounts.size() + 1: [x] 彻底粉碎全部账号缓存 (only if accounts is not empty)
         const size_t totalItems = 1 + accounts.size() + (accounts.empty() ? 0 : 1);
         size_t selected = 0; // Default to new account
 
         bool menuActive = true;
         while (menuActive) {
-            std::cout << "\n======================================================================\n"
-                      << "  Steam 在线凭据中心 / Steam Token Manager (Windows DPAPI 加密保护)\n"
-                      << "======================================================================\n"
-                      << "[安全提示] 所有凭据均采用 Windows DPAPI 内核级硬件绑定加密。\n"
-                      << "           本地仅存储会话 Token，绝不持久化任何账号明文密码。\n"
-                      << "[操作指南] ↑ / ↓: 移动选中 | Enter: 登录提取 | [d]: 删除选中账号 | [q] / ESC: 返回上一层\n\n"
-                      << "请选择 Steam 账号 (默认登录新账号，按 Enter 直接输入；或按 ↓ 键选择已有缓存):\n";
+            RenderLevel2Tui(accounts, selected);
 
-            // 0: [+]
-            std::cout << (selected == 0 ? " > " : "   ")
-                      << "[+] 登录新账号 (Log in to a new account) [默认 / Default]\n";
+            KeyEvent ev = TuiEngine::ReadKey();
 
-            // 1 .. accounts.size()
-            for (size_t i = 0; i < accounts.size(); ++i) {
-                const auto& acc = accounts[i];
-                const size_t itemIdx = i + 1;
-                std::cout << (selected == itemIdx ? " > " : "   ")
-                          << "[" << itemIdx << "] " << acc.accountName
-                          << " (上次使用: " << FormatTimestamp(acc.lastLoginTime) << ") [DPAPI 加密保护]\n";
+            // Arrow keys
+            if (ev.code == KeyCode::Up) {
+                selected = (selected > 0) ? (selected - 1) : (totalItems - 1);
+                continue;
+            }
+            if (ev.code == KeyCode::Down) {
+                selected = (selected + 1 < totalItems) ? (selected + 1) : 0;
+                continue;
             }
 
-            // Optional [x]
-            if (!accounts.empty()) {
-                const size_t wipeIdx = accounts.size() + 1;
-                std::cout << (selected == wipeIdx ? " > " : "   ")
-                          << "[x] 彻底粉碎全部账号缓存 (Wipe All Caches)\n";
-            }
-
-            std::cout << "\n请选择操作: ";
-            std::cout.flush();
-
-            // Wait for key
-            int ch = _getch();
-            if (ch == 0 || ch == 0xE0) {
-                int arrow = _getch();
-                if (arrow == 0x48) { // Up
-                    selected = (selected > 0) ? (selected - 1) : (totalItems - 1);
-                } else if (arrow == 0x50) { // Down
-                    selected = (selected + 1 < totalItems) ? (selected + 1) : 0;
-                }
-                continue; // Redraw menu
-            }
-
-            if (ch == 'q' || ch == 'Q' || ch == 27) { // ESC or q -> Back to Level 1
-                std::cout << "[q]\n[INFO] 返回主菜单。\n";
+            // ESC or q -> Back to Level 1
+            if (ev.code == KeyCode::Escape ||
+                (ev.code == KeyCode::Char && (ev.ch == 'q' || ev.ch == 'Q'))) {
                 return;
             }
 
-            if (ch == 'd' || ch == 'D') {
+            // 'd' or Delete -> Delete selected account
+            if (ev.code == KeyCode::Delete ||
+                (ev.code == KeyCode::Char && (ev.ch == 'd' || ev.ch == 'D'))) {
                 if (selected >= 1 && selected <= accounts.size()) {
                     const auto& targetAcc = accounts[selected - 1];
-                    std::cout << "\n[确认] 确定删除账号 [" << targetAcc.accountName << "] 的本地登录缓存吗? [y/N]: ";
-                    std::string confirm;
-                    std::getline(std::cin, confirm);
-                    confirm = std::string{TrimWhitespace(confirm)};
-                    if (confirm == "y" || confirm == "Y") {
+                    bool confirmed = TuiEngine::ShowConfirmModal(
+                        "删除账号凭据",
+                        std::format("确定删除账号 [{}] 的本地登录缓存吗?", targetAcc.accountName),
+                        "删除后将无法免密登录该账号",
+                        false);
+                    if (confirmed) {
                         TokenStorage::DeleteAccount(targetAcc.accountName);
-                        std::cout << "[OK] 已删除账号缓存。\n";
                         break; // Reload accounts & redraw menu
-                    } else {
-                        std::cout << "[INFO] 已取消删除。\n";
                     }
                 }
                 continue;
             }
 
-            if (ch == 'x' || ch == 'X') {
+            // 'x' -> Wipe all
+            if (ev.code == KeyCode::Char && (ev.ch == 'x' || ev.ch == 'X')) {
                 if (!accounts.empty()) {
-                    std::cout << "\n[确认] 警告：确定要彻底粉碎全部本地账号凭据缓存吗? [y/N]: ";
-                    std::string confirm;
-                    std::getline(std::cin, confirm);
-                    confirm = std::string{TrimWhitespace(confirm)};
-                    if (confirm == "y" || confirm == "Y") {
+                    bool confirmed = TuiEngine::ShowConfirmModal(
+                        "粉碎全部凭据",
+                        "警告：确定要彻底粉碎全部本地账号凭据缓存吗?",
+                        "本地所有账号的 DPAPI 加密凭据都将被安全抹除",
+                        false);
+                    if (confirmed) {
                         TokenStorage::WipeAll();
-                        std::cout << "[OK] 已粉碎全部本地缓存。\n";
                         break;
                     }
                 }
                 continue;
             }
 
-            if (ch == '\r' || ch == '\n') { // Enter
+            // Enter key
+            if (ev.code == KeyCode::Enter) {
                 if (selected == 0) {
                     // Log in to a new account
-                    std::cout << "\n\n[登录新账号]\n请输入 Steam 登录账号: ";
-                    std::string accountName;
-                    std::getline(std::cin, accountName);
-                    accountName = std::string{TrimWhitespace(accountName)};
-                    if (accountName.empty()) {
-                        std::cerr << "[WARN] 账号名称不能为空。\n";
+                    auto accName = TuiEngine::PromptInputModal("Steam 账号登录", "请输入 Steam 登录账号:", "");
+                    if (!accName || accName->empty()) {
+                        continue;
+                    }
+                    auto pwdStr = TuiEngine::PromptInputModal("Steam 账号登录", "请输入 Steam 密码 (掩码保护):", "", true);
+                    if (!pwdStr || pwdStr->empty()) {
                         continue;
                     }
 
-                    auto loginRes = authService.InteractiveLogin(accountName);
+                    SecureString secPwd(*pwdStr);
+                    SecureZeroMemory(pwdStr->data(), pwdStr->size());
+
+                    auto loginRes = authService.LoginWithCredentials(*accName, secPwd);
+                    secPwd.Clear();
+
                     if (loginRes.success) {
                         RunInSessionExtraction(loginRes.accountName, loginRes.steamId, loginRes.accessToken);
+                    } else {
+                        TuiEngine::ShowMessageModal("登录失败",
+                                                    loginRes.errorMessage.empty() ? "账号或密码错误" : loginRes.errorMessage,
+                                                    "请检查网络连接及动态验证码输入");
                     }
-                    break; // Refresh menu after session ends
+                    break;
                 } else if (selected >= 1 && selected <= accounts.size()) {
                     // Cached account
                     const auto& acc = accounts[selected - 1];
-                    std::cout << "\n\n正在尝试使用本地 DPAPI 缓存凭据免密登录: " << acc.accountName << "...\n";
                     auto accessOpt = authService.RefreshAccessToken(acc.steamId, acc.refreshToken);
                     if (accessOpt) {
-                        std::cout << "[OK] 免密授权校验通过！(SteamID: " << acc.steamId << ")\n";
                         RunInSessionExtraction(acc.accountName, acc.steamId, *accessOpt);
                     } else {
-                        std::cout << "[WARN] 该账号的本地授权令牌已过期或已在手机端失效。\n"
-                                  << "是否立即重新登录? [Y/n]: ";
-                        std::string reloginConfirm;
-                        std::getline(std::cin, reloginConfirm);
-                        reloginConfirm = std::string{TrimWhitespace(reloginConfirm)};
-                        if (reloginConfirm.empty() || reloginConfirm == "y" || reloginConfirm == "Y") {
-                            auto loginRes = authService.InteractiveLogin(acc.accountName);
-                            if (loginRes.success) {
-                                RunInSessionExtraction(loginRes.accountName, loginRes.steamId, loginRes.accessToken);
+                        bool relogin = TuiEngine::ShowConfirmModal(
+                            "授权令牌失效",
+                            std::format("账号 [{}] 的本地授权令牌已过期或失效", acc.accountName),
+                            "是否立即重新输入密码登录该账号?",
+                            true);
+                        if (relogin) {
+                            auto pwdStr = TuiEngine::PromptInputModal("重新登录", std::format("请输入账号 [{}] 的密码:", acc.accountName), "", true);
+                            if (pwdStr && !pwdStr->empty()) {
+                                SecureString secPwd(*pwdStr);
+                                SecureZeroMemory(pwdStr->data(), pwdStr->size());
+                                auto loginRes = authService.LoginWithCredentials(acc.accountName, secPwd);
+                                secPwd.Clear();
+                                if (loginRes.success) {
+                                    RunInSessionExtraction(loginRes.accountName, loginRes.steamId, loginRes.accessToken);
+                                } else {
+                                    TuiEngine::ShowMessageModal("登录失败", loginRes.errorMessage);
+                                }
                             }
                         } else {
                             TokenStorage::DeleteAccount(acc.accountName);
@@ -174,14 +300,13 @@ void OnlineSession::RunAccountSelectionMenu() {
                     }
                     break;
                 } else if (!accounts.empty() && selected == accounts.size() + 1) {
-                    // Wipe all selected
-                    std::cout << "\n[确认] 确定要彻底粉碎全部本地账号凭据缓存吗? [y/N]: ";
-                    std::string confirm;
-                    std::getline(std::cin, confirm);
-                    confirm = std::string{TrimWhitespace(confirm)};
-                    if (confirm == "y" || confirm == "Y") {
+                    bool confirmed = TuiEngine::ShowConfirmModal(
+                        "粉碎全部凭据",
+                        "警告：确定要彻底粉碎全部本地账号凭据缓存吗?",
+                        "本地所有账号的 DPAPI 加密凭据都将被安全抹除",
+                        false);
+                    if (confirmed) {
                         TokenStorage::WipeAll();
-                        std::cout << "[OK] 全部缓存已粉碎。\n";
                         break;
                     }
                 }
@@ -198,124 +323,191 @@ void OnlineSession::RunInSessionExtraction(
     SteamAuthService authService;
     SteamCmClient cmClient;
 
-    // Connect to CM
     if (!cmClient.ConnectAndLogon(steamId, accessToken)) {
-        std::cerr << "[ERROR] 无法建立 Steam CM 会话，已返回账号选择菜单。\n";
+        TuiEngine::ShowMessageModal("连接失败", "无法建立 Steam CM WebSocket 会话", "请检查网络或代理连接");
         return;
     }
 
-    std::cout << "[INFO] 正在同步账号已拥有的正版游戏列表...\n";
     auto games = authService.FetchOwnedGames(steamId, accessToken);
-    std::cout << "[OK] 游戏列表同步成功！共检索到 " << games.size() << " 款游戏与许可。\n";
+    if (games.empty()) {
+        TuiEngine::ShowMessageModal("游戏库同步", "未找到拥有的游戏列表或网络请求失败");
+        return;
+    }
 
     GameListManager gameMgr(std::move(games), 20);
-    gameMgr.PrintCurrentPage();
+    size_t selectedRow = 0;
+    std::string inputAppId;
 
     while (true) {
-        std::cout << "\n请输入指令 (AppID 或 a/n/b/l/q): ";
-        std::string line;
-        if (!std::getline(std::cin, line)) {
-            break;
-        }
-        line = std::string{TrimWhitespace(line)};
-        if (line.empty()) continue;
+        RenderLevel3Tui(gameMgr, selectedRow, inputAppId, accountName, steamId);
 
-        // Command: q (Quit / Back to Level 2)
-        if (line == "q" || line == "Q") {
-            std::cout << "[q]\n[INFO] 正在登出当前账号会话，返回账号列表...\n";
-            cmClient.Disconnect();
-            break;
-        }
+        KeyEvent ev = TuiEngine::ReadKey();
 
-        // Command: n (Next Page)
-        if (line == "n" || line == "N") {
-            if (gameMgr.NextPage()) {
-                gameMgr.PrintCurrentPage();
-            } else {
-                std::cout << "[INFO] 当前已是最后一页 (第 " << (gameMgr.CurrentPage() + 1) << " 页)。\n";
+        // Up / Down
+        if (ev.code == KeyCode::Up) {
+            const auto pageItems = gameMgr.GetPageItems(gameMgr.CurrentPage());
+            if (!pageItems.empty()) {
+                selectedRow = (selectedRow > 0) ? (selectedRow - 1) : (pageItems.size() - 1);
+            }
+            continue;
+        }
+        if (ev.code == KeyCode::Down) {
+            const auto pageItems = gameMgr.GetPageItems(gameMgr.CurrentPage());
+            if (!pageItems.empty()) {
+                selectedRow = (selectedRow + 1 < pageItems.size()) ? (selectedRow + 1) : 0;
             }
             continue;
         }
 
-        // Command: b (Back Page)
-        if (line == "b" || line == "B") {
+        // Left / 'b' / 'B' -> Previous Page
+        if (ev.code == KeyCode::Left ||
+            (ev.code == KeyCode::Char && (ev.ch == 'b' || ev.ch == 'B'))) {
             if (gameMgr.PrevPage()) {
-                gameMgr.PrintCurrentPage();
-            } else {
-                std::cout << "[INFO] 当前已是第一页 (第 1 页)。\n";
+                selectedRow = 0;
             }
             continue;
         }
 
-        // Command: l (Export List to CSV with confirmation)
-        if (line == "l" || line == "L") {
-            std::cout << "[确认] 确定要将当前账号全部 " << gameMgr.TotalGames() << " 款游戏导出为本地表格吗? [y/N]: ";
-            std::string confirm;
-            std::getline(std::cin, confirm);
-            confirm = std::string{TrimWhitespace(confirm)};
-            if (confirm == "y" || confirm == "Y") {
+        // Right / 'n' / 'N' -> Next Page
+        if (ev.code == KeyCode::Right ||
+            (ev.code == KeyCode::Char && (ev.ch == 'n' || ev.ch == 'N'))) {
+            if (gameMgr.NextPage()) {
+                selectedRow = 0;
+            }
+            continue;
+        }
+
+        // 'l' / 'L' -> Export CSV
+        if (ev.code == KeyCode::Char && (ev.ch == 'l' || ev.ch == 'L')) {
+            bool confirmed = TuiEngine::ShowConfirmModal(
+                "导出游戏列表表格",
+                std::format("确定要将当前账号全部 {} 款游戏导出为本地表格吗?", gameMgr.TotalGames()),
+                std::format("导出文件: gameslist-{}.csv", accountName),
+                false);
+            if (confirmed) {
                 std::string outPath;
                 if (gameMgr.ExportCsv(accountName, &outPath)) {
-                    std::cout << "[OK] 导出成功！表格已保存为: " << outPath
-                              << " (UTF-8 带 BOM，Excel 可直接双击整齐打开)\n";
+                    TuiEngine::ShowMessageModal(
+                        "导出成功",
+                        std::format("表格已保存为: {}", outPath),
+                        "采用 UTF-8 带 BOM 编码，微软 Excel / WPS 可直接双击整齐浏览");
                 }
-            } else {
-                std::cout << "[INFO] 用户已取消表格导出操作。\n";
             }
             continue;
         }
 
-        // Command: a (Batch Extract All with confirmation)
-        if (line == "a" || line == "A") {
-            std::cout << "[确认] 确定要批量提取当前账号全部 " << gameMgr.TotalGames() << " 款游戏的全部凭证吗? [y/N]: ";
-            std::string confirm;
-            std::getline(std::cin, confirm);
-            confirm = std::string{TrimWhitespace(confirm)};
-            if (confirm == "y" || confirm == "Y") {
-                std::cout << "\n[批量提取] 流水线已启动 (共 " << gameMgr.TotalGames() << " 款游戏)...\n";
+        // 'a' / 'A' -> Batch extract all
+        if (ev.code == KeyCode::Char && (ev.ch == 'a' || ev.ch == 'A')) {
+            bool confirmed = TuiEngine::ShowConfirmModal(
+                "批量提取凭证",
+                std::format("确定要批量提取当前账号全部 {} 款游戏的全部凭证吗?", gameMgr.TotalGames()),
+                "流水线将自动提取票据、密钥与Lua配置 (温和限速防止风控)",
+                false);
+            if (confirmed) {
+                int w = 80, h = 25;
+                TuiEngine::GetScreenSize(w, h);
+                const int modalW = std::clamp(w - 12, 60, 90);
+                const int modalH = 8;
+                const int top = (h - modalH) / 2;
+                const int left = (w - modalW) / 2;
+
+                TuiEngine::DrawBox(top, left, modalW, modalH, "流水线批量提取中");
+
                 size_t progress = 0;
                 size_t succeeded = 0;
+                const size_t total = gameMgr.TotalGames();
 
                 for (const auto& game : gameMgr.Games()) {
                     ++progress;
-                    std::cout << "\n[" << progress << "/" << gameMgr.TotalGames() << "] 正在提取 "
-                              << game.name << " (AppID: " << game.appId << ")...\n";
+                    TuiEngine::DrawProgressBar(top + 3, left + 4, modalW - 8, progress, total, game.name);
 
                     auto creds = cmClient.ExtractFullCredentials(game.appId);
                     if (WriteOutputs(game.appId, creds.appOwnershipTicket, creds.encryptedAppTicket,
                                      creds.depotKeys, creds.dlcs, creds.appTokens)) {
                         ++succeeded;
                     }
-
-                    // Gentle rate pacing to protect against Steam CM throttling
                     std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 }
 
-                std::cout << "\n======================================================================\n"
-                          << "[SUCCESS] 批量提取完成！成功处理 " << succeeded << " / " << gameMgr.TotalGames() << " 款游戏。\n"
-                          << "======================================================================\n";
-            } else {
-                std::cout << "[INFO] 用户已取消批量提取操作。\n";
+                TuiEngine::ShowMessageModal(
+                    "批量提取完成",
+                    std::format("成功处理 {} / {} 款游戏凭证！", succeeded, total),
+                    "所有配置与 Lua 已生成在各自 AppID 目录下");
             }
             continue;
         }
 
-        // Command: numeric AppID
-        if (IsDecimal(line)) {
-            auto appIdOpt = ParseAppId(line);
-            if (appIdOpt && *appIdOpt > 0) {
-                const uint32_t appId = *appIdOpt;
-                std::cout << "\n[1/1] 正在为目标游戏 AppID " << appId << " 提取正版凭据...\n";
-                auto creds = cmClient.ExtractFullCredentials(appId);
-                if (WriteOutputs(appId, creds.appOwnershipTicket, creds.encryptedAppTicket,
-                                 creds.depotKeys, creds.dlcs, creds.appTokens)) {
-                    std::cout << "[SUCCESS] 凭证与 Lua 提取完成！文件已就绪在目录 ./" << appId << "/\n";
-                }
-                continue;
+        // Digits 0-9 -> Add to AppID input box
+        if (ev.code == KeyCode::Char && ev.ch >= '0' && ev.ch <= '9') {
+            if (inputAppId.size() < 10) {
+                inputAppId.push_back(ev.ch);
             }
+            continue;
         }
 
-        std::cout << "[WARN] 未知指令 '" << line << "'。请输入纯数字 AppID 或快捷键 (a/n/b/l/q)。\n";
+        // Backspace
+        if (ev.code == KeyCode::Backspace) {
+            if (!inputAppId.empty()) {
+                inputAppId.pop_back();
+            }
+            continue;
+        }
+
+        // Enter -> Extract target AppID
+        if (ev.code == KeyCode::Enter) {
+            uint32_t targetAppId = 0;
+            std::string gameName;
+
+            if (!inputAppId.empty()) {
+                auto parsed = ParseAppId(inputAppId);
+                if (parsed) {
+                    targetAppId = *parsed;
+                    gameName = std::format("AppID {}", targetAppId);
+                }
+                inputAppId.clear();
+            } else {
+                const auto pageItems = gameMgr.GetPageItems(gameMgr.CurrentPage());
+                if (selectedRow < pageItems.size()) {
+                    targetAppId = pageItems[selectedRow].appId;
+                    gameName = pageItems[selectedRow].name;
+                }
+            }
+
+            if (targetAppId > 0) {
+                // Show extracting modal
+                int w = 80, h = 25;
+                TuiEngine::GetScreenSize(w, h);
+                const int modalW = 60, modalH = 6;
+                const int top = (h - modalH) / 2, left = (w - modalW) / 2;
+                TuiEngine::DrawBox(top, left, modalW, modalH, "提取凭据中");
+                TuiEngine::MoveCursor(top + 2, left + 4);
+                std::cout << "\x1b[1;33m正在向 Steam CM 请求 " << TuiEngine::TruncateToWidth(gameName, 40)
+                          << " 的正版票据与密钥...\x1b[0m";
+                std::cout.flush();
+
+                auto creds = cmClient.ExtractFullCredentials(targetAppId);
+                bool ok = WriteOutputs(targetAppId, creds.appOwnershipTicket, creds.encryptedAppTicket,
+                                       creds.depotKeys, creds.dlcs, creds.appTokens);
+                if (ok) {
+                    TuiEngine::ShowMessageModal(
+                        "提取完成",
+                        std::format("游戏 [{}] 凭证与 Lua 提取成功！", targetAppId),
+                        std::format("文件已保存至 ./{}/ 目录中", targetAppId));
+                } else {
+                    TuiEngine::ShowMessageModal(
+                        "提取警告",
+                        std::format("AppID {} 提取完成，部分输出可能受限", targetAppId));
+                }
+            }
+            continue;
+        }
+
+        // 'q' / 'Q' or ESC -> Return to Level 2
+        if (ev.code == KeyCode::Escape ||
+            (ev.code == KeyCode::Char && (ev.ch == 'q' || ev.ch == 'Q'))) {
+            cmClient.Disconnect();
+            return;
+        }
     }
 }
 
