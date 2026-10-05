@@ -105,7 +105,14 @@ namespace {
         // If Steam's genuine implementation already returned a valid ticket,
         // leave it untouched and pass through cleanly.
         if (origTicketValid) {
-            if (!PipeManager::IsToolPipe(pipe, appId)) {
+            if (PipeManager::IsToolPipe(pipe, appId)) {
+                auto ticketSpan = origResp.pTicket();
+                if (!ticketSpan.empty()) {
+                    const size_t ticketSize = (std::min)(ticketSpan.size(), static_cast<size_t>(origResp.returnValue()));
+                    LOG_IPC_INFO("IClientUser::GetAppOwnershipTicketExtendedData: AppId={} requested by tool pipe — skipping Lua disk sync", appId);
+                    AppTicket::WriteAppOwnershipTicket(appId, std::vector<uint8_t>(ticketSpan.data(), ticketSpan.data() + ticketSize));
+                }
+            } else {
                 PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
             }
             return;

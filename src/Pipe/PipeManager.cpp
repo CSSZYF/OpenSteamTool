@@ -87,6 +87,12 @@ namespace {
         const AppId_t envAppId = snapshot.ResolveAppId();
         if (envAppId != k_uAppIdInvalid) return envAppId;
 
+        // Tool processes (like extract_tickets.exe) are strictly excluded from game handling
+        // and should not waste time in the pipe retry loop.
+        if (snapshot.isToolProcess) {
+            return k_uAppIdInvalid;
+        }
+
         // Fall back to an explicit process-name mapping from addprocess() in LuaConfig
         // (checked before sleeping to avoid delay for configured processes).
         if (!snapshot.imageName.empty()) {
@@ -231,15 +237,20 @@ bool IsToolPipe(const CPipeClient* pipe, AppId_t appId) {
         std::scoped_lock lock(g_toolMutex);
         auto it = g_toolPipes.find(pipeKey);
         if (it != g_toolPipes.end()) {
-            const auto now = std::chrono::steady_clock::now();
-            it->second.lastSeen = now;
-            if (appId != k_uAppIdInvalid && appId != 0) {
-                it->second.appId = appId;
-                g_toolRecentApps[appId] = now;
-            } else if (it->second.appId != k_uAppIdInvalid && it->second.appId != 0) {
-                g_toolRecentApps[it->second.appId] = now;
+            auto currentCreation = ProcessInspector::GetProcessCreationTime(pipeKey.pid);
+            if (currentCreation && *currentCreation == it->second.process.creationTime) {
+                const auto now = std::chrono::steady_clock::now();
+                it->second.lastSeen = now;
+                if (appId != k_uAppIdInvalid && appId != 0) {
+                    it->second.appId = appId;
+                    g_toolRecentApps[appId] = now;
+                } else if (it->second.appId != k_uAppIdInvalid && it->second.appId != 0) {
+                    g_toolRecentApps[it->second.appId] = now;
+                }
+                return true;
+            } else {
+                g_toolPipes.erase(it);
             }
-            return true;
         }
     }
 
@@ -262,9 +273,7 @@ bool WasToolActiveRecently(AppId_t appId, std::chrono::milliseconds window) {
 
     for (const auto& [key, session] : g_toolPipes) {
         if (session.appId == appId) {
-            if ((now - session.lastSeen) <= window) {
-                return true;
-            }
+            return true;
         }
     }
 

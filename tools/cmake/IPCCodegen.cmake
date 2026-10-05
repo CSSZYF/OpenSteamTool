@@ -24,15 +24,19 @@ function(opensteamtool_add_ipc_codegen out_var)
             "add_subdirectory() the tools directory before calling this function")
     endif()
 
+    get_filename_component(_idl_dir "${IPC_IDL}" DIRECTORY)
     get_filename_component(_idl_name "${IPC_IDL}" NAME)
     get_filename_component(_idl_stem "${IPC_IDL}" NAME_WE)
     set(_header "${_idl_stem}.gen.h")
     set(_output "${IPC_CPP_OUT}/${_header}")
 
+    file(RELATIVE_PATH _rel_cpp_out "${_idl_dir}" "${IPC_CPP_OUT}")
+
     add_custom_command(
         OUTPUT "${_output}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${IPC_CPP_OUT}"
-        COMMAND $<TARGET_FILE:ipc_codegen> "--cpp_out=${IPC_CPP_OUT}" "${IPC_IDL}"
+        COMMAND $<TARGET_FILE:ipc_codegen> "--cpp_out=${_rel_cpp_out}" "${_idl_name}"
+        WORKING_DIRECTORY "${_idl_dir}"
         DEPENDS "${IPC_IDL}" ipc_codegen
         COMMENT "Generating ${_header} from ${_idl_name}"
         VERBATIM

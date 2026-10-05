@@ -1120,6 +1120,11 @@ std::string stem(const std::string& path) {
     return path.substr(start, end - start);
 }
 
+std::string filename(const std::string& path) {
+    const size_t slash = path.find_last_of("/\\");
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
 bool generate(const std::string& inputPath, const std::string& cppOut) {
     std::ifstream input(inputPath, std::ios::binary);
     if (!input) {
@@ -1139,7 +1144,7 @@ bool generate(const std::string& inputPath, const std::string& cppOut) {
 
     std::ostringstream generated;
     Emitter emitter(generated, file);
-    emitter.emit(inputPath, header);
+    emitter.emit(filename(inputPath), header);
 
     std::ofstream output(outputPath, std::ios::binary | std::ios::trunc);
     if (!output) {

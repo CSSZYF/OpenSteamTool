@@ -321,6 +321,12 @@ namespace
                     continue;
                 }
 
+                // 3. Skip if tool was active recently (e.g. extract_tickets)
+                if (PipeManager::WasToolActiveRecently(appId, std::chrono::seconds(5))) {
+                    LOG_STEAMUI_DEBUG("AutoSync: appId={} was recently extracted/handled by tool — skipping background sync", appId);
+                    continue;
+                }
+
                 LOG_STEAMUI_INFO("AutoSync: detected update completion for owned appId={}, triggering background sync", appId);
                 try {
                     // Thread-safe: DenuvoSync serializes file writes via g_syncFileMutex & atomic line rewrites
