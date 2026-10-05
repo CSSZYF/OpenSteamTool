@@ -623,7 +623,8 @@ namespace Hooks_NetPacket_OwnershipTicket {
                 const auto& t = resp.ticket();
                 if (PipeManager::IsToolActiveForApp(resp.app_id())) {
                     LOG_NETPACKET_INFO("OwnershipTicketResponse[858]: appId={} requested by active tool — skipping Lua disk sync", resp.app_id());
-                    AppTicket::WriteAppOwnershipTicket(resp.app_id(), std::vector<uint8_t>(t.begin(), t.end()));
+                    const auto* pData = reinterpret_cast<const uint8_t*>(t.data());
+                    AppTicket::WriteAppOwnershipTicket(resp.app_id(), std::vector<uint8_t>(pData, pData + t.size()));
                 } else {
                     PipeManager::DenuvoAuth::SyncAppTicketToLua(
                         resp.app_id(), reinterpret_cast<const uint8_t*>(t.data()), t.size());

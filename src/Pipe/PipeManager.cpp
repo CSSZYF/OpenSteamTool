@@ -271,6 +271,10 @@ bool WasToolActiveRecently(AppId_t appId, std::chrono::milliseconds window) {
     if (appId == 0 || appId == k_uAppIdInvalid) return false;
 
     std::scoped_lock lock(g_toolMutex);
+    if (g_toolPipes.empty() && g_toolRecentApps.empty()) {
+        return false;
+    }
+
     const auto now = std::chrono::steady_clock::now();
     PruneToolPipesLocked(now);
 
