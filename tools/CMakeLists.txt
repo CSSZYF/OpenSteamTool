@@ -19,13 +19,25 @@ add_executable(extract_tickets
     extract_tickets/SteamSession.cpp
     extract_tickets/OutputWriter.cpp
     extract_tickets/LuaFallbackParser.cpp
+    extract_tickets/Log.cpp
+    extract_tickets/Crypto.cpp
+    extract_tickets/TokenStorage.cpp
+    extract_tickets/WinHttpTransport.cpp
+    extract_tickets/JsonHelper.cpp
+    extract_tickets/SteamAuthService.cpp
+    extract_tickets/SteamCmClient.cpp
+    extract_tickets/GameListManager.cpp
+    extract_tickets/OnlineSession.cpp
 )
 target_compile_features(extract_tickets PRIVATE cxx_std_20)
 if(MSVC)
-    target_compile_options(extract_tickets PRIVATE /utf-8)
+    target_compile_options(extract_tickets PRIVATE /utf-8 /Zc:preprocessor)
 endif()
 target_link_libraries(extract_tickets PRIVATE
     advapi32
+    winhttp
+    crypt32
+    bcrypt
 )
 
 if(WIN32)

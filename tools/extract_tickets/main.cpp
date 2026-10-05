@@ -1,5 +1,7 @@
 #include "AppInfoParser.h"
+#include "Log.h"
 #include "LuaFallbackParser.h"
+#include "OnlineSession.h"
 #include "OutputWriter.h"
 #include "RaiiGuards.h"
 #include "SteamSession.h"
@@ -24,12 +26,26 @@ void WaitForExit() {
 
 #if defined(_WIN64)
 int Run(int argc, char** argv) {
+    struct LoggingScopeGuard {
+        LoggingScopeGuard() {
+            InitLogging("extract_tickets_debug.log");
+            LOG_INFO("Main", "=== extract_tickets 会话启动 (PID: {}) ===", GetCurrentProcessId());
+        }
+        ~LoggingScopeGuard() {
+            LOG_INFO("Main", "=== extract_tickets 会话正常退出 ===");
+            CloseLogging();
+        }
+    } logGuard;
+
     std::optional<uint32_t> appId;
     bool forceEticket{false};
+    bool onlineMode{false};
 
     for (int i = 1; i < argc; ++i) {
         std::string_view arg{argv[i]};
-        if (arg == "--force-eticket" || arg == "-f") {
+        if (arg == "--online" || arg == "-o" || arg == "-O") {
+            onlineMode = true;
+        } else if (arg == "--force-eticket" || arg == "-f") {
             forceEticket = true;
         } else if (!appId) {
             appId = ParseAppId(arg);
@@ -40,11 +56,33 @@ int Run(int argc, char** argv) {
         }
     }
 
-    if (!appId) {
-        appId = ReadAppIdFromConsole();
+    if (onlineMode) {
+        return OnlineSession::RunInteractive();
+    }
+
+    while (!appId) {
+        std::cout << "======================================================================\n"
+                  << "  OpenSteamTool 凭证提取工具 / OpenSteamTool Extract Tickets\n"
+                  << "======================================================================\n"
+                  << "请输入目标 AppID 进行本地提取，或按 [O] 切换至联网提取模式 (输入 [q] 退出程序)\n"
+                  << "Enter AppID to extract locally, or press [O] for Online Mode (or [q] to exit): ";
+        std::string input;
+        if (!std::getline(std::cin, input)) {
+            return 0;
+        }
+        input = std::string{TrimWhitespace(input)};
+        if (input == "q" || input == "Q") {
+            return 0;
+        }
+        if (input == "o" || input == "O") {
+            OnlineSession::RunInteractive();
+            continue;
+        }
+
+        appId = ParseAppId(input);
         if (!appId) {
-            std::cerr << "[ERROR] 无效的 AppID / Invalid AppID.\n";
-            return 1;
+            std::cerr << "[ERROR] 无效的 AppID / Invalid AppID: " << input << "\n\n";
+            continue;
         }
     }
 
