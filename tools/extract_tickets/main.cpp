@@ -176,7 +176,9 @@ namespace {
         TuiEngine::GetScreenSize(w, h);
         TuiEngine::ClearScreen();
 
-        TuiEngine::DrawHeader("OpenSteamTool 凭证与配置提取中心 v1.0", "模式: 本地快速模式");
+        const bool hasSteam = FindSteamInstallPath().has_value();
+        TuiEngine::DrawHeader("OpenSteamTool 凭证与配置提取中心 v1.0",
+                              hasSteam ? "模式: 本地快速模式" : "提示: 未检测到本地 Steam");
 
         const int boxW = std::clamp(w - 4, 70, 100);
         const int boxH = 17;
@@ -191,9 +193,15 @@ namespace {
             "欢迎使用 OpenSteamTool 凭据与配置提取中心 (Local/Online Extractor)",
             innerW, "\x1b[1;37m");
 
-        TuiEngine::PrintBounded(top + 4, left + 4,
-            "直连本地 Steam 客户端或磁盘缓存，快速生成正版凭据与 Lua 脚本。",
-            innerW, "\x1b[90m");
+        if (!hasSteam) {
+            TuiEngine::PrintBounded(top + 4, left + 4,
+                "未检测到本地 Steam，建议直接按 [O] 切换至【在线联网模式】免客户端提取！",
+                innerW, "\x1b[1;33m");
+        } else {
+            TuiEngine::PrintBounded(top + 4, left + 4,
+                "直连本地 Steam 客户端或磁盘缓存，快速生成正版凭据与 Lua 脚本。",
+                innerW, "\x1b[90m");
+        }
 
         TuiEngine::PrintBounded(top + 6, left + 4,
             "请输入目标游戏 AppID:",
@@ -206,7 +214,7 @@ namespace {
 
         TuiEngine::PrintBounded(top + 12, left + 6,
             "• 按 [O] 键 ── 进入「Steam 在线联网模式」(免客户端云端提取)",
-            (innerW > 2) ? (innerW - 2) : innerW, "\x1b[37m");
+            (innerW > 2) ? (innerW - 2) : innerW, "\x1b[1;36m");
 
         TuiEngine::PrintBounded(top + 13, left + 6,
             "• 按 [Q] 键 ── 退出程序",
@@ -354,6 +362,23 @@ int Run(int argc, char** argv) {
 
             auto appId = ParseAppId(inputAppId);
             if (appId && *appId > 0) {
+                if (!FindSteamInstallPath().has_value()) {
+                    TuiEngine::ClearScreen();
+                    bool goOnline = TuiEngine::ShowConfirmModal(
+                        "未检测到本地 Steam 客户端",
+                        "当前电脑未安装 Steam，本地模式无法提取运行中凭据",
+                        "是否切换至【在线联网模式】直接通过云端提取?",
+                        true);
+                    if (goOnline) {
+                        TuiEngine::ClearScreen();
+                        OnlineSession::RunInteractive();
+                        inputAppId.clear();
+                        layout = DrawLevel1Frame();
+                        UpdateLevel1Input(layout, inputAppId);
+                        continue;
+                    }
+                }
+
                 int w = 80, h = 25;
                 TuiEngine::GetScreenSize(w, h);
                 const int modalW = std::clamp(w - 12, 60, 80);
