@@ -204,7 +204,14 @@ namespace {
         TuiEngine::DrawFooter("[Enter] 提取选中/输入   [A] 批量提取全部   [L] 导出CSV表格   [N/B/←/→] 翻页   [Q] 登出");
     }
 
-    void UpdateLevel3Input(int top, int left, int boxH, std::string_view inputAppId) {
+    void UpdateLevel3Input(std::string_view inputAppId) {
+        int w = 80, h = 25;
+        TuiEngine::GetScreenSize(w, h);
+        const int boxW = std::clamp(w - 4, 70, 120);
+        const int boxH = std::clamp(h - 4, 16, 28);
+        const int top = (std::max)(1, (h - boxH) / 2);
+        const int left = (std::max)(1, (w - boxW) / 2);
+
         TuiEngine::MoveCursor(top + boxH - 2, left + 4);
         std::cout << "\x1b[1;37m[目标 AppID 快速提取]: \x1b[1;30;47m[ "
                   << std::format("{:<12}", std::string{inputAppId} + "_")
@@ -455,8 +462,9 @@ void OnlineSession::RunInSessionExtraction(
     auto games = authService.FetchOwnedGames(steamId, curAccessToken);
     if (games.empty()) {
         TuiEngine::ClearScreen();
-        TuiEngine::ShowMessageModal("游戏库同步", "未找到拥有的游戏列表或网络请求失败");
-        return;
+        TuiEngine::ShowMessageModal("游戏库同步",
+                                    "未拉取到公开游戏列表 (可能个人资料设为了私密或暂无游戏)",
+                                    "您仍可在接下来的界面中直接输入 AppID 快速提取正版凭据");
     }
 
     GameListManager gameMgr(std::move(games), 20);
@@ -582,12 +590,7 @@ void OnlineSession::RunInSessionExtraction(
         if (ev.code == KeyCode::Char && ev.ch >= '0' && ev.ch <= '9') {
             if (inputAppId.size() < 10) {
                 inputAppId.push_back(ev.ch);
-                int scrW = 80, scrH = 25;
-                TuiEngine::GetScreenSize(scrW, scrH);
-                const int bBoxH = std::clamp(scrH - 4, 22, 28);
-                const int bTop = 2;
-                const int bLeft = (scrW - std::clamp(scrW - 4, 76, 120)) / 2;
-                UpdateLevel3Input(bTop, bLeft, bBoxH, inputAppId);
+                UpdateLevel3Input(inputAppId);
             }
             continue;
         }
@@ -596,12 +599,7 @@ void OnlineSession::RunInSessionExtraction(
         if (ev.code == KeyCode::Backspace) {
             if (!inputAppId.empty()) {
                 inputAppId.pop_back();
-                int scrW = 80, scrH = 25;
-                TuiEngine::GetScreenSize(scrW, scrH);
-                const int bBoxH = std::clamp(scrH - 4, 22, 28);
-                const int bTop = 2;
-                const int bLeft = (scrW - std::clamp(scrW - 4, 76, 120)) / 2;
-                UpdateLevel3Input(bTop, bLeft, bBoxH, inputAppId);
+                UpdateLevel3Input(inputAppId);
             }
             continue;
         }

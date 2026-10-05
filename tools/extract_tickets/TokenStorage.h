@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -33,7 +34,7 @@ public:
     static bool WipeAll();
 
     // Returns the canonical path of the encrypted cache file
-    [[nodiscard]] static std::string GetStorageFilePath();
+    [[nodiscard]] static std::filesystem::path GetStorageFilePath();
 };
 
 } // namespace OST::ExtractTickets

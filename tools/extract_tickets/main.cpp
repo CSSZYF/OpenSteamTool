@@ -109,25 +109,25 @@ bool ExtractLocalApp(uint32_t appId, bool forceEticket, bool inTui = false) {
 }
 
 bool RunLocalExtractionWorker(uint32_t appId, bool forceEticket) {
-    char exePath[MAX_PATH];
-    DWORD len = GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+    wchar_t exePath[MAX_PATH];
+    DWORD len = GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     if (len == 0 || len >= MAX_PATH) {
         return ExtractLocalApp(appId, forceEticket, true);
     }
 
-    std::string cmd = std::format("\"{}\" --worker {}", exePath, appId);
+    std::wstring cmd = std::format(L"\"{}\" --worker {}", exePath, appId);
     if (forceEticket) {
-        cmd += " --force-eticket";
+        cmd += L" --force-eticket";
     }
 
-    STARTUPINFOA si{};
+    STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
 
     // Launch worker child process completely hidden (CREATE_NO_WINDOW)
     // Steam will bind its AppManager to this short-lived worker PID.
     // Upon worker exit (~200ms), Steam immediately releases the "Running" state!
-    BOOL success = CreateProcessA(
+    BOOL success = CreateProcessW(
         nullptr,
         cmd.data(),
         nullptr,

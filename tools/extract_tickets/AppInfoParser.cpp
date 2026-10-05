@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cstring>
+#include <filesystem>
 
 namespace OST::ExtractTickets {
 
@@ -17,8 +18,8 @@ std::unordered_map<uint32_t, uint64_t> ParseAppInfoTokens(
     }
 
     const std::string appinfoPath = JoinPath(steamPath, "appcache\\appinfo.vdf");
-    ScopedHandle hFile{CreateFileA(
-        appinfoPath.c_str(),
+    ScopedHandle hFile{CreateFileW(
+        std::filesystem::path(appinfoPath).c_str(),
         GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr,
@@ -40,7 +41,7 @@ std::unordered_map<uint32_t, uint64_t> ParseAppInfoTokens(
         return tokens;
     }
 
-    ScopedHandle hMapping{CreateFileMappingA(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr)};
+    ScopedHandle hMapping{CreateFileMappingW(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr)};
     if (!hMapping.IsValid()) {
         return tokens;
     }
@@ -305,8 +306,8 @@ std::optional<ParsedAppInfoData> ParseAppInfoDepots(
     if (steamPath.empty() || appId == 0) return std::nullopt;
 
     const std::string appinfoPath = JoinPath(steamPath, "appcache\\appinfo.vdf");
-    ScopedHandle hFile{CreateFileA(
-        appinfoPath.c_str(),
+    ScopedHandle hFile{CreateFileW(
+        std::filesystem::path(appinfoPath).c_str(),
         GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr,
@@ -322,7 +323,7 @@ std::optional<ParsedAppInfoData> ParseAppInfoDepots(
         return std::nullopt;
     }
 
-    ScopedHandle hMapping{CreateFileMappingA(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr)};
+    ScopedHandle hMapping{CreateFileMappingW(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr)};
     if (!hMapping.IsValid()) return std::nullopt;
 
     ScopedFileMappingView mappedView{MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0)};
@@ -420,8 +421,8 @@ std::unordered_map<uint32_t, std::string> ParseAppNames(
     if (steamPath.empty() || targetAppIds.empty()) return names;
 
     const std::string appinfoPath = JoinPath(steamPath, "appcache\\appinfo.vdf");
-    ScopedHandle hFile{CreateFileA(
-        appinfoPath.c_str(),
+    ScopedHandle hFile{CreateFileW(
+        std::filesystem::path(appinfoPath).c_str(),
         GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr,
@@ -437,7 +438,7 @@ std::unordered_map<uint32_t, std::string> ParseAppNames(
         return names;
     }
 
-    ScopedHandle hMapping{CreateFileMappingA(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr)};
+    ScopedHandle hMapping{CreateFileMappingW(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr)};
     if (!hMapping.IsValid()) return names;
 
     ScopedFileMappingView mappedView{MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0)};

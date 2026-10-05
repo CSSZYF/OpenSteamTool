@@ -89,11 +89,11 @@ namespace {
         return result;
     }
 
-    void SecureWipeFile(const std::string& path) {
+    void SecureWipeFile(const std::filesystem::path& p) {
         std::error_code ec;
-        auto fileSize = std::filesystem::file_size(path, ec);
+        auto fileSize = std::filesystem::file_size(p, ec);
         if (!ec && fileSize > 0) {
-            std::ofstream ofs(path, std::ios::binary | std::ios::in | std::ios::out);
+            std::ofstream ofs(p, std::ios::binary | std::ios::in | std::ios::out);
             if (ofs.is_open()) {
                 std::vector<uint8_t> zeros(1024, 0);
                 size_t remaining = fileSize;
@@ -106,34 +106,35 @@ namespace {
                 ofs.close();
             }
         }
-        DeleteFileA(path.c_str());
+        std::filesystem::remove(p, ec);
     }
 } // namespace
 
-std::string TokenStorage::GetStorageFilePath() {
-    char localAppData[MAX_PATH] = {0};
-    if (FAILED(SHGetFolderPathA(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, localAppData)) || localAppData[0] == '\0') {
-        DWORD len = GetEnvironmentVariableA("LOCALAPPDATA", localAppData, MAX_PATH);
+std::filesystem::path TokenStorage::GetStorageFilePath() {
+    wchar_t localAppData[MAX_PATH] = {0};
+    if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, localAppData)) || localAppData[0] == L'\0') {
+        DWORD len = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
         if (len == 0 || len >= MAX_PATH) {
-            return "accounts.enc";
+            return L"accounts.enc";
         }
     }
 
-    std::filesystem::path dir = std::filesystem::path(localAppData) / "OpenSteamTool" / "credentials";
+    std::filesystem::path dir = std::filesystem::path(localAppData) / L"OpenSteamTool" / L"credentials";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
-    return (dir / "accounts.enc").string();
+    return dir / L"accounts.enc";
 }
 
 std::vector<CachedAccount> TokenStorage::LoadAccounts() {
-    const std::string filePath = GetStorageFilePath();
-    if (!std::filesystem::exists(filePath)) {
+    const auto filePath = GetStorageFilePath();
+    std::error_code ec;
+    if (!std::filesystem::exists(filePath, ec)) {
         return {};
     }
 
     std::ifstream ifs(filePath, std::ios::binary);
     if (!ifs.is_open()) {
-        LOG_WARN("TokenStorage", "无法打开凭据缓存文件: {}", filePath);
+        LOG_WARN("TokenStorage", "无法打开凭据缓存文件: {}", filePath.string());
         return {};
     }
 
@@ -185,10 +186,11 @@ std::vector<CachedAccount> TokenStorage::LoadAccounts() {
 }
 
 bool TokenStorage::SaveAccounts(const std::vector<CachedAccount>& accounts) {
-    const std::string filePath = GetStorageFilePath();
+    const auto filePath = GetStorageFilePath();
 
     if (accounts.empty()) {
-        if (std::filesystem::exists(filePath)) {
+        std::error_code ec;
+        if (std::filesystem::exists(filePath, ec)) {
             SecureWipeFile(filePath);
         }
         return true;
@@ -215,7 +217,7 @@ bool TokenStorage::SaveAccounts(const std::vector<CachedAccount>& accounts) {
 
     std::ofstream ofs(filePath, std::ios::binary | std::ios::trunc);
     if (!ofs.is_open()) {
-        LOG_ERROR("TokenStorage", "无法创建凭据目标文件: {}", filePath);
+        LOG_ERROR("TokenStorage", "无法创建凭据目标文件: {}", filePath.string());
         LocalFree(outBlob.pbData);
         return false;
     }
@@ -272,8 +274,9 @@ bool TokenStorage::DeleteAccount(std::string_view accountName) {
 }
 
 bool TokenStorage::WipeAll() {
-    const std::string filePath = GetStorageFilePath();
-    if (std::filesystem::exists(filePath)) {
+    const auto filePath = GetStorageFilePath();
+    std::error_code ec;
+    if (std::filesystem::exists(filePath, ec)) {
         SecureWipeFile(filePath);
         LOG_INFO("TokenStorage", "已彻底粉碎并清理全部本地凭据缓存文件");
     }

@@ -24,12 +24,14 @@ bool WriteOutputs(uint32_t appId,
                   const std::vector<DlcInfo>& dlcs,
                   const std::unordered_map<uint32_t, uint64_t>& appTokens) {
     const std::string dir{std::to_string(appId)};
-    if (!CreateDirectoryA(dir.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
+    std::filesystem::path dirPath(dir);
+    std::error_code ec;
+    std::filesystem::create_directories(dirPath, ec);
+    if (ec) {
         if (!TuiEngine::IsActive()) {
-            std::cerr << "Failed to create directory " << dir
-                      << " (GetLastError=" << GetLastError() << ").\n";
+            std::cerr << "Failed to create directory " << dir << " (" << ec.message() << ").\n";
         }
-        LOG_ERROR("OutputWriter", "创建输出目录失败: {} (GetLastError={})", dir, GetLastError());
+        LOG_ERROR("OutputWriter", "创建输出目录失败: {} ({})", dir, ec.message());
         return false;
     }
 
@@ -42,21 +44,24 @@ bool WriteOutputs(uint32_t appId,
     copiedManifests.reserve(depotKeys.size());
     for (const auto& dk : depotKeys) {
         if (!dk.manifestFilePath.empty()) {
-            std::string_view pathView{dk.manifestFilePath};
-            size_t slash = pathView.find_last_of("\\/");
-            std::string fname = (slash != std::string_view::npos) ? std::string{pathView.substr(slash + 1)} : std::string{pathView};
+            std::filesystem::path srcPath(dk.manifestFilePath);
+            std::string fname = srcPath.filename().string();
             if (std::ranges::find(copiedManifests, fname) == copiedManifests.end()) {
-                std::string dest = JoinPath(dir, fname);
-                DWORD attr = GetFileAttributesA(dest.c_str());
-                if (dk.manifestFilePath == dest || (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY))) {
+                std::filesystem::path destPath = dirPath / fname;
+                std::error_code copyEc;
+                if (std::filesystem::equivalent(srcPath, destPath, copyEc)) {
                     copiedManifests.push_back(fname);
-                } else if (CopyFileA(dk.manifestFilePath.c_str(), dest.c_str(), FALSE)) {
+                } else if (std::filesystem::copy_file(srcPath, destPath, std::filesystem::copy_options::overwrite_existing, copyEc)) {
                     copiedManifests.push_back(fname);
                 } else {
-                    if (!TuiEngine::IsActive()) {
-                        std::cerr << "[WARN] Failed to copy manifest " << fname << " (GetLastError=" << GetLastError() << ").\n";
+                    if (std::filesystem::exists(destPath, copyEc)) {
+                        copiedManifests.push_back(fname);
+                    } else {
+                        if (!TuiEngine::IsActive()) {
+                            std::cerr << "[WARN] Failed to copy manifest " << fname << ": " << copyEc.message() << "\n";
+                        }
+                        LOG_WARN("OutputWriter", "复制清单文件失败: {} ({})", fname, copyEc.message());
                     }
-                    LOG_WARN("OutputWriter", "复制清单文件失败: {} (GetLastError={})", fname, GetLastError());
                 }
             }
         }
@@ -179,9 +184,9 @@ bool WriteOutputs(uint32_t appId,
 
     auto hasManifestOnDisk = [&](uint32_t depotId, const std::string& manifestId) -> bool {
         std::string fname = std::format("{}_{}.manifest", depotId, manifestId);
-        std::string p = JoinPath(dir, fname);
-        DWORD attr = GetFileAttributesA(p.c_str());
-        return (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY));
+        std::filesystem::path p = dirPath / fname;
+        std::error_code diskEc;
+        return std::filesystem::exists(p, diskEc);
     };
 
     if (hasBaseManifests) {

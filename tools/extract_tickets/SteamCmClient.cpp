@@ -115,6 +115,15 @@ void SteamCmClient::UnpackMultiMsg(std::span<const uint8_t> bodySpan) {
             destLen = sizeUnzipped;
             res = tinf_uncompress(payload.data(), &destLen, messageBody.data(), static_cast<unsigned int>(messageBody.size()));
         }
+        if (res == TINF_BUF_ERROR) {
+            destLen = static_cast<unsigned int>(payload.size() * 2);
+            payload.resize(destLen);
+            if (messageBody.size() >= 2 && messageBody[0] == 0x1F && messageBody[1] == 0x8B) {
+                res = tinf_gzip_uncompress(payload.data(), &destLen, messageBody.data(), static_cast<unsigned int>(messageBody.size()));
+            } else {
+                res = tinf_uncompress(payload.data(), &destLen, messageBody.data(), static_cast<unsigned int>(messageBody.size()));
+            }
+        }
 
         if (res != TINF_OK) {
             LOG_ERROR("SteamCM", "解压 CMsgMulti 失败 (res={}, size_unzipped={}, compressed_len={})",
