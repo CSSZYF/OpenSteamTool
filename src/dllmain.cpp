@@ -10,6 +10,7 @@
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
 #include "Utils/SteamMetadata/IPCLoader.h"
 #include "Utils/SteamMetadata/PatternLoader.h"
+#include "Utils/SteamMetadata/RemoteToml.h"
 #include "Utils/SteamMetadata/SteamDiagnostics.h"
 #include "OSTPlatform/include/DynamicLibrary.h"
 #include "OSTPlatform/include/Encoding.h"
@@ -275,6 +276,11 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
 
     LOG_INFO("OpenSteamTool init complete ({})",
              g_IsDiversionActive.load() ? "Diversion active" : "Diversion bypassed, using original steamclient64");
+
+    // Cache hits keep startup non-blocking. Once all hooks/watchers are ready,
+    // best-effort refresh any exact-SHA metadata that was served from cache.
+    // Updated files are intentionally not hot-reloaded; they apply next launch.
+    RemoteToml::RefreshQueuedCaches();
     return 0;
 }
 
