@@ -166,6 +166,14 @@ HttpResponse WinHttpTransport::Get(
         return resp;
     }
 
+    if (parsed.isHttps) {
+        DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+                         SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                         SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+                         SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &secFlags, sizeof(secFlags));
+    }
+
     for (const auto& hdr : extraHeaders) {
         std::wstring wHdr = Utf8ToWide(hdr);
         WinHttpAddRequestHeaders(hRequest, wHdr.c_str(), static_cast<DWORD>(wHdr.size()), WINHTTP_ADDREQ_FLAG_ADD);
@@ -258,6 +266,14 @@ HttpResponse WinHttpTransport::Post(
         LOG_WARN("WinHttp", "{}", resp.errorMessage);
         WinHttpCloseHandle(hConnect);
         return resp;
+    }
+
+    if (parsed.isHttps) {
+        DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+                         SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                         SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+                         SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &secFlags, sizeof(secFlags));
     }
 
     // Add Content-Type header
@@ -417,6 +433,14 @@ bool WebSocketClient::Connect(std::string_view wssUrl, DWORD timeoutMs) {
         LOG_ERROR("WebSocket", "请求升级 WebSocket 选项失败 (GetLastError={})", GetLastError());
         Close();
         return false;
+    }
+
+    if (parsed.isHttps) {
+        DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+                         SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                         SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+                         SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        WinHttpSetOption(m_hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &secFlags, sizeof(secFlags));
     }
 
     WinHttpSetTimeouts(m_hRequest, timeoutMs, timeoutMs, timeoutMs, timeoutMs);

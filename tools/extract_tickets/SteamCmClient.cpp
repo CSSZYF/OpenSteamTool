@@ -769,6 +769,17 @@ std::optional<std::string> SteamCmClient::DownloadManifestOnline(
             LOG_INFO("SteamCM", "成功从 Steam CDN ({}) 获取清单数据 ({} 字节)", server, cdnResp.body.size());
             break;
         }
+
+        // Fallback to HTTP on port 80 if HTTPS was rejected or throttled by ISP/CDN edge
+        std::string httpManifestUrl = std::format(
+            "http://{}/depot/{}/manifest/{}/5/{}",
+            server, depotId, manifestId, reqCode);
+        LOG_DEBUG("SteamCM", "正在尝试 HTTP 降级下载清单: {}", httpManifestUrl);
+        cdnResp = http.Get(httpManifestUrl);
+        if (cdnResp.IsSuccess() && !cdnResp.body.empty()) {
+            LOG_INFO("SteamCM", "成功从 Steam CDN HTTP ({}) 获取清单数据 ({} 字节)", server, cdnResp.body.size());
+            break;
+        }
     }
 
     if (!cdnResp.IsSuccess() || cdnResp.body.empty()) {
