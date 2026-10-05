@@ -196,6 +196,9 @@ void ParseVdfRecurse(VdfReader& reader,
                      std::vector<std::string_view>& pathStack,
                      ParsedAppInfoData& outData,
                      uint32_t& currentDepotId) {
+    if (pathStack.size() > 64) {
+        return; // Guard against stack overflow on corrupt or excessively deep VDF
+    }
     while (reader.HasMore()) {
         uint8_t type = reader.ReadByte();
         if (type == 0x08 || type == 0xFF) {

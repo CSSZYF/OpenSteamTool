@@ -451,6 +451,9 @@ bool WebSocketClient::Connect(std::string_view wssUrl, DWORD timeoutMs) {
     }
 
     m_hWebSocket = WinHttpWebSocketCompleteUpgrade(m_hRequest, 0);
+    WinHttpCloseHandle(m_hRequest);
+    m_hRequest = nullptr;
+
     if (!m_hWebSocket) {
         LOG_ERROR("WebSocket", "WinHttpWebSocketCompleteUpgrade 失败 (GetLastError={})", GetLastError());
         Close();
@@ -484,6 +487,11 @@ bool WebSocketClient::Send(std::span<const uint8_t> data, bool isBinary) {
 
 bool WebSocketClient::Receive(std::vector<uint8_t>& outData, bool& isBinary, DWORD timeoutMs) {
     if (!m_hWebSocket) return false;
+
+    if (timeoutMs > 0) {
+        DWORD t = timeoutMs;
+        WinHttpSetOption(m_hWebSocket, WINHTTP_OPTION_RECEIVE_TIMEOUT, &t, sizeof(t));
+    }
 
     outData.clear();
     std::vector<uint8_t> chunk(8192);

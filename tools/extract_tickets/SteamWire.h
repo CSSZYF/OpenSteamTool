@@ -106,6 +106,7 @@ struct ProtoField {
     uint8_t wireType{0};
     uint64_t varintVal{0};
     uint64_t fixed64Val{0};
+    uint32_t fixed32Val{0};
     std::span<const uint8_t> bytesVal;
 };
 
@@ -139,6 +140,7 @@ public:
             }
             case 5: // 32-bit
                 if (m_ptr + 4 > m_end) return false;
+                std::memcpy(&outField.fixed32Val, m_ptr, 4);
                 m_ptr += 4;
                 return true;
             default:

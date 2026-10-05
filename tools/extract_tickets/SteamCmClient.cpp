@@ -777,12 +777,28 @@ std::optional<std::string> SteamCmClient::DownloadManifestOnline(
 
     std::vector<uint8_t> uncompressed;
     if (payload.size() >= 2 && payload[0] == 0x1F && payload[1] == 0x8B) {
-        unsigned int destLen = static_cast<unsigned int>(payload.size() * 15);
+        uint32_t isize = 0;
+        if (payload.size() >= 18) {
+            std::memcpy(&isize, payload.data() + payload.size() - 4, sizeof(uint32_t));
+        }
+        unsigned int destLen = (isize > 0 && isize < 256 * 1024 * 1024)
+            ? (isize + 1024)
+            : static_cast<unsigned int>(payload.size() * 15);
         uncompressed.resize(destLen);
+
         int res = tinf_gzip_uncompress(uncompressed.data(), &destLen, payload.data(), static_cast<unsigned int>(payload.size()));
+        if (res == TINF_BUF_ERROR) {
+            destLen = static_cast<unsigned int>(uncompressed.size() * 2);
+            uncompressed.resize(destLen);
+            res = tinf_gzip_uncompress(uncompressed.data(), &destLen, payload.data(), static_cast<unsigned int>(payload.size()));
+        }
+
         if (res == TINF_OK) {
             uncompressed.resize(destLen);
             payload = uncompressed;
+            LOG_DEBUG("SteamCM", "清单 GZIP 解压成功 ({} 压缩 -> {} 原始字节)", cdnResp.body.size(), destLen);
+        } else {
+            LOG_WARN("SteamCM", "清单 GZIP 解压失败 (res={}), 将以原始数据保存", res);
         }
     }
 
