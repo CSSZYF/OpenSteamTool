@@ -191,9 +191,11 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
     PatternLoader::Load(ui_hModule, SteamUIPath, "steamui");
     PatternLoader::Load(client_hModule, SteamclientPath, "steamclient");
 
-    // Install SteamUI hooks early so LoadModuleWithPath can intercept
-    // and synchronize with client hook installation.
-    HookManager::InstallUIHooks();
+    // Install only the Diversion/module redirection hooks early. The library
+    // hooks must wait until Lua is parsed; installing them before ParseDirectory
+    // creates a startup race where SteamUI can build its app overview while the
+    // configured app set is still empty.
+    HookManager::InstallEarlyUIHooks();
 
     // IPC method metadata (funcHash, fencepost, argc, ...)
     IPCLoader::Load(SteamclientPath);
@@ -224,11 +226,15 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
     for (const auto& dir : watchDirs)
         LuaConfig::ParseDirectory(dir);
 
-    // Awaken installed scanner to immediately form installed snapshot with loaded Lua configs
-    Hooks_SteamUI::TriggerInstalledScanner();
-
     LuaFileWatcher::Start(watchDirs);
     ConfigFileWatcher::Start(ConfigPath, LuaDir);
+
+    // Match the proven pre-Diversion startup ordering for library/UI hooks:
+    // Lua is fully loaded before SteamUI can evaluate ownership/overview data.
+    HookManager::InstallUIHooks();
+
+    // Awaken installed scanner after its worker has been started by Install().
+    Hooks_SteamUI::TriggerInstalledScanner();
 
     HookManager::InstallClientHooks();
 

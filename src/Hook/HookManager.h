@@ -1,6 +1,7 @@
 #pragma once
 
 namespace HookManager {
+    void InstallEarlyUIHooks();
     void InstallUIHooks();
     void UninstallUIHooks();
 

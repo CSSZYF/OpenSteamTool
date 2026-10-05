@@ -5,6 +5,10 @@
 // Hooks targeting steamui.dll:
 
 namespace Hooks_SteamUI {
+    // Diversion/module-handle interception must be installed as early as possible,
+    // before SteamUI can load/use steamclient64.dll. Keep this phase separate
+    // from library/UI hooks so Lua configuration can be parsed first.
+    void InstallDiversionHooks();
     void Install();
     void Uninstall();
     void DetachWorkerThreads();

@@ -10,6 +10,10 @@
 
 namespace HookManager {
 
+    void InstallEarlyUIHooks() {
+        Hooks_SteamUI::InstallDiversionHooks();
+    }
+
     void InstallUIHooks() {
         Hooks_SteamUI::Install();
     }

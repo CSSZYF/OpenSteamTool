@@ -931,6 +931,21 @@ namespace
 
 namespace Hooks_SteamUI
 {
+    void InstallDiversionHooks()
+    {
+        // These hooks are the only SteamUI hooks that must exist before Lua is
+        // parsed. They redirect steamclient module lookups to the Diversion
+        // shadow module and gate LoadModuleWithPath until client hooks finish.
+        HOOK_BEGIN();
+        INSTALL_HOOK_U(LoadModuleWithPath);
+
+        if (!OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleA), reinterpret_cast<void*>(hkGetModuleHandleA))) _ost_detour_transaction_ok_ = false;
+        if (!OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleW), reinterpret_cast<void*>(hkGetModuleHandleW))) _ost_detour_transaction_ok_ = false;
+        if (!OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleExA), reinterpret_cast<void*>(hkGetModuleHandleExA))) _ost_detour_transaction_ok_ = false;
+        if (!OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleExW), reinterpret_cast<void*>(hkGetModuleHandleExW))) _ost_detour_transaction_ok_ = false;
+        HOOK_END();
+    }
+
     void Install()
     {
         ARM_CAPTURE_U(GetAppByID);
@@ -939,17 +954,9 @@ namespace Hooks_SteamUI
         RESOLVE_U(RepeatedFieldUint32_Add);
 
         HOOK_BEGIN();
-        INSTALL_HOOK_U(LoadModuleWithPath);
         INSTALL_HOOK_U(FillInAppOverview);
         INSTALL_HOOK_U(BuildCompleteAppOverviewChange);
         INSTALL_HOOK_U(CSteamUIAppControllerRunFrame);
-
-        // System module handle redirection for Diversion shadow memory isolation
-        if (!OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleA), reinterpret_cast<void*>(hkGetModuleHandleA))) _ost_detour_transaction_ok_ = false;
-        if (!OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleW), reinterpret_cast<void*>(hkGetModuleHandleW))) _ost_detour_transaction_ok_ = false;
-        if (!OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleExA), reinterpret_cast<void*>(hkGetModuleHandleExA))) _ost_detour_transaction_ok_ = false;
-        if (!OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleExW), reinterpret_cast<void*>(hkGetModuleHandleExW))) _ost_detour_transaction_ok_ = false;
-
         HOOK_END();
 
         g_trackedStates.reserve(1500);
@@ -960,6 +967,11 @@ namespace Hooks_SteamUI
 
     void Uninstall()
     {
+        g_installedScannerPool.Stop();
+        g_autoSyncWorkerPool.Stop();
+        g_trackedStates.clear();
+        g_activeUpdatingApps.clear();
+
         UNHOOK_BEGIN();
         if (!OSTPlatform::Detour::Detach(reinterpret_cast<void**>(&oGetModuleHandleA), reinterpret_cast<void*>(hkGetModuleHandleA))) _ost_detour_transaction_ok_ = false;
         if (!OSTPlatform::Detour::Detach(reinterpret_cast<void**>(&oGetModuleHandleW), reinterpret_cast<void*>(hkGetModuleHandleW))) _ost_detour_transaction_ok_ = false;
@@ -971,11 +983,6 @@ namespace Hooks_SteamUI
         UNINSTALL_HOOK(BuildCompleteAppOverviewChange);
         UNINSTALL_HOOK(CSteamUIAppControllerRunFrame);
         UNHOOK_END();
-
-        g_installedScannerPool.Stop();
-        g_autoSyncWorkerPool.Stop();
-        g_trackedStates.clear();
-        g_activeUpdatingApps.clear();
     }
 
     void DetachWorkerThreads()
