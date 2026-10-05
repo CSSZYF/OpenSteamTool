@@ -49,6 +49,9 @@ namespace LuaConfig{
     // App IDs that should bypass ProtectionScan and be treated as non-Denuvo games.
     static std::unordered_set<AppId_t> NoDenuvoSet{};
     static std::unordered_set<AppId_t> g_cmdLineNoDenuvo{};
+    // App IDs that should use Scheme 2 (adaptive time-window lease) for Denuvo authorization.
+    static std::unordered_set<AppId_t> DAuth2Set{};
+    static std::unordered_set<AppId_t> g_cmdLineDAuth2{};
     // On-demand eticket mint endpoint, set via seteticketurl() in Lua config.
     // Empty = disabled (EticketClient falls back to credential-store ticket).
     static std::string EticketUrl{};
@@ -67,6 +70,8 @@ namespace LuaConfig{
     static std::unordered_map<AppId_t, uint32_t> g_forcedDenuvoRefCount;
     static std::unordered_map<std::string, std::unordered_set<AppId_t>> g_fileNoDenuvo;
     static std::unordered_map<AppId_t, uint32_t> g_noDenuvoRefCount;
+    static std::unordered_map<std::string, std::unordered_set<AppId_t>> g_fileDAuth2;
+    static std::unordered_map<AppId_t, uint32_t> g_dauth2RefCount;
     static std::unordered_map<std::string, std::unordered_set<AppId_t>> g_filePinnedApps;
     static std::unordered_map<AppId_t, uint32_t> g_pinnedAppsRefCount;
     static std::unordered_map<std::string, std::unordered_map<AppId_t, uint64_t>> g_fileStats;
@@ -501,6 +506,26 @@ namespace LuaConfig{
         return 0;
     }
 
+    static int lua_dauth2(lua_State* L) {
+        // dauth2(appid) — activate Scheme 2 (adaptive time-window lease) for Denuvo authorization.
+        if (lua_gettop(L) < 1 || !lua_isinteger(L, 1))
+            return luaL_error(L, "dauth2 requires (appid: integer)");
+        lua_Integer value = lua_tointeger(L, 1);
+        if (value <= 0 || value > static_cast<lua_Integer>(UINT32_MAX))
+            return luaL_error(L, "dauth2: appid out of range");
+        AppId_t appId = static_cast<AppId_t>(value);
+        if (!g_currentFile.empty()) {
+            if (g_fileDAuth2[g_currentFile].insert(appId).second) {
+                if (++g_dauth2RefCount[appId] == 1) {
+                    DAuth2Set.insert(appId);
+                }
+            }
+        } else {
+            DAuth2Set.insert(appId);
+        }
+        return 0;
+    }
+
     static int lua_seteticketurl(lua_State* L) {
         // seteticketurl("http://your-backend/eticket")
         // Endpoint that mints fresh nonce-bound encrypted app tickets for
@@ -710,6 +735,7 @@ namespace LuaConfig{
         // we don't need it?
         // register_func(g_lua_state, "pinapp", lua_pinApp);
         register_func(g_lua_state, "setmanifestid", lua_setManifestid);
+        register_func(g_lua_state, "dauth2", lua_dauth2);
         register_func(g_lua_state, "http_get", lua_http_get);
         register_func(g_lua_state, "http_post", lua_http_post);
         register_func(g_lua_state, "setappticket", lua_setAppticket);
@@ -765,6 +791,21 @@ namespace LuaConfig{
             g_cmdLineNoDenuvo.insert(appId);
         } else {
             g_cmdLineNoDenuvo.erase(appId);
+        }
+    }
+
+    bool IsDAuth2(AppId_t appId) {
+        std::shared_lock lock(g_configSharedMutex);
+        return DAuth2Set.count(appId) > 0 || g_cmdLineDAuth2.count(appId) > 0;
+    }
+
+    void SetCmdLineDAuth2(AppId_t appId, bool active) {
+        if (appId == 0 || appId == k_uAppIdInvalid) return;
+        std::unique_lock lock(g_configSharedMutex);
+        if (active) {
+            g_cmdLineDAuth2.insert(appId);
+        } else {
+            g_cmdLineDAuth2.erase(appId);
         }
     }
 
@@ -998,6 +1039,7 @@ namespace LuaConfig{
         auto procIt = g_fileProcesses.find(filePath);
         auto forcedIt = g_fileForcedDenuvo.find(filePath);
         auto noDenuvoIt = g_fileNoDenuvo.find(filePath);
+        auto dauth2It = g_fileDAuth2.find(filePath);
         auto pinnedIt = g_filePinnedApps.find(filePath);
         auto statIt = g_fileStats.find(filePath);
         auto eticketUrlIt = g_fileEticketUrl.find(filePath);
@@ -1006,7 +1048,7 @@ namespace LuaConfig{
             appTicketIt == g_fileAppTickets.end() && eTicketIt == g_fileETickets.end() &&
             tokenIt == g_fileTokens.end() &&
             procIt == g_fileProcesses.end() && forcedIt == g_fileForcedDenuvo.end() &&
-            noDenuvoIt == g_fileNoDenuvo.end() && pinnedIt == g_filePinnedApps.end() &&
+            noDenuvoIt == g_fileNoDenuvo.end() && dauth2It == g_fileDAuth2.end() && pinnedIt == g_filePinnedApps.end() &&
             statIt == g_fileStats.end() && eticketUrlIt == g_fileEticketUrl.end()) {
             g_fileParseSequence.erase(filePath);
             g_fileMtime.erase(filePath);
@@ -1128,6 +1170,19 @@ namespace LuaConfig{
             g_fileNoDenuvo.erase(noDenuvoIt);
         }
 
+        if (dauth2It != g_fileDAuth2.end()) {
+            for (AppId_t appId : dauth2It->second) {
+                auto refIt = g_dauth2RefCount.find(appId);
+                if (refIt != g_dauth2RefCount.end()) {
+                    if (--refIt->second == 0) {
+                        g_dauth2RefCount.erase(refIt);
+                        DAuth2Set.erase(appId);
+                    }
+                }
+            }
+            g_fileDAuth2.erase(dauth2It);
+        }
+
         if (pinnedIt != g_filePinnedApps.end()) {
             for (AppId_t appId : pinnedIt->second) {
                 auto refIt = g_pinnedAppsRefCount.find(appId);
@@ -1225,6 +1280,11 @@ namespace LuaConfig{
             }
         }
         for (const auto& [filePath, _] : g_fileNoDenuvo) {
+            if (StartsWithCaseInsensitive(filePath, dirPath)) {
+                toUnload.push_back(filePath);
+            }
+        }
+        for (const auto& [filePath, _] : g_fileDAuth2) {
             if (StartsWithCaseInsensitive(filePath, dirPath)) {
                 toUnload.push_back(filePath);
             }
@@ -1647,6 +1707,9 @@ namespace LuaConfig{
                 rememberTracked(filePath);
             }
             for (const auto& [filePath, _] : g_fileNoDenuvo) {
+                rememberTracked(filePath);
+            }
+            for (const auto& [filePath, _] : g_fileDAuth2) {
                 rememberTracked(filePath);
             }
             for (const auto& [filePath, _] : g_filePinnedApps) {

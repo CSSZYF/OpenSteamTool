@@ -35,9 +35,10 @@ namespace {
         }
         if (appId == 0 || !LuaConfig::HasDepot(appId, false)) return;
 
-        // Genuinely owned and family shared apps: OST must NEVER touch or spoof SteamID!
+        // Genuinely owned and family shared apps: OST must NEVER touch or spoof SteamID,
+        // unless Scheme 2 (-dauth2 / dauth2(appid)) is explicitly requested.
         // Preserves player's authentic identity, local save directory, and native Steam Cloud.
-        if (Hooks_Package::HasValidLicense(appId)) return;
+        if (Hooks_Package::HasValidLicense(appId) && !LuaConfig::IsDAuth2(appId)) return;
 
         GetSteamIDResp resp{pWrite};
         if (!resp.ok()) return;
@@ -82,9 +83,10 @@ namespace {
         const bool origTicketValid = origResp.ok() && origResp.returnValue() > 0;
 
         // If the account has a valid license (truly owned or family shared), Steam client
-        // natively manages tickets. OST does not forge or inject tickets for genuine/shared games.
+        // natively manages tickets. OST does not forge or inject tickets for genuine/shared games,
+        // unless Scheme 2 (-dauth2 / dauth2(appid)) is explicitly requested.
         // If a Lua file exists (e.g. for manifest locking), sync the genuine ticket to Lua.
-        if (Hooks_Package::HasValidLicense(appId)) {
+        if (Hooks_Package::HasValidLicense(appId) && !LuaConfig::IsDAuth2(appId)) {
             if (origTicketValid) {
                 auto ticketSpan = origResp.pTicket();
                 if (!ticketSpan.empty()) {
@@ -167,7 +169,7 @@ namespace {
         if (appId == 0 || !LuaConfig::HasDepot(appId, false)) return;
 
         // Genuinely owned and family shared apps: Steam natively handles encrypted tickets.
-        if (Hooks_Package::HasValidLicense(appId)) return;
+        if (Hooks_Package::HasValidLicense(appId) && !LuaConfig::IsDAuth2(appId)) return;
 
         // Refresh the Denuvo authorization lease window when an encrypted ticket is requested.
         PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
@@ -227,7 +229,7 @@ namespace {
         if (appId == 0 || !LuaConfig::HasDepot(appId, false)) return;
 
         // Genuinely owned and family shared apps: Steam natively handles genuine tickets.
-        if (Hooks_Package::HasValidLicense(appId)) return;
+        if (Hooks_Package::HasValidLicense(appId) && !LuaConfig::IsDAuth2(appId)) return;
 
         // Refresh the Denuvo authorization lease window when reading the encrypted ticket.
         PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);

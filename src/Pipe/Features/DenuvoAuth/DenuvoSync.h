@@ -14,6 +14,9 @@ namespace PipeManager::DenuvoAuth {
     // Checks whether cmdLine contains any variant of -forcedenuvo (-forcedenuvo, -force-denuvo, -force_denuvo).
     bool HasForcedDenuvoArg(const char* cmdLine);
 
+    // Checks whether cmdLine contains any variant of -dauth2 (-dauth2, --dauth2, -dauth-2, -dauth_2).
+    bool HasDAuth2Arg(const char* cmdLine);
+
     // Checks whether cmdLine contains any variant of -lua (-lua, --lua, -d+).
     bool HasLuaArg(const char* cmdLine);
 

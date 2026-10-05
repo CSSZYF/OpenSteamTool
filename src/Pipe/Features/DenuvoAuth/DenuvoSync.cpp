@@ -59,6 +59,13 @@ namespace PipeManager::DenuvoAuth {
                            HasCmdLineArg(cmdLine, "-force_denuvo"));
     }
 
+    bool HasDAuth2Arg(const char* cmdLine) {
+        return cmdLine && (HasCmdLineArg(cmdLine, "-dauth2") ||
+                           HasCmdLineArg(cmdLine, "--dauth2") ||
+                           HasCmdLineArg(cmdLine, "-dauth-2") ||
+                           HasCmdLineArg(cmdLine, "-dauth_2"));
+    }
+
     bool HasLuaArg(const char* cmdLine) {
         return cmdLine && (HasCmdLineArg(cmdLine, "-lua") ||
                            HasCmdLineArg(cmdLine, "--lua") ||
@@ -556,9 +563,11 @@ void OnSpawnProcess(AppId_t appId, const char* pExePath, const char* cmdLine) {
     const bool hasLuaArg = HasLuaArg(cmdLine);
     const bool hasNoDenuvo = HasNoDenuvoArg(cmdLine);
     const bool hasForcedDenuvo = HasForcedDenuvoArg(cmdLine);
+    const bool hasDAuth2 = HasDAuth2Arg(cmdLine);
 
     LuaConfig::SetCmdLineNoDenuvo(appId, hasNoDenuvo);
     LuaConfig::SetCmdLineForcedDenuvo(appId, hasForcedDenuvo);
+    LuaConfig::SetCmdLineDAuth2(appId, hasDAuth2);
 
     if (hasNoDenuvo) {
         LOG_INFO("DenuvoSync: -nodenuvo active for appId={} — skipping Denuvo sync and manifest locking", appId);
@@ -568,6 +577,10 @@ void OnSpawnProcess(AppId_t appId, const char* pExePath, const char* cmdLine) {
 
     if (hasForcedDenuvo) {
         LOG_INFO("DenuvoSync: -forcedenuvo active for appId={}", appId);
+    }
+
+    if (hasDAuth2) {
+        LOG_INFO("DenuvoSync: -dauth2 active for appId={} — Scheme 2 (adaptive ticket lease) enabled", appId);
     }
 
     std::filesystem::path existingLuaPath = ResolveAppLuaPath(appId);

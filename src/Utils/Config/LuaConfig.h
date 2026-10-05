@@ -80,6 +80,13 @@ namespace LuaConfig{
     // Records whether -nodenuvo command-line launch argument was passed for appId.
     void SetCmdLineNoDenuvo(AppId_t appId, bool active);
 
+    // Returns true if the appid was marked via dauth2(), or launched with -dauth2,
+    // activating Scheme 2 (adaptive time window & ticket lease) instead of default upstream scheme.
+    bool IsDAuth2(AppId_t appId);
+
+    // Records whether -dauth2 command-line launch argument was passed for appId.
+    void SetCmdLineDAuth2(AppId_t appId, bool active);
+
     // On-demand eticket backend URL set via seteticketurl() in Lua config.
     // Empty string means the feature is disabled and EticketClient falls
     // back to the static credential-store ticket (original behaviour).
