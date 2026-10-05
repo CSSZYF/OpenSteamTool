@@ -1,4 +1,5 @@
 #include "SteamSession.h"
+#include "AppInfoParser.h"
 #include "Log.h"
 #include "LuaFallbackParser.h"
 #include "RaiiGuards.h"
@@ -400,11 +401,42 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
             }
         }
 
-        outDlcs.clear();
-        outDlcs.reserve(dlcMap.size());
-        for (const auto& [id, info] : dlcMap) {
-            outDlcs.push_back(info);
+    }
+
+    if (!steamPath.empty()) {
+        auto appInfoOpt = ParseAppInfoDepots(steamPath, appId);
+        if (appInfoOpt) {
+            for (uint32_t dlcId : appInfoOpt->dlcAppIds) {
+                if (dlcId != appId && !knownDlcIds.contains(dlcId)) {
+                    knownDlcIds.insert(dlcId);
+                    depotToDlc.try_emplace(dlcId, dlcId);
+                    DlcInfo& d = dlcMap[dlcId];
+                    d.dlcId = dlcId;
+                    knownDepotManifests.try_emplace(dlcId, "");
+                }
+            }
         }
+    }
+
+    std::unordered_set<uint32_t> missingNameDlcIds;
+    for (const auto& [id, d] : dlcMap) {
+        if (d.name.empty()) {
+            missingNameDlcIds.insert(id);
+        }
+    }
+    if (!missingNameDlcIds.empty() && !steamPath.empty()) {
+        auto resolvedNames = ParseAppNames(steamPath, missingNameDlcIds);
+        for (const auto& [id, name] : resolvedNames) {
+            if (!name.empty()) {
+                dlcMap[id].name = name;
+            }
+        }
+    }
+
+    outDlcs.clear();
+    outDlcs.reserve(dlcMap.size());
+    for (const auto& [id, info] : dlcMap) {
+        outDlcs.push_back(info);
     }
 
     auto getDlcIdForDepot = [&](uint32_t dId) -> uint32_t {

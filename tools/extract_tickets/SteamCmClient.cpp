@@ -967,6 +967,24 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
                 depotKeys.push_back(std::move(newDk));
             }
         }
+
+        std::unordered_set<uint32_t> missingDlcNames;
+        for (const auto& d : creds.dlcs) {
+            if (d.name.empty()) {
+                missingDlcNames.insert(d.dlcId);
+            }
+        }
+        if (!missingDlcNames.empty() && !steamPath.empty()) {
+            auto resolved = ParseAppNames(steamPath, missingDlcNames);
+            for (auto& d : creds.dlcs) {
+                if (d.name.empty()) {
+                    auto it = resolved.find(d.dlcId);
+                    if (it != resolved.end() && !it->second.empty()) {
+                        d.name = it->second;
+                    }
+                }
+            }
+        }
     }
 
     // 4. 收集所有需要向 Steam CM 补充查询密钥的 Depot ID
