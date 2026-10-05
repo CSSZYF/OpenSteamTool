@@ -23,7 +23,7 @@ struct SteamAuthSession {
     std::string clientId;
     std::string requestId;
     uint64_t steamId{0};
-    std::vector<int> allowedConfirmations; // 1: Email, 2: DeviceCode (2FA), 3: DeviceConfirmation
+    std::vector<AllowedConfirmation> allowedConfirmations;
 };
 
 struct SteamLoginResult {

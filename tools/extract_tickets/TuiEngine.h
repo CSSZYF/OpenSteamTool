@@ -41,6 +41,7 @@ public:
     static void ShowCursor(bool show);
     static void MoveCursor(int row, int col);
     static void ClearScreen();
+    static void RepositionCursor();
 
     // Screen dimensions
     static void GetScreenSize(int& outWidth, int& outHeight);

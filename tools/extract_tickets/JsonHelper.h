@@ -13,6 +13,11 @@ struct OwnedGameInfo {
     std::string name;
 };
 
+struct AllowedConfirmation {
+    int type{0}; // 2: EmailCode, 3: DeviceCode (TOTP), 4: DeviceConfirmation
+    std::string associatedMessage;
+};
+
 class JsonHelper {
 public:
     // Extracts string value for a given key: "key": "value"
@@ -29,6 +34,12 @@ public:
 
     // Extracts confirmation_types from "allowed_confirmations": [ { "confirmation_type": 2 }, ... ]
     [[nodiscard]] static std::vector<int> GetConfirmationTypes(std::string_view json);
+
+    // Extracts full AllowedConfirmation list from "allowed_confirmations"
+    [[nodiscard]] static std::vector<AllowedConfirmation> GetConfirmations(std::string_view json);
+
+    // Extracts array of strings: "key": [ "item1", "item2" ]
+    [[nodiscard]] static std::vector<std::string> GetStringArray(std::string_view json, std::string_view key);
 
     // Parses games array from GetOwnedGames response:
     // "games": [ { "appid": 730, "name": "Counter-Strike 2" }, ... ]

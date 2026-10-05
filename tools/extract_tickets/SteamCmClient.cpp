@@ -1,8 +1,10 @@
 #include "SteamCmClient.h"
+#include "JsonHelper.h"
 #include "Log.h"
 #include "TuiEngine.h"
 #include "Utils.h"
 
+#include <algorithm>
 #include <chrono>
 #include <format>
 #include <iostream>
@@ -18,6 +20,43 @@ namespace {
             hex += std::format("{:02x}", b);
         }
         return hex;
+    }
+
+    std::vector<std::string> QueryCmWebSockets() {
+        std::vector<std::string> endpoints;
+        WinHttpTransport http;
+        LOG_DEBUG("SteamCM", "正在从 Steam 官方 API 查询可用 CM 服务器列表 (GetCMList)...");
+        HttpResponse resp = http.Get("https://api.steampowered.com/ISteamDirectory/GetCMList/v1/?cellid=0");
+        if (resp.IsSuccess()) {
+            auto list = JsonHelper::GetStringArray(resp.body, "serverlist_websockets");
+            for (const auto& item : list) {
+                // Prefer 443 endpoints for standard TLS WebSocket
+                if (item.find(":443") != std::string::npos) {
+                    endpoints.push_back(item);
+                }
+            }
+            if (endpoints.empty()) {
+                endpoints = std::move(list);
+            }
+            LOG_DEBUG("SteamCM", "从 Steam Directory 获取到 {} 个 WebSocket CM 节点", endpoints.size());
+        } else {
+            LOG_WARN("SteamCM", "查询 GetCMList 失败 (HTTP {}): {}", resp.statusCode, resp.errorMessage);
+        }
+
+        if (endpoints.empty()) {
+            endpoints = {
+                "cmp1-ord1.steamserver.net:443",
+                "cmp2-ord1.steamserver.net:443",
+                "cmp1-iad1.steamserver.net:443",
+                "cmp2-iad1.steamserver.net:443",
+                "cmp1-sea1.steamserver.net:443",
+                "cmp2-sea1.steamserver.net:443",
+                "cmp1-lax1.steamserver.net:443",
+                "cmp1-fra1.steamserver.net:443"
+            };
+            LOG_INFO("SteamCM", "使用预置的高可用 CM 服务器集群 (共 {} 个)", endpoints.size());
+        }
+        return endpoints;
     }
 } // namespace
 
@@ -85,21 +124,39 @@ bool SteamCmClient::ConnectAndLogon(uint64_t steamId, std::string_view accessTok
     Disconnect();
     m_steamId = steamId;
 
-    LOG_DEBUG("SteamCM", "正在建立 WebSocket 通道连接 Steam CM 服务器 (wss://cm.steampowered.com/cmsocket/)...");
-    if (!TuiEngine::IsActive()) {
-        std::cout << "[NET] 正在连接 Steam CM 服务器 (wss://cm.steampowered.com/cmsocket/)...\n";
+    auto cmList = QueryCmWebSockets();
+    bool connected = false;
+    std::string connectedEndpoint;
+
+    size_t tryLimit = std::min<size_t>(cmList.size(), 5);
+    for (size_t i = 0; i < tryLimit; ++i) {
+        const auto& endpoint = cmList[i];
+        std::string wsUrl = std::format("wss://{}/cmsocket/", endpoint);
+        LOG_DEBUG("SteamCM", "正在建立 WebSocket 通道连接 CM 节点 [{}/{}]: {}", i + 1, tryLimit, wsUrl);
+        if (!TuiEngine::IsActive()) {
+            std::cout << std::format("[NET] 正在连接 Steam CM 服务器 ({}/{}): {}...\n", i + 1, tryLimit, endpoint);
+        }
+
+        if (m_ws.Connect(wsUrl, 6000)) {
+            LOG_INFO("SteamCM", "成功连接 Steam CM 节点 -> {}", endpoint);
+            connected = true;
+            connectedEndpoint = endpoint;
+            break;
+        } else {
+            LOG_WARN("SteamCM", "连接 CM 节点 {} 失败", endpoint);
+        }
     }
 
-    if (!m_ws.Connect("wss://cm.steampowered.com/cmsocket/", 10000)) {
-        LOG_ERROR("SteamCM", "连接 Steam CM 服务器失败");
+    if (!connected) {
+        LOG_ERROR("SteamCM", "所有 Steam CM 节点连接均失败，请检查网络连接或系统代理设置");
         if (!TuiEngine::IsActive()) {
             std::cerr << "[ERROR] 无法连接 Steam CM 网关服务器，请检查网络。\n";
         }
         return false;
     }
 
-    LOG_DEBUG("SteamCM", "通信信道已建立，正在执行会话握手登录 (steamId={}, token={})...",
-              MaskSteamId(m_steamId), MaskToken(accessToken));
+    LOG_DEBUG("SteamCM", "通信信道已建立 ({})，正在执行会话握手登录 (steamId={}, token={})...",
+              connectedEndpoint, MaskSteamId(m_steamId), MaskToken(accessToken));
     if (!TuiEngine::IsActive()) {
         std::cout << "[NET] 通信信道已建立，正在执行会话握手登录...\n";
     }

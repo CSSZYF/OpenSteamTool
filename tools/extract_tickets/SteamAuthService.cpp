@@ -95,7 +95,7 @@ std::optional<SteamAuthSession> SteamAuthService::BeginAuthSession(
     session.clientId = *clientIdOpt;
     session.requestId = *requestIdOpt;
     session.steamId = steamIdOpt.value_or(0);
-    session.allowedConfirmations = JsonHelper::GetConfirmationTypes(resp.body);
+    session.allowedConfirmations = JsonHelper::GetConfirmations(resp.body);
 
     LOG_DEBUG("SteamAuth", "会话已创建 (steamId={}, confirmations_count={})",
               MaskSteamId(session.steamId), session.allowedConfirmations.size());
@@ -237,25 +237,28 @@ SteamLoginResult SteamAuthService::LoginWithCredentials(
         return failResult;
     }
 
-    bool needs2FA = false;
-    for (int cType : session->allowedConfirmations) {
-        if (cType == 2) { // DeviceCode (Steam Mobile Authenticator TOTP)
-            auto codeOpt = TuiEngine::PromptInputModal("Steam Guard 手机令牌", "账号已启用手机令牌，请输入 5 位动态验证码:");
+    for (const auto& conf : session->allowedConfirmations) {
+        LOG_INFO("SteamAuth", "检测到需要二次验证: type={}, message={}", conf.type, conf.associatedMessage);
+        if (conf.type == 3) { // k_EAuthSessionGuardType_DeviceCode (Steam Mobile Authenticator TOTP)
+            TuiEngine::ClearScreen();
+            auto codeOpt = TuiEngine::PromptInputModal("Steam Guard 手机令牌", "账号已启用手机令牌，请输入手机 App 上的 5 位动态验证码 (TOTP):");
+            if (codeOpt && !codeOpt->empty()) {
+                SubmitSteamGuardCode(*session, *codeOpt, 3);
+            }
+            break;
+        } else if (conf.type == 2) { // k_EAuthSessionGuardType_EmailCode (Steam Guard Email Code)
+            TuiEngine::ClearScreen();
+            std::string prompt = conf.associatedMessage.empty()
+                ? "验证码已发送至您的注册邮箱，请输入邮件中的验证码:"
+                : std::format("验证码已发送至邮箱 ({})，请输入邮件中的验证码:", conf.associatedMessage);
+            auto codeOpt = TuiEngine::PromptInputModal("Steam Guard 邮箱验证码", prompt);
             if (codeOpt && !codeOpt->empty()) {
                 SubmitSteamGuardCode(*session, *codeOpt, 2);
             }
-            needs2FA = true;
             break;
-        } else if (cType == 1) { // EmailCode
-            auto codeOpt = TuiEngine::PromptInputModal("Steam Guard 邮箱验证", "验证码已发送至您的注册邮箱，请输入邮箱验证码:");
-            if (codeOpt && !codeOpt->empty()) {
-                SubmitSteamGuardCode(*session, *codeOpt, 1);
-            }
-            needs2FA = true;
-            break;
-        } else if (cType == 3) { // DeviceConfirmation (Steam App prompt)
-            TuiEngine::ShowMessageModal("Steam 手机确认", "请在手机 Steam App 上点击【确认登录】", "点击后按 Enter 键继续...");
-            needs2FA = true;
+        } else if (conf.type == 4) { // k_EAuthSessionGuardType_DeviceConfirmation (Steam App 1-tap)
+            TuiEngine::ClearScreen();
+            TuiEngine::ShowMessageModal("Steam 手机确认", "请在手机 Steam App 上点击【确认登录】", "确认通过后按 Enter 键继续...");
             break;
         }
     }

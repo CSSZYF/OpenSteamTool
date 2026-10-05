@@ -42,17 +42,17 @@ bool ExtractLocalApp(uint32_t appId, bool forceEticket, bool inTui = false) {
     std::string steamPath = steamPathOpt ? *steamPathOpt : "";
 
     const bool isInstalled = IsAppInstalledLocally(steamPath, appId);
-    const bool injectAppId = forceEticket;
+    const bool injectAppId = isInstalled || forceEticket;
 
     if (injectAppId) {
         const std::string appIdStr{std::to_string(appId)};
         SetEnvironmentVariableA("SteamAppId", appIdStr.c_str());
+        LOG_INFO("LocalExtract", "已为游戏 AppID {} 注入运行环境变量 (SteamAppId={})", appId, appIdStr);
         if (!inTui) {
-            std::cout << "[WARN] 已启用 --force-eticket 强制注入未安装游戏的运行时环境。\n"
-                      << "       --force-eticket enabled for uninstalled app runtime context injection.\n\n";
+            std::cout << "[INFO] 已为游戏 AppID " << appId << " 注入环境，准备提取包括 eticket.bin 在内的完整凭据。\n";
         }
     } else if (!inTui) {
-        std::cout << "[INFO] 目标 AppID " << appId << " 已启用【安全提取模式】(不注入游戏运行时，防止 Steam 误报运行)。\n";
+        std::cout << "[INFO] 目标 AppID " << appId << " 未在本地库中安装，已启用【安全提取模式】。\n";
     }
 
     std::string steamClientPath;
@@ -69,9 +69,14 @@ bool ExtractLocalApp(uint32_t appId, bool forceEticket, bool inTui = false) {
     std::optional<std::vector<uint8_t>> encrypted;
     if (sessionOpened) {
         ownership = ExtractAppOwnershipTicket(client, pipe, user, appId);
+        if (ownership) {
+            LOG_INFO("LocalExtract", "成功提取 OwnershipTicket ({} 字节)", ownership->size());
+        }
         if (injectAppId) {
             encrypted = ExtractEncryptedAppTicket(client, pipe, user, appId);
-            SetEnvironmentVariableA("SteamAppId", nullptr);
+            if (encrypted) {
+                LOG_INFO("LocalExtract", "成功提取 EncryptedAppTicket ({} 字节)", encrypted->size());
+            }
         }
     }
 
@@ -100,6 +105,58 @@ bool ExtractLocalApp(uint32_t appId, bool forceEticket, bool inTui = false) {
 
     const bool ok = WriteOutputs(appId, ownership, encrypted, depotKeys, dlcs, appTokens);
     return ok;
+}
+
+bool RunLocalExtractionWorker(uint32_t appId, bool forceEticket) {
+    char exePath[MAX_PATH];
+    DWORD len = GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) {
+        return ExtractLocalApp(appId, forceEticket, true);
+    }
+
+    std::string cmd = std::format("\"{}\" --worker {}", exePath, appId);
+    if (forceEticket) {
+        cmd += " --force-eticket";
+    }
+
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+
+    // Launch worker child process completely hidden (CREATE_NO_WINDOW)
+    // Steam will bind its AppManager to this short-lived worker PID.
+    // Upon worker exit (~200ms), Steam immediately releases the "Running" state!
+    BOOL success = CreateProcessA(
+        nullptr,
+        cmd.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        CREATE_NO_WINDOW,
+        nullptr,
+        nullptr,
+        &si,
+        &pi
+    );
+
+    if (!success) {
+        LOG_ERROR("Main", "创建 Worker 子进程失败 (GetLastError={})", GetLastError());
+        return ExtractLocalApp(appId, forceEticket, true);
+    }
+
+    DWORD waitRes = WaitForSingleObject(pi.hProcess, 15000);
+    DWORD exitCode = 1;
+    if (waitRes == WAIT_OBJECT_0) {
+        GetExitCodeProcess(pi.hProcess, &exitCode);
+    } else {
+        LOG_WARN("Main", "Worker 子进程执行超时，强制终止");
+        TerminateProcess(pi.hProcess, 1);
+    }
+
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    return exitCode == 0;
 }
 
 namespace {
@@ -172,6 +229,7 @@ int Run(int argc, char** argv) {
     std::optional<uint32_t> cliAppId;
     bool forceEticket{false};
     bool onlineMode{false};
+    bool workerMode{false};
 
     for (int i = 1; i < argc; ++i) {
         std::string_view arg{argv[i]};
@@ -179,6 +237,8 @@ int Run(int argc, char** argv) {
             onlineMode = true;
         } else if (arg == "--force-eticket" || arg == "-f") {
             forceEticket = true;
+        } else if (arg == "--worker") {
+            workerMode = true;
         } else if (!cliAppId) {
             cliAppId = ParseAppId(arg);
             if (!cliAppId) {
@@ -186,6 +246,12 @@ int Run(int argc, char** argv) {
                 return 1;
             }
         }
+    }
+
+    if (workerMode && cliAppId) {
+        // Child worker process: runs silent extraction and terminates cleanly so Steam releases "Running" state
+        const bool ok = ExtractLocalApp(*cliAppId, forceEticket, false);
+        return ok ? 0 : 1;
     }
 
     if (onlineMode) {
@@ -232,6 +298,7 @@ int Run(int argc, char** argv) {
 
         // Single-key 'o' or 'O' directly jumps to Online Mode (no Enter required!)
         if (ev.code == KeyCode::Char && (ev.ch == 'o' || ev.ch == 'O')) {
+            TuiEngine::ClearScreen();
             OnlineSession::RunInteractive();
             inputAppId.clear();
             layout = DrawLevel1Frame();
@@ -269,7 +336,20 @@ int Run(int argc, char** argv) {
 
             auto appId = ParseAppId(inputAppId);
             if (appId && *appId > 0) {
-                bool ok = ExtractLocalApp(*appId, forceEticket, true);
+                int w = 80, h = 25;
+                TuiEngine::GetScreenSize(w, h);
+                const int modalW = 60, modalH = 6;
+                const int top = (h - modalH) / 2, left = (w - modalW) / 2;
+
+                TuiEngine::ClearScreen();
+                TuiEngine::DrawBox(top, left, modalW, modalH, "本地凭证提取中");
+                TuiEngine::MoveCursor(top + 2, left + 4);
+                std::cout << "\x1b[1;33m正在与本地 Steam 客户端通信获取 AppID " << *appId << " 凭据...\x1b[0m";
+                std::cout.flush();
+
+                bool ok = RunLocalExtractionWorker(*appId, forceEticket);
+
+                TuiEngine::ClearScreen();
                 if (ok) {
                     TuiEngine::ShowMessageModal(
                         "提取完成",

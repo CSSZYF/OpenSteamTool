@@ -51,8 +51,12 @@ void TuiEngine::MoveCursor(int row, int col) {
 }
 
 void TuiEngine::ClearScreen() {
-    // Reposition cursor to top-left without clearing the entire buffer to black.
-    // Avoids high-frequency terminal screen flashing on keystrokes and updates.
+    std::cout << "\x1b[2J\x1b[H";
+    std::cout.flush();
+}
+
+void TuiEngine::RepositionCursor() {
+    // Reposition cursor to top-left without wiping buffer to black, preventing flicker during typing
     std::cout << "\x1b[H";
     std::cout.flush();
 }
@@ -216,12 +220,11 @@ void TuiEngine::DrawBox(int top, int left, int width, int height, std::string_vi
     }
     std::cout << "╮\x1b[0m";
 
-    // Side borders
+    // Side borders and clear interior with spaces
+    std::string interiorSpaces(static_cast<size_t>(width - 2), ' ');
     for (int r = 1; r < height - 1; ++r) {
         MoveCursor(top + r, left);
-        std::cout << "\x1b[36m│\x1b[0m";
-        MoveCursor(top + r, left + width - 1);
-        std::cout << "\x1b[36m│\x1b[0m";
+        std::cout << "\x1b[36m│\x1b[0m" << interiorSpaces << "\x1b[36m│\x1b[0m";
     }
 
     // Bottom border

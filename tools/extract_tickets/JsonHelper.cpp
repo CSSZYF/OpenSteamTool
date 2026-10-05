@@ -149,26 +149,88 @@ std::optional<bool> JsonHelper::GetBool(std::string_view json, std::string_view 
 
 std::vector<int> JsonHelper::GetConfirmationTypes(std::string_view json) {
     std::vector<int> types;
-    size_t pos = 0;
-    std::string_view target = "\"confirmation_type\"";
-
-    while ((pos = json.find(target, pos)) != std::string_view::npos) {
-        size_t afterKey = pos + target.size();
-        afterKey = json.find_first_not_of(" \t\r\n", afterKey);
-        if (afterKey != std::string_view::npos && json[afterKey] == ':') {
-            std::string_view sv = SkipWhitespace(json.substr(afterKey + 1));
-            size_t endNum = sv.find_first_of(" \t\r\n,}]");
-            if (endNum != std::string_view::npos) {
-                int cType = 0;
-                auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + endNum, cType);
-                if (ec == std::errc()) {
-                    types.push_back(cType);
+    for (const auto& conf : GetConfirmations(json)) {
+        types.push_back(conf.type);
+    }
+    if (types.empty()) {
+        size_t pos = 0;
+        std::string_view target = "\"confirmation_type\"";
+        while ((pos = json.find(target, pos)) != std::string_view::npos) {
+            size_t afterKey = pos + target.size();
+            afterKey = json.find_first_not_of(" \t\r\n", afterKey);
+            if (afterKey != std::string_view::npos && json[afterKey] == ':') {
+                std::string_view sv = SkipWhitespace(json.substr(afterKey + 1));
+                size_t endNum = sv.find_first_of(" \t\r\n,}]");
+                if (endNum != std::string_view::npos) {
+                    int cType = 0;
+                    auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + endNum, cType);
+                    if (ec == std::errc()) {
+                        types.push_back(cType);
+                    }
                 }
             }
+            pos += target.size();
         }
-        pos += target.size();
     }
     return types;
+}
+
+std::vector<AllowedConfirmation> JsonHelper::GetConfirmations(std::string_view json) {
+    std::vector<AllowedConfirmation> list;
+    size_t targetPos = json.find("\"allowed_confirmations\"");
+    if (targetPos == std::string_view::npos) return list;
+
+    size_t arrayStart = json.find('[', targetPos);
+    if (arrayStart == std::string_view::npos) return list;
+
+    size_t arrayEnd = json.find(']', arrayStart);
+    if (arrayEnd == std::string_view::npos) return list;
+
+    size_t pos = arrayStart + 1;
+    while (pos < arrayEnd) {
+        size_t objStart = json.find('{', pos);
+        if (objStart == std::string_view::npos || objStart >= arrayEnd) break;
+
+        size_t objEnd = json.find('}', objStart);
+        if (objEnd == std::string_view::npos || objEnd > arrayEnd) break;
+
+        std::string_view itemJson = json.substr(objStart, objEnd - objStart + 1);
+        auto cTypeOpt = GetUInt32(itemJson, "confirmation_type");
+        if (cTypeOpt) {
+            AllowedConfirmation conf;
+            conf.type = static_cast<int>(*cTypeOpt);
+            conf.associatedMessage = GetString(itemJson, "associated_message").value_or("");
+            list.push_back(std::move(conf));
+        }
+
+        pos = objEnd + 1;
+    }
+    return list;
+}
+
+std::vector<std::string> JsonHelper::GetStringArray(std::string_view json, std::string_view key) {
+    std::vector<std::string> items;
+    size_t keyPos = FindKeyPosition(json, key);
+    if (keyPos == std::string_view::npos) return items;
+
+    size_t arrayStart = json.find('[', keyPos);
+    if (arrayStart == std::string_view::npos) return items;
+
+    size_t arrayEnd = json.find(']', arrayStart);
+    if (arrayEnd == std::string_view::npos) return items;
+
+    size_t pos = arrayStart + 1;
+    while (pos < arrayEnd) {
+        size_t strStart = json.find('"', pos);
+        if (strStart == std::string_view::npos || strStart >= arrayEnd) break;
+
+        size_t strEnd = json.find('"', strStart + 1);
+        if (strEnd == std::string_view::npos || strEnd > arrayEnd) break;
+
+        items.emplace_back(json.substr(strStart + 1, strEnd - strStart - 1));
+        pos = strEnd + 1;
+    }
+    return items;
 }
 
 std::vector<OwnedGameInfo> JsonHelper::ParseOwnedGames(std::string_view json) {
