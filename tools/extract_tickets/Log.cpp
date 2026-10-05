@@ -109,6 +109,19 @@ std::string MaskKeyHex(std::string_view hexKey) {
     return "***";
 }
 
+std::string MaskGroupId(std::string_view groupId) {
+    if (groupId.empty()) return "***";
+    const size_t len = groupId.size();
+    if (len <= 4) {
+        return std::string{groupId.substr(0, 1)} + "**" + std::string{groupId.substr(len - 1)};
+    }
+    return std::string{groupId.substr(0, 3)} + "****" + std::string{groupId.substr(len - 2)};
+}
+
+std::string MaskGroupId(uint64_t groupId) {
+    return MaskGroupId(std::to_string(groupId));
+}
+
 void InitLogging(const std::string& logFileName) {
     std::lock_guard<std::mutex> lock(g_logMutex);
     if (!g_loggingInitialized) {

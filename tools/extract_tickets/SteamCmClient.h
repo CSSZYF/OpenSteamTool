@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AppInfoParser.h"
 #include "SteamSession.h"
 #include "SteamWire.h"
 #include "VdfParser.h"
@@ -28,8 +29,8 @@ public:
     SteamCmClient();
     ~SteamCmClient();
 
-    // Connects to Steam CM WebSocket and executes CMsgClientLogon with accessToken
-    [[nodiscard]] bool ConnectAndLogon(uint64_t steamId, std::string_view accessToken);
+    // Connects to Steam CM WebSocket and executes CMsgClientLogon with refreshToken
+    [[nodiscard]] bool ConnectAndLogon(uint64_t steamId, std::string_view refreshToken, std::string_view accessToken = "");
 
     // Disconnects and shuts down WebSocket session
     void Disconnect();
@@ -46,16 +47,42 @@ public:
     // Requests 64-bit PICS access tokens for app IDs (eMsg 8901)
     [[nodiscard]] std::unordered_map<uint32_t, uint64_t> RequestAppTokens(const std::vector<uint32_t>& appIds);
 
+    // Requests PICS AppInfo product metadata (eMsg 8903)
+    [[nodiscard]] std::optional<ParsedAppInfoData> RequestPicsProductInfo(uint32_t appId, uint64_t accessToken = 0);
+
+    // Sets or clears playing state via CMsgClientGamesPlayed (eMsg 742) for session license activation
+    bool SetGamePlayed(uint32_t appId);
+
+    // Resolves manifest request code via CM ServiceMethod, WebAPI, or community mirrors
+    [[nodiscard]] std::string FetchManifestRequestCode(
+        uint32_t appId, uint32_t depotId, const std::string& manifestId);
+
+    // Dynamically queries active Steam CDN servers from GetServersForSteamPipe
+    [[nodiscard]] static std::vector<std::string> GetCdnServers();
+
+    // Downloads manifest binary directly from Steam CDN via GetManifestRequestCode
+    [[nodiscard]] std::optional<std::string> DownloadManifestOnline(
+        uint32_t appId, uint32_t depotId, const std::string& manifestId, const std::string& destDir);
+
     // High-level extraction pipeline for a single target AppID
     [[nodiscard]] ExtractedAppCredentials ExtractFullCredentials(uint32_t appId);
 
+    void SetAccessToken(std::string_view token) { m_accessToken = token; }
     [[nodiscard]] bool IsConnected() const noexcept { return m_ws.IsConnected() && m_isLoggedOn; }
 
 private:
     [[nodiscard]] bool SendProtoMsg(ESteamMsg eMsg, const ProtoWriter& body, uint64_t jobId = 0);
     [[nodiscard]] bool ReadMatchingMsg(uint32_t expectedEMsg, std::vector<uint8_t>& outBody, DWORD timeoutMs = 8000);
+    void UnpackMultiMsg(std::span<const uint8_t> bodySpan);
+
+    struct QueuedMsg {
+        uint32_t eMsg{0};
+        std::vector<uint8_t> body;
+    };
 
     WebSocketClient m_ws;
+    std::vector<QueuedMsg> m_msgQueue;
+    std::string m_accessToken;
     uint64_t m_steamId{0};
     uint64_t m_nextJobId{100};
     bool m_isLoggedOn{false};

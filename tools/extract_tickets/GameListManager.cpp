@@ -104,7 +104,7 @@ bool GameListManager::ExportCsv(std::string_view accountName, std::string* outPa
 
     std::ofstream ofs(filename, std::ios::binary | std::ios::trunc);
     if (!ofs.is_open()) {
-        LOG_ERROR("GameList", "无法创建表格文件: {}", filename);
+        LOG_ERROR("GameList", "无法创建表格文件: gameslist-{}.csv", MaskAccount(accountName));
         return false;
     }
 
@@ -123,7 +123,7 @@ bool GameListManager::ExportCsv(std::string_view accountName, std::string* outPa
     ofs.flush();
     ofs.close();
 
-    LOG_INFO("GameList", "成功导出表格至: {} (共 {} 款游戏)", filename, m_games.size());
+    LOG_INFO("GameList", "成功导出表格至: gameslist-{}.csv (共 {} 款游戏)", MaskAccount(accountName), m_games.size());
     return true;
 }
 

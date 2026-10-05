@@ -19,6 +19,7 @@ private:
     static void RunInSessionExtraction(
         const std::string& accountName,
         uint64_t steamId,
+        const std::string& refreshToken,
         const std::string& accessToken);
 };
 

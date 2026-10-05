@@ -346,6 +346,7 @@ WebSocketClient::WebSocketClient() {
     if (m_hSession) {
         DWORD secureProtocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
         WinHttpSetOption(m_hSession, WINHTTP_OPTION_SECURE_PROTOCOLS, &secureProtocols, sizeof(secureProtocols));
+        WinHttpSetTimeouts(m_hSession, 5000, 5000, 5000, 5000);
     }
 }
 

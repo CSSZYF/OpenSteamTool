@@ -41,11 +41,14 @@ bool WriteOutputs(uint32_t appId,
         if (!dk.manifestFilePath.empty()) {
             std::string_view pathView{dk.manifestFilePath};
             size_t slash = pathView.find_last_of("\\/");
-            std::string_view fname = (slash != std::string_view::npos) ? pathView.substr(slash + 1) : pathView;
+            std::string fname = (slash != std::string_view::npos) ? std::string{pathView.substr(slash + 1)} : std::string{pathView};
             if (std::ranges::find(copiedManifests, fname) == copiedManifests.end()) {
                 std::string dest = JoinPath(dir, fname);
-                if (CopyFileA(dk.manifestFilePath.c_str(), dest.c_str(), FALSE)) {
-                    copiedManifests.emplace_back(fname);
+                DWORD attr = GetFileAttributesA(dest.c_str());
+                if (dk.manifestFilePath == dest || (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY))) {
+                    copiedManifests.push_back(fname);
+                } else if (CopyFileA(dk.manifestFilePath.c_str(), dest.c_str(), FALSE)) {
+                    copiedManifests.push_back(fname);
                 } else {
                     std::cerr << "[WARN] Failed to copy manifest " << fname << " (GetLastError=" << GetLastError() << ").\n";
                 }
@@ -165,15 +168,30 @@ bool WriteOutputs(uint32_t appId,
         }
     }
 
+    auto hasManifestOnDisk = [&](uint32_t depotId, const std::string& manifestId) -> bool {
+        std::string fname = std::format("{}_{}.manifest", depotId, manifestId);
+        std::string p = JoinPath(dir, fname);
+        DWORD attr = GetFileAttributesA(p.c_str());
+        return (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY));
+    };
+
     if (hasBaseManifests) {
         luaText += "\n-- Base Game Manifests\n";
         if (baseAppDk && IsValidManifestId(baseAppDk->manifestId)) {
-            luaText += "setManifestid(" + std::to_string(appId) + ", \"" + baseAppDk->manifestId + "\")\n";
+            if (hasManifestOnDisk(appId, baseAppDk->manifestId)) {
+                luaText += "setManifestid(" + std::to_string(appId) + ", \"" + baseAppDk->manifestId + "\")\n";
+            } else {
+                luaText += "-- setManifestid(" + std::to_string(appId) + ", \"" + baseAppDk->manifestId + "\") -- [未下载到实体清单文件]\n";
+            }
         }
         for (const auto& dk : depotKeys) {
             if (dk.depotId != appId && (dk.dlcId == 0 || !ownedDlcIdSet.contains(dk.dlcId))) {
                 if (IsValidManifestId(dk.manifestId)) {
-                    luaText += "setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\")\n";
+                    if (hasManifestOnDisk(dk.depotId, dk.manifestId)) {
+                        luaText += "setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\")\n";
+                    } else {
+                        luaText += "-- setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\") -- [未下载到实体清单文件]\n";
+                    }
                 }
             }
         }
@@ -235,7 +253,11 @@ bool WriteOutputs(uint32_t appId,
                 // DLC itself manifest
                 for (const auto& dk : depotKeys) {
                     if (dk.depotId == dlc.dlcId && IsValidManifestId(dk.manifestId)) {
-                        luaText += "setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\")";
+                        if (hasManifestOnDisk(dk.depotId, dk.manifestId)) {
+                            luaText += "setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\")";
+                        } else {
+                            luaText += "-- setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\") -- [未下载到实体清单文件]";
+                        }
                         if (!dlc.name.empty()) {
                             luaText += " -- " + SanitizeComment(dlc.name);
                         }
@@ -246,7 +268,11 @@ bool WriteOutputs(uint32_t appId,
                 // Any subdepots of this DLC with manifests
                 for (const auto& dk : depotKeys) {
                     if (dk.dlcId == dlc.dlcId && dk.depotId != dlc.dlcId && IsValidManifestId(dk.manifestId)) {
-                        luaText += "setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\")\n";
+                        if (hasManifestOnDisk(dk.depotId, dk.manifestId)) {
+                            luaText += "setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\")\n";
+                        } else {
+                            luaText += "-- setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\") -- [未下载到实体清单文件]\n";
+                        }
                     }
                 }
             }
@@ -264,14 +290,14 @@ bool WriteOutputs(uint32_t appId,
                                appId,
                                ToHexString(*ownership));
     } else {
-        luaText += std::format("-- setAppTicket({}, \"null\")\n\n", appId);
+        luaText += std::format("-- setAppTicket({}, \"null\") -- [未检测到有效所有权票据; OpenSteamTool 将自动启用 AppID 7 伪造兜底]\n\n", appId);
     }
 
     luaText += "-- Encrypted App Ticket (ETicket)\n";
     if (hasEncrypted) {
         luaText += std::format("setETicket({}, \"{}\")\n", appId, ToHexString(*encrypted));
     } else {
-        luaText += std::format("-- setETicket({}, \"null\")\n", appId);
+        luaText += std::format("-- setETicket({}, \"null\") -- [仅 Denuvo 强加密游戏需要，普通游戏无需此项]\n", appId);
     }
 
     const std::string luaPath{JoinPath(dir, std::to_string(appId) + ".lua")};

@@ -12,19 +12,22 @@ namespace OST::ExtractTickets {
 // Steam EMsg constants
 enum class ESteamMsg : uint32_t {
     Invalid = 0,
-    ClientLogon = 5502,
+    ClientHeartBeat = 703,
+    ClientGamesPlayed = 742,
     ClientLogonResponse = 751,
-    ClientGetAppOwnershipTicket = 5560,
+    ClientGetAppOwnershipTicket = 857,
     ClientGetAppOwnershipTicketResponse = 858,
-    ClientRequestEncryptedAppTicket = 5527,
-    ClientRequestEncryptedAppTicketResponse = 5527,
     ClientGetDepotDecryptionKey = 5438,
-    ClientGetDepotDecryptionKeyResponse = 5438,
-    ClientPICSAccessTokenRequest = 8901,
-    ClientPICSAccessTokenResponse = 8902,
+    ClientGetDepotDecryptionKeyResponse = 5439,
+    ClientLogon = 5514,
+    ClientRequestEncryptedAppTicket = 5526,
+    ClientRequestEncryptedAppTicketResponse = 5527,
+    ClientServiceMethod = 5594,
+    ClientServiceMethodResponse = 5595,
     ClientPICSProductInfoRequest = 8903,
     ClientPICSProductInfoResponse = 8904,
-    ClientHeartBeat = 5503,
+    ClientPICSAccessTokenRequest = 8905,
+    ClientPICSAccessTokenResponse = 8906,
 };
 
 constexpr uint32_t kSteamProtoMask = 0x80000000;
@@ -50,6 +53,11 @@ public:
     void WriteUInt32(uint32_t fieldNumber, uint32_t val) {
         WriteTag(fieldNumber, 0);
         WriteVarint(val);
+    }
+
+    void WriteBool(uint32_t fieldNumber, bool val) {
+        WriteTag(fieldNumber, 0);
+        WriteVarint(val ? 1 : 0);
     }
 
     void WriteUInt64(uint32_t fieldNumber, uint64_t val) {

@@ -44,6 +44,9 @@ public:
     // Parses games array from GetOwnedGames response:
     // "games": [ { "appid": 730, "name": "Counter-Strike 2" }, ... ]
     [[nodiscard]] static std::vector<OwnedGameInfo> ParseOwnedGames(std::string_view json);
+
+    // Parses shared library apps from IFamilyGroupsService/GetSharedLibraryApps response
+    [[nodiscard]] static std::vector<OwnedGameInfo> ParseSharedLibraryApps(std::string_view json);
 };
 
 } // namespace OST::ExtractTickets

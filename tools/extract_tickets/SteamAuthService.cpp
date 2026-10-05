@@ -1,12 +1,15 @@
 #include "SteamAuthService.h"
+#include "AppInfoParser.h"
 #include "Log.h"
 #include "TuiEngine.h"
+#include "Utils.h"
 
 #include <chrono>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <thread>
+#include <unordered_set>
 
 namespace OST::ExtractTickets {
 
@@ -206,13 +209,81 @@ std::vector<OwnedGameInfo> SteamAuthService::FetchOwnedGames(
     LOG_DEBUG("SteamAuth", "正在通过官方 WebAPI 拉取拥有的游戏列表...");
     HttpResponse resp = m_http.Get(url);
 
-    if (!resp.IsSuccess()) {
-        LOG_WARN("SteamAuth", "拉取游戏列表失败 (HTTP {}): {}", resp.statusCode, resp.errorMessage);
-        return {};
+    std::vector<OwnedGameInfo> games;
+    if (resp.IsSuccess()) {
+        games = JsonHelper::ParseOwnedGames(resp.body);
+        LOG_DEBUG("SteamAuth", "成功拉取到 {} 款个人游戏", games.size());
+    } else {
+        LOG_WARN("SteamAuth", "拉取个人游戏列表失败 (HTTP {}): {}", resp.statusCode, resp.errorMessage);
     }
 
-    auto games = JsonHelper::ParseOwnedGames(resp.body);
-    LOG_DEBUG("SteamAuth", "成功拉取到 {} 款游戏", games.size());
+    // 查询当前账号的 Steam 家庭组 (IFamilyGroupsService)
+    std::string familyUrl = "https://api.steampowered.com/IFamilyGroupsService/GetFamilyGroupForUser/v1/?access_token=" +
+                            UrlEncode(accessToken) +
+                            "&include_family_group_response=true";
+    HttpResponse famResp = m_http.Get(familyUrl);
+    if (famResp.IsSuccess()) {
+        auto familyGroupIdOpt = JsonHelper::GetString(famResp.body, "family_groupid");
+        if (!familyGroupIdOpt || familyGroupIdOpt->empty() || *familyGroupIdOpt == "0") {
+            auto famGroupNum = JsonHelper::GetUInt64(famResp.body, "family_groupid");
+            if (famGroupNum && *famGroupNum > 0) {
+                familyGroupIdOpt = std::to_string(*famGroupNum);
+            }
+        }
+
+        if (familyGroupIdOpt && !familyGroupIdOpt->empty() && *familyGroupIdOpt != "0") {
+            LOG_INFO("SteamAuth", "检测到当前账号加入的 Steam 家庭群组 (GroupID={})", MaskGroupId(*familyGroupIdOpt));
+            std::string sharedUrl = "https://api.steampowered.com/IFamilyGroupsService/GetSharedLibraryApps/v1/?access_token=" +
+                                    UrlEncode(accessToken) +
+                                    "&family_groupid=" + *familyGroupIdOpt +
+                                    "&include_own=false&include_non_games=false";
+            HttpResponse sharedResp = m_http.Get(sharedUrl);
+            if (sharedResp.IsSuccess()) {
+                auto sharedGames = JsonHelper::ParseSharedLibraryApps(sharedResp.body);
+                LOG_INFO("SteamAuth", "从 Steam 家庭共享库中发现 {} 款游戏", sharedGames.size());
+
+                std::unordered_set<uint32_t> existing;
+                for (const auto& g : games) {
+                    existing.insert(g.appId);
+                }
+
+                // Batch resolve app names from local appinfo.vdf if shared games lack names
+                std::unordered_set<uint32_t> missingNameAppIds;
+                for (const auto& sg : sharedGames) {
+                    if (!existing.contains(sg.appId) && sg.name.empty()) {
+                        missingNameAppIds.insert(sg.appId);
+                    }
+                }
+
+                std::unordered_map<uint32_t, std::string> resolvedNames;
+                if (!missingNameAppIds.empty()) {
+                    auto steamPathOpt = FindSteamInstallPath();
+                    if (steamPathOpt && !steamPathOpt->empty()) {
+                        resolvedNames = ParseAppNames(*steamPathOpt, missingNameAppIds);
+                    }
+                }
+
+                for (auto& sg : sharedGames) {
+                    if (!existing.contains(sg.appId)) {
+                        existing.insert(sg.appId);
+                        if (sg.name.empty()) {
+                            auto it = resolvedNames.find(sg.appId);
+                            if (it != resolvedNames.end() && !it->second.empty()) {
+                                sg.name = it->second;
+                            } else {
+                                sg.name = "App " + std::to_string(sg.appId);
+                            }
+                        }
+                        sg.name = "[共享] " + sg.name;
+                        games.push_back(std::move(sg));
+                    }
+                }
+            } else {
+                LOG_WARN("SteamAuth", "查询家庭共享游戏列表未成功 (HTTP {}): {}", sharedResp.statusCode, sharedResp.errorMessage);
+            }
+        }
+    }
+
     return games;
 }
 

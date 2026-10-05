@@ -27,11 +27,12 @@ bool ExtractLocalApp(uint32_t appId, bool forceEticket, bool inTui = false) {
     if (inTui) {
         int w = 80, h = 25;
         TuiEngine::GetScreenSize(w, h);
-        const int modalW = 60, modalH = 6;
+        const int modalW = std::clamp(w - 12, 60, 80);
+        const int modalH = 6;
         const int top = (h - modalH) / 2, left = (w - modalW) / 2;
         TuiEngine::DrawBox(top, left, modalW, modalH, "本地凭证提取中");
-        TuiEngine::MoveCursor(top + 2, left + 4);
-        std::cout << "\x1b[1;33m正在与本地 Steam 客户端通信获取 AppID " << appId << " 凭据...\x1b[0m";
+        std::string msg = std::format("正在与本地 Steam 客户端通信获取 AppID {} 凭据...", appId);
+        TuiEngine::PrintBounded(top + 2, left + 4, msg, static_cast<size_t>(modalW - 8), "\x1b[1;33m");
         std::cout.flush();
     }
 
@@ -168,45 +169,55 @@ namespace {
     };
 
     Level1Layout DrawLevel1Frame() {
+        if (!TuiEngine::EnsureMinTerminalSize(76, 18)) {
+            return {0, 0, 0, 0};
+        }
         int w = 80, h = 25;
         TuiEngine::GetScreenSize(w, h);
         TuiEngine::ClearScreen();
 
         TuiEngine::DrawHeader("OpenSteamTool 凭证与配置提取中心 v1.0", "模式: 本地快速模式");
 
-        const int boxW = std::clamp(w - 4, 76, 100);
+        const int boxW = std::clamp(w - 4, 70, 100);
         const int boxH = 17;
-        const int top = (h - boxH) / 2;
-        const int left = (w - boxW) / 2;
+        const int top = (std::max)(1, (h - boxH) / 2);
+        const int left = (std::max)(1, (w - boxW) / 2);
 
         TuiEngine::DrawBox(top, left, boxW, boxH, "本地正版凭据提取");
 
-        TuiEngine::MoveCursor(top + 2, left + 4);
-        std::cout << "\x1b[1;37m欢迎使用 OpenSteamTool 凭据与 Lua 提取工具 (Local / Online Extractor)\x1b[0m";
+        const size_t innerW = static_cast<size_t>(boxW - 8);
 
-        TuiEngine::MoveCursor(top + 4, left + 4);
-        std::cout << "\x1b[90m本模式直接与本地运行的 Steam 客户端或本地磁盘缓存交互，快速生成正版凭据与 Lua。\x1b[0m";
+        TuiEngine::PrintBounded(top + 2, left + 4,
+            "欢迎使用 OpenSteamTool 凭据与配置提取中心 (Local/Online Extractor)",
+            innerW, "\x1b[1;37m");
 
-        TuiEngine::MoveCursor(top + 6, left + 4);
-        std::cout << "\x1b[1;36m请输入目标游戏 AppID:\x1b[0m";
+        TuiEngine::PrintBounded(top + 4, left + 4,
+            "直连本地 Steam 客户端或磁盘缓存，快速生成正版凭据与 Lua 脚本。",
+            innerW, "\x1b[90m");
+
+        TuiEngine::PrintBounded(top + 6, left + 4,
+            "请输入目标游戏 AppID:",
+            innerW, "\x1b[1;36m");
 
         TuiEngine::MoveCursor(top + 10, left + 4);
-        std::cout << "\x1b[90m" << std::string(boxW - 8, '-') << "\x1b[0m";
+        std::cout << "\x1b[90m" << std::string(innerW, '-') << "\x1b[0m";
 
-        TuiEngine::MoveCursor(top + 11, left + 4);
-        std::cout << "\x1b[1;33m[快捷导航]\x1b[0m";
+        TuiEngine::PrintBounded(top + 11, left + 4, "[快捷导航]", innerW, "\x1b[1;33m");
 
-        TuiEngine::MoveCursor(top + 12, left + 6);
-        std::cout << "• 按 \x1b[1;32m[O]\x1b[0m 键 ── \x1b[37m直接进入「Steam 在线联网提取模式」 (支持云端拉取，无需客户端)\x1b[0m";
+        TuiEngine::PrintBounded(top + 12, left + 6,
+            "• 按 [O] 键 ── 进入「Steam 在线联网模式」(免客户端云端提取)",
+            (innerW > 2) ? (innerW - 2) : innerW, "\x1b[37m");
 
-        TuiEngine::MoveCursor(top + 13, left + 6);
-        std::cout << "• 按 \x1b[1;31m[Q]\x1b[0m 键 ── \x1b[37m退出程序\x1b[0m";
+        TuiEngine::PrintBounded(top + 13, left + 6,
+            "• 按 [Q] 键 ── 退出程序",
+            (innerW > 2) ? (innerW - 2) : innerW, "\x1b[37m");
 
         TuiEngine::DrawFooter("[Enter] 开始提取   [O] 切换在线模式   [Q/ESC] 退出程序");
         return {top, left, boxW, boxH};
     }
 
     void UpdateLevel1Input(const Level1Layout& layout, std::string_view inputAppId) {
+        if (layout.boxW == 0 || layout.boxH == 0) return;
         TuiEngine::MoveCursor(layout.top + 7, layout.left + 4);
         std::string boxContent = std::format("[ {:<16} ]", std::string{inputAppId} + "_");
         std::cout << "\x1b[1;30;47m" << boxContent << "\x1b[0m  \x1b[90m(纯数字，输入完毕按 Enter 开始提取)\x1b[0m   ";
@@ -296,6 +307,13 @@ int Run(int argc, char** argv) {
     while (true) {
         KeyEvent ev = TuiEngine::ReadKey();
 
+        if (ev.code == KeyCode::Resize) {
+            TuiEngine::ClearScreen();
+            layout = DrawLevel1Frame();
+            UpdateLevel1Input(layout, inputAppId);
+            continue;
+        }
+
         // Single-key 'o' or 'O' directly jumps to Online Mode (no Enter required!)
         if (ev.code == KeyCode::Char && (ev.ch == 'o' || ev.ch == 'O')) {
             TuiEngine::ClearScreen();
@@ -338,13 +356,14 @@ int Run(int argc, char** argv) {
             if (appId && *appId > 0) {
                 int w = 80, h = 25;
                 TuiEngine::GetScreenSize(w, h);
-                const int modalW = 60, modalH = 6;
+                const int modalW = std::clamp(w - 12, 60, 80);
+                const int modalH = 6;
                 const int top = (h - modalH) / 2, left = (w - modalW) / 2;
 
                 TuiEngine::ClearScreen();
                 TuiEngine::DrawBox(top, left, modalW, modalH, "本地凭证提取中");
-                TuiEngine::MoveCursor(top + 2, left + 4);
-                std::cout << "\x1b[1;33m正在与本地 Steam 客户端通信获取 AppID " << *appId << " 凭据...\x1b[0m";
+                std::string msg = std::format("正在与本地 Steam 客户端通信获取 AppID {} 凭据...", *appId);
+                TuiEngine::PrintBounded(top + 2, left + 4, msg, static_cast<size_t>(modalW - 8), "\x1b[1;33m");
                 std::cout.flush();
 
                 bool ok = RunLocalExtractionWorker(*appId, forceEticket);

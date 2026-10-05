@@ -25,6 +25,7 @@ enum class KeyCode {
     Backspace,
     Delete,
     Tab,
+    Resize,
 };
 
 struct KeyEvent {
@@ -45,11 +46,13 @@ public:
 
     // Screen dimensions
     static void GetScreenSize(int& outWidth, int& outHeight);
+    [[nodiscard]] static bool EnsureMinTerminalSize(int minW = 76, int minH = 20);
 
     // Text formatting and East Asian width alignment
     static size_t GetDisplayWidth(std::string_view utf8Str);
     static std::string TruncateToWidth(std::string_view utf8Str, size_t maxWidth);
     static std::string Pad(std::string_view utf8Str, size_t targetWidth, bool center = false);
+    static void PrintBounded(int row, int col, std::string_view text, size_t maxWidth, std::string_view ansiStyle = "");
 
     // Box and UI drawing
     static void DrawHeader(std::string_view title, std::string_view statusTag);

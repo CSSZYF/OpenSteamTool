@@ -29,6 +29,9 @@ add_executable(extract_tickets
     extract_tickets/GameListManager.cpp
     extract_tickets/OnlineSession.cpp
     extract_tickets/TuiEngine.cpp
+    extract_tickets/tinflate.c
+    extract_tickets/tinfgzip.c
+    extract_tickets/crc32.c
 )
 target_compile_features(extract_tickets PRIVATE cxx_std_20)
 if(MSVC)

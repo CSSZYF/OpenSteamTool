@@ -18,6 +18,8 @@ namespace OST::ExtractTickets {
 [[nodiscard]] std::string MaskToken(std::string_view token, size_t prefixChars = 6, size_t suffixChars = 4);
 [[nodiscard]] std::string MaskTicketHex(std::span<const uint8_t> ticket, size_t prefixBytes = 4, size_t suffixBytes = 4);
 [[nodiscard]] std::string MaskKeyHex(std::string_view hexKey);
+[[nodiscard]] std::string MaskGroupId(std::string_view groupId);
+[[nodiscard]] std::string MaskGroupId(uint64_t groupId);
 
 // ============================================================================
 // Diagnostics Logging System

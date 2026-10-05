@@ -268,4 +268,91 @@ std::vector<OwnedGameInfo> JsonHelper::ParseOwnedGames(std::string_view json) {
     return games;
 }
 
+std::vector<OwnedGameInfo> JsonHelper::ParseSharedLibraryApps(std::string_view json) {
+    std::vector<OwnedGameInfo> games;
+
+    size_t appsPos = json.find("\"apps\"");
+    if (appsPos == std::string_view::npos) return games;
+
+    size_t arrayStart = json.find('[', appsPos);
+    if (arrayStart == std::string_view::npos) return games;
+
+    // Track bracket depth to locate true end of apps array (skipping inner brackets like owner_steamids: [...])
+    size_t arrayEnd = std::string_view::npos;
+    int bracketDepth = 0;
+    bool inStr = false;
+    bool escaped = false;
+    for (size_t i = arrayStart; i < json.size(); ++i) {
+        char c = json[i];
+        if (escaped) { escaped = false; continue; }
+        if (c == '\\' && inStr) { escaped = true; continue; }
+        if (c == '"') { inStr = !inStr; continue; }
+        if (inStr) continue;
+
+        if (c == '[') {
+            bracketDepth++;
+        } else if (c == ']') {
+            bracketDepth--;
+            if (bracketDepth == 0) {
+                arrayEnd = i;
+                break;
+            }
+        }
+    }
+    if (arrayEnd == std::string_view::npos) {
+        arrayEnd = json.size();
+    }
+
+    size_t pos = arrayStart + 1;
+    while (pos < arrayEnd) {
+        size_t objStart = json.find('{', pos);
+        if (objStart == std::string_view::npos || objStart >= arrayEnd) break;
+
+        // Track brace depth to find matching '}' for current game object
+        size_t objEnd = std::string_view::npos;
+        int braceDepth = 0;
+        inStr = false;
+        escaped = false;
+        for (size_t i = objStart; i < arrayEnd; ++i) {
+            char c = json[i];
+            if (escaped) { escaped = false; continue; }
+            if (c == '\\' && inStr) { escaped = true; continue; }
+            if (c == '"') { inStr = !inStr; continue; }
+            if (inStr) continue;
+
+            if (c == '{') {
+                braceDepth++;
+            } else if (c == '}') {
+                braceDepth--;
+                if (braceDepth == 0) {
+                    objEnd = i;
+                    break;
+                }
+            }
+        }
+
+        if (objEnd == std::string_view::npos || objEnd >= arrayEnd) break;
+
+        std::string_view itemJson = json.substr(objStart, objEnd - objStart + 1);
+
+        auto appIdOpt = GetUInt32(itemJson, "appid");
+        auto nameOpt = GetString(itemJson, "name");
+        auto excludeOpt = GetUInt32(itemJson, "exclude_reason");
+
+        if (appIdOpt && *appIdOpt > 0) {
+            // exclude_reason != 0 indicates developer or borrower restriction
+            if (!excludeOpt.has_value() || *excludeOpt == 0) {
+                OwnedGameInfo info;
+                info.appId = *appIdOpt;
+                info.name = nameOpt.value_or("");
+                games.push_back(std::move(info));
+            }
+        }
+
+        pos = objEnd + 1;
+    }
+
+    return games;
+}
+
 } // namespace OST::ExtractTickets

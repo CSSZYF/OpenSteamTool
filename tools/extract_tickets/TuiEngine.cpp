@@ -2,8 +2,10 @@
 
 #include <conio.h>
 #include <algorithm>
+#include <chrono>
 #include <format>
 #include <iostream>
+#include <thread>
 
 namespace OST::ExtractTickets {
 
@@ -47,6 +49,8 @@ void TuiEngine::ShowCursor(bool show) {
 }
 
 void TuiEngine::MoveCursor(int row, int col) {
+    if (row < 1) row = 1;
+    if (col < 1) col = 1;
     std::cout << "\x1b[" << row << ";" << col << "H";
 }
 
@@ -75,8 +79,24 @@ void TuiEngine::GetScreenSize(int& outWidth, int& outHeight) {
         outWidth = 80;
         outHeight = 25;
     }
-    if (outWidth < 80) outWidth = 80;
-    if (outHeight < 24) outHeight = 24;
+}
+
+bool TuiEngine::EnsureMinTerminalSize(int minW, int minH) {
+    int w = 80, h = 25;
+    GetScreenSize(w, h);
+    if (w < minW || h < minH) {
+        ClearScreen();
+        int midY = (std::max)(1, h / 2 - 1);
+        MoveCursor(midY, 1);
+        std::string warn1 = std::format("[!] 终端窗口尺寸过小 (当前: {}x{}, 推荐最低: {}x{})", w, h, minW, minH);
+        std::string warn2 = "请拉大终端窗口以恢复界面显示... (Please enlarge terminal window)";
+        std::cout << "\x1b[1;33m" << Pad(warn1, static_cast<size_t>(w), true) << "\x1b[0m\n";
+        MoveCursor(midY + 1, 1);
+        std::cout << "\x1b[90m" << Pad(warn2, static_cast<size_t>(w), true) << "\x1b[0m";
+        std::cout.flush();
+        return false;
+    }
+    return true;
 }
 
 namespace {
@@ -168,6 +188,18 @@ std::string TuiEngine::Pad(std::string_view utf8Str, size_t targetWidth, bool ce
     }
 }
 
+void TuiEngine::PrintBounded(int row, int col, std::string_view text, size_t maxWidth, std::string_view ansiStyle) {
+    if (maxWidth == 0) return;
+    MoveCursor(row, col);
+    std::string truncated = TruncateToWidth(text, maxWidth);
+    std::string padded = Pad(truncated, maxWidth);
+    if (!ansiStyle.empty()) {
+        std::cout << ansiStyle << padded << "\x1b[0m";
+    } else {
+        std::cout << padded;
+    }
+}
+
 void TuiEngine::DrawHeader(std::string_view title, std::string_view statusTag) {
     int w = 80, h = 25;
     GetScreenSize(w, h);
@@ -202,6 +234,8 @@ void TuiEngine::DrawFooter(std::string_view shortcuts) {
 
 void TuiEngine::DrawBox(int top, int left, int width, int height, std::string_view title) {
     if (width < 4 || height < 3) return;
+    if (top < 1) top = 1;
+    if (left < 1) left = 1;
 
     // Top border
     MoveCursor(top, left);
@@ -241,7 +275,9 @@ bool TuiEngine::ShowConfirmModal(std::string_view title,
     int w = 80, h = 25;
     GetScreenSize(w, h);
 
-    const int modalW = std::clamp(static_cast<int>(GetDisplayWidth(question)) + 12, 56, w - 4);
+    size_t maxTextW = std::max(GetDisplayWidth(question), GetDisplayWidth(detail));
+    maxTextW = std::max(maxTextW, GetDisplayWidth(title) + 8);
+    const int modalW = std::clamp(static_cast<int>(maxTextW) + 12, 60, w - 4);
     const int modalH = detail.empty() ? 7 : 9;
     const int top = (h - modalH) / 2;
     const int left = (w - modalW) / 2;
@@ -257,30 +293,44 @@ bool TuiEngine::ShowConfirmModal(std::string_view title,
 
     // Question line
     MoveCursor(top + 2, left + 4);
-    std::cout << "\x1b[1;37m" << TruncateToWidth(question, modalW - 8) << "\x1b[0m";
+    std::cout << "\x1b[1;37m" << Pad(TruncateToWidth(question, static_cast<size_t>(modalW - 8)), static_cast<size_t>(modalW - 8)) << "\x1b[0m";
 
     // Detail line
     if (!detail.empty()) {
         MoveCursor(top + 3, left + 4);
-        std::cout << "\x1b[90m" << TruncateToWidth(detail, modalW - 8) << "\x1b[0m";
+        std::cout << "\x1b[90m" << Pad(TruncateToWidth(detail, static_cast<size_t>(modalW - 8)), static_cast<size_t>(modalW - 8)) << "\x1b[0m";
     }
 
-    // Options line
-    MoveCursor(top + modalH - 2, left + 4);
-    if (defaultYes) {
-        std::cout << "\x1b[1;32m[ Y: 确定 (默认 Enter) ]\x1b[0m    \x1b[90m[ N: 取消 ]\x1b[0m";
-    } else {
-        std::cout << "\x1b[90m[ Y: 确定 ]\x1b[0m    \x1b[1;33m[ N: 取消 (默认 Enter) ]\x1b[0m";
-    }
-    std::cout.flush();
+    bool selectedYes = defaultYes;
+
+    auto renderButtons = [&]() {
+        MoveCursor(top + modalH - 2, left + 4);
+        if (selectedYes) {
+            std::cout << "\x1b[1;97;42m  [ Y: 确定 ]  \x1b[0m    \x1b[90m  [ N: 取消 ]  \x1b[0m";
+        } else {
+            std::cout << "\x1b[90m  [ Y: 确定 ]  \x1b[0m    \x1b[1;97;41m  [ N: 取消 ]  \x1b[0m";
+        }
+        size_t buttonsW = 32;
+        if (static_cast<size_t>(modalW - 8) > buttonsW) {
+            std::cout << std::string(static_cast<size_t>(modalW - 8) - buttonsW, ' ');
+        }
+        std::cout.flush();
+    };
+
+    renderButtons();
 
     while (true) {
         KeyEvent ev = ReadKey();
+        if (ev.code == KeyCode::Left || ev.code == KeyCode::Right || ev.code == KeyCode::Tab) {
+            selectedYes = !selectedYes;
+            renderButtons();
+            continue;
+        }
         if (ev.code == KeyCode::Char) {
             if (ev.ch == 'y' || ev.ch == 'Y') return true;
             if (ev.ch == 'n' || ev.ch == 'N') return false;
         } else if (ev.code == KeyCode::Enter) {
-            return defaultYes;
+            return selectedYes;
         } else if (ev.code == KeyCode::Escape) {
             return false;
         }
@@ -293,7 +343,9 @@ void TuiEngine::ShowMessageModal(std::string_view title,
     int w = 80, h = 25;
     GetScreenSize(w, h);
 
-    const int modalW = std::clamp(static_cast<int>(GetDisplayWidth(message)) + 12, 54, w - 4);
+    size_t maxTextW = std::max(GetDisplayWidth(message), GetDisplayWidth(detail));
+    maxTextW = std::max(maxTextW, GetDisplayWidth(title) + 8);
+    const int modalW = std::clamp(static_cast<int>(maxTextW) + 12, 56, w - 4);
     const int modalH = detail.empty() ? 7 : 9;
     const int top = (h - modalH) / 2;
     const int left = (w - modalW) / 2;
@@ -306,15 +358,19 @@ void TuiEngine::ShowMessageModal(std::string_view title,
     DrawBox(top, left, modalW, modalH, title);
 
     MoveCursor(top + 2, left + 4);
-    std::cout << "\x1b[1;37m" << TruncateToWidth(message, modalW - 8) << "\x1b[0m";
+    std::cout << "\x1b[1;37m" << Pad(TruncateToWidth(message, static_cast<size_t>(modalW - 8)), static_cast<size_t>(modalW - 8)) << "\x1b[0m";
 
     if (!detail.empty()) {
         MoveCursor(top + 3, left + 4);
-        std::cout << "\x1b[90m" << TruncateToWidth(detail, modalW - 8) << "\x1b[0m";
+        std::cout << "\x1b[90m" << Pad(TruncateToWidth(detail, static_cast<size_t>(modalW - 8)), static_cast<size_t>(modalW - 8)) << "\x1b[0m";
     }
 
     MoveCursor(top + modalH - 2, left + 4);
-    std::cout << "\x1b[1;36m[ 按 Enter 或 ESC 关闭 ]\x1b[0m";
+    std::cout << "\x1b[1;97;44m  [ 按 Enter 或 ESC 关闭 ]  \x1b[0m";
+    size_t btnW = 28;
+    if (static_cast<size_t>(modalW - 8) > btnW) {
+        std::cout << std::string(static_cast<size_t>(modalW - 8) - btnW, ' ');
+    }
     std::cout.flush();
 
     while (true) {
@@ -332,7 +388,8 @@ std::optional<std::string> TuiEngine::PromptInputModal(std::string_view title,
     int w = 80, h = 25;
     GetScreenSize(w, h);
 
-    const int modalW = std::clamp(static_cast<int>(GetDisplayWidth(prompt)) + 16, 56, w - 4);
+    size_t maxTextW = std::max(GetDisplayWidth(prompt), GetDisplayWidth(title) + 8);
+    const int modalW = std::clamp(static_cast<int>(maxTextW) + 16, 58, w - 4);
     const int modalH = 8;
     const int top = (h - modalH) / 2;
     const int left = (w - modalW) / 2;
@@ -365,7 +422,7 @@ std::optional<std::string> TuiEngine::PromptInputModal(std::string_view title,
         }
         std::string truncated = TruncateToWidth(displayVal, static_cast<size_t>(inputWidth - 4));
         std::string boxContent = std::format("[ {} ]", Pad(truncated, static_cast<size_t>(inputWidth - 4)));
-        std::cout << "\x1b[1;30;47m" << boxContent << "\x1b[0m";
+        std::cout << "\x1b[30;107m" << boxContent << "\x1b[0m";
         std::cout.flush();
 
         KeyEvent ev = ReadKey();
@@ -394,18 +451,41 @@ void TuiEngine::DrawProgressBar(int row, int col, int width,
     const double pct = (total == 0) ? 1.0 : std::clamp(static_cast<double>(current) / static_cast<double>(total), 0.0, 1.0);
     const int percentInt = static_cast<int>(pct * 100.0);
 
-    const int barWidth = std::clamp(width - 25, 10, 40);
+    const int barWidth = std::clamp(width - 25, 10, 32);
     const int filled = static_cast<int>(pct * barWidth);
 
     std::string barStr = "[" + std::string(filled, '=') + (filled < barWidth ? ">" : "") + std::string(barWidth - filled - (filled < barWidth ? 1 : 0), ' ') + "]";
+    std::string statsStr = std::format(" {:>3}% ({}/{}) ", percentInt, current, total);
+    size_t prefixW = static_cast<size_t>(barWidth) + GetDisplayWidth(statsStr);
+
+    size_t maxLabelW = (static_cast<size_t>(width) > prefixW) ? (static_cast<size_t>(width) - prefixW) : 0;
+    std::string truncatedLabel = TruncateToWidth(label, maxLabelW);
+    std::string paddedLabel = Pad(truncatedLabel, maxLabelW);
 
     MoveCursor(row, col);
-    std::cout << "\x1b[1;32m" << barStr << " \x1b[1;37m" << std::format("{:>3}% ({}/{}) ", percentInt, current, total)
-              << "\x1b[90m" << TruncateToWidth(label, width - barWidth - 18) << "\x1b[0m";
+    std::cout << "\x1b[1;32m" << barStr << "\x1b[0m"
+              << "\x1b[1;37m" << statsStr << "\x1b[0m"
+              << "\x1b[90m" << paddedLabel << "\x1b[0m";
     std::cout.flush();
 }
 
 KeyEvent TuiEngine::ReadKey() {
+    static int s_lastW = 0, s_lastH = 0;
+    if (s_lastW == 0 && s_lastH == 0) {
+        GetScreenSize(s_lastW, s_lastH);
+    }
+
+    while (!_kbhit()) {
+        int curW = 0, curH = 0;
+        GetScreenSize(curW, curH);
+        if (curW != s_lastW || curH != s_lastH) {
+            s_lastW = curW;
+            s_lastH = curH;
+            return { KeyCode::Resize, 0 };
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    }
+
     int ch = _getch();
     if (ch == 0 || ch == 0xE0) {
         int arrow = _getch();
