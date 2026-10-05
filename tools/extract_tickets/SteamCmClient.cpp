@@ -791,17 +791,6 @@ std::optional<std::string> SteamCmClient::DownloadManifestOnline(
         return std::nullopt;
     }
 
-    // Also sync to local Steam/depotcache if Steam is installed
-    auto steamPathOpt = FindSteamInstallPath();
-    if (steamPathOpt && !steamPathOpt->empty()) {
-        std::string dcDir = JoinPath(*steamPathOpt, "depotcache");
-        if (GetFileAttributesA(dcDir.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            std::string dcFile = JoinPath(dcDir, fileName);
-            CopyFileA(localPath.c_str(), dcFile.c_str(), FALSE);
-            LOG_DEBUG("SteamCM", "已同步清单文件至本地 Steam depotcache: {}", dcFile);
-        }
-    }
-
     LOG_INFO("SteamCM", "成功直接在线下载并保存清单文件: {} ({} 字节)", fileName, payload.size());
     return localPath;
 }
