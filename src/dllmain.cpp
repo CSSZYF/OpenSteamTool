@@ -233,6 +233,19 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
     // Lua is fully loaded before SteamUI can evaluate ownership/overview data.
     HookManager::InstallUIHooks();
 
+    // ParseDirectory intentionally clears its startup pending-addition list.
+    // Because the Lua-dependent UI hooks are installed only after that initial
+    // parse, SteamUI may already have completed its first library overview and
+    // never receive change notifications for those configured apps. Replay the
+    // configured set into the UI queue once the hooks exist. The RunFrame hook
+    // will drain this after client/package hooks are installed and
+    // g_HooksInstalled becomes true.
+    if (auto configuredApps = LuaConfig::GetConfiguredAppIdsSnapshot()) {
+        for (AppId_t appId : *configuredApps) {
+            Hooks_SteamUI::QueueAddition(appId);
+        }
+    }
+
     // Awaken installed scanner after its worker has been started by Install().
     Hooks_SteamUI::TriggerInstalledScanner();
 
