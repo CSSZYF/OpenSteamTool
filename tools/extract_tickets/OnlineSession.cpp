@@ -333,12 +333,15 @@ void OnlineSession::RunAccountSelectionMenu() {
                     // Cached account
                     const auto& acc = accounts[selected - 1];
                     std::string activeToken = acc.accessToken;
-                    if (activeToken.empty()) {
+                    const auto nowSec = std::time(nullptr);
+                    // Proactively refresh if token is empty or older than 12 hours
+                    if (activeToken.empty() || (acc.lastLoginTime > 0 && nowSec - acc.lastLoginTime > 12 * 3600)) {
                         auto accessOpt = authService.RefreshAccessToken(acc.steamId, acc.refreshToken);
-                        if (accessOpt) {
+                        if (accessOpt && !accessOpt->empty()) {
                             activeToken = *accessOpt;
                             CachedAccount updated = acc;
                             updated.accessToken = activeToken;
+                            updated.lastLoginTime = nowSec;
                             TokenStorage::UpsertAccount(updated);
                         }
                     }
@@ -415,16 +418,41 @@ void OnlineSession::RunInSessionExtraction(
     TuiEngine::PrintBounded(top + 2, left + 4, "正在建立安全 WebSocket CM 会话并登录...", innerW, "\x1b[1;36m");
     std::cout.flush();
 
-    if (!cmClient.ConnectAndLogon(steamId, refreshToken, accessToken)) {
-        TuiEngine::ClearScreen();
-        TuiEngine::ShowMessageModal("连接失败", "无法建立 Steam CM WebSocket 会话", "请检查网络连接或系统代理设置");
-        return;
+    std::string curAccessToken = accessToken;
+    if (!cmClient.ConnectAndLogon(steamId, refreshToken, curAccessToken)) {
+        // Attempt automatic refresh if token was stale
+        bool logonOk = false;
+        if (!refreshToken.empty()) {
+            TuiEngine::PrintBounded(top + 2, left + 4, "访问令牌失效，正在使用刷新令牌自动续期...", innerW, "\x1b[1;33m");
+            std::cout.flush();
+            auto accessOpt = authService.RefreshAccessToken(steamId, refreshToken);
+            if (accessOpt && !accessOpt->empty()) {
+                curAccessToken = *accessOpt;
+                CachedAccount updated;
+                updated.accountName = accountName;
+                updated.steamId = steamId;
+                updated.refreshToken = refreshToken;
+                updated.accessToken = curAccessToken;
+                updated.lastLoginTime = std::time(nullptr);
+                TokenStorage::UpsertAccount(updated);
+
+                if (cmClient.ConnectAndLogon(steamId, refreshToken, curAccessToken)) {
+                    logonOk = true;
+                }
+            }
+        }
+
+        if (!logonOk) {
+            TuiEngine::ClearScreen();
+            TuiEngine::ShowMessageModal("连接失败", "无法建立 Steam CM WebSocket 会话", "请检查网络连接或系统代理设置");
+            return;
+        }
     }
 
     TuiEngine::PrintBounded(top + 2, left + 4, "登录成功！正在同步当前账号正版游戏列表...", innerW, "\x1b[1;32m");
     std::cout.flush();
 
-    auto games = authService.FetchOwnedGames(steamId, accessToken);
+    auto games = authService.FetchOwnedGames(steamId, curAccessToken);
     if (games.empty()) {
         TuiEngine::ClearScreen();
         TuiEngine::ShowMessageModal("游戏库同步", "未找到拥有的游戏列表或网络请求失败");

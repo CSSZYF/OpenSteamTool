@@ -162,13 +162,19 @@ void PrintHex(const char* label, std::span<const uint8_t> data) {
 bool WriteBinaryFile(const std::filesystem::path& path, std::span<const uint8_t> data) {
     std::ofstream output{path, std::ios::binary | std::ios::trunc};
     if (!output) {
-        std::cerr << "Failed to create " << path.string() << ".\n";
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "Failed to create " << path.string() << ".\n";
+        }
+        LOG_ERROR("Utils", "创建文件失败: {}", path.string());
         return false;
     }
     output.write(reinterpret_cast<const char*>(data.data()),
                  static_cast<std::streamsize>(data.size()));
     if (!output) {
-        std::cerr << "Failed to write " << path.string() << ".\n";
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "Failed to write " << path.string() << ".\n";
+        }
+        LOG_ERROR("Utils", "写入文件失败: {}", path.string());
         return false;
     }
     return true;
