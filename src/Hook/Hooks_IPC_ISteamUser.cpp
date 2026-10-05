@@ -91,7 +91,12 @@ namespace {
                 auto ticketSpan = origResp.pTicket();
                 if (!ticketSpan.empty()) {
                     const size_t ticketSize = (std::min)(ticketSpan.size(), static_cast<size_t>(origResp.returnValue()));
-                    PipeManager::DenuvoAuth::SyncAppTicketToLua(appId, ticketSpan.data(), ticketSize);
+                    if (PipeManager::IsToolPipe(pipe, appId)) {
+                        LOG_IPC_INFO("IClientUser::GetAppOwnershipTicketExtendedData: AppId={} requested by tool pipe — skipping Lua disk sync", appId);
+                        AppTicket::WriteAppOwnershipTicket(appId, std::vector<uint8_t>(ticketSpan.data(), ticketSpan.data() + ticketSize));
+                    } else {
+                        PipeManager::DenuvoAuth::SyncAppTicketToLua(appId, ticketSpan.data(), ticketSize);
+                    }
                 }
             }
             return;
@@ -100,7 +105,9 @@ namespace {
         // If Steam's genuine implementation already returned a valid ticket,
         // leave it untouched and pass through cleanly.
         if (origTicketValid) {
-            PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
+            if (!PipeManager::IsToolPipe(pipe, appId)) {
+                PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
+            }
             return;
         }
 
@@ -108,7 +115,9 @@ namespace {
 
         AppTicket::AppOwnershipTicket ticket{};
         // Refresh the Denuvo authorization lease window when an ownership ticket is requested.
-        PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
+        if (!PipeManager::IsToolPipe(pipe, appId)) {
+            PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
+        }
         
         AppTicket::AppTicketSource ticketSource;
         if (PipeManager::DenuvoAuth::IsAuthorizedPipe(pipe) || PipeManager::DenuvoAuth::IsDenuvoPipe(pipe)) {
@@ -172,7 +181,9 @@ namespace {
         if (Hooks_Package::HasValidLicense(appId) && !LuaConfig::IsDAuth2(appId)) return;
 
         // Refresh the Denuvo authorization lease window when an encrypted ticket is requested.
-        PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
+        if (!PipeManager::IsToolPipe(pipe, appId)) {
+            PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
+        }
 
         bool haveFresh = false;
         // Strict Denuvo passes a per-launch nonce (pData) here and rejects a
@@ -232,7 +243,9 @@ namespace {
         if (Hooks_Package::HasValidLicense(appId) && !LuaConfig::IsDAuth2(appId)) return;
 
         // Refresh the Denuvo authorization lease window when reading the encrypted ticket.
-        PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
+        if (!PipeManager::IsToolPipe(pipe, appId)) {
+            PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
+        }
 
         // 1. If Steam client returned a genuine encrypted ticket, pass through cleanly:
         GetEncryptedAppTicketResp existingResp{pWrite};

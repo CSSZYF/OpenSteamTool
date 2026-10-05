@@ -6,6 +6,7 @@
 #include "dllmain.h"
 #include "Utils/Tickets/AppTicket.h"
 #include "Utils/Tickets/EticketClient.h"
+#include "Pipe/PipeManager.h"
 #include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
 #include "Utils/Support/FnvHash.h"
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
@@ -620,8 +621,13 @@ namespace Hooks_NetPacket_OwnershipTicket {
         if (resp.eresult() == k_EResultOK) {
             if (resp.has_ticket() && !resp.ticket().empty()) {
                 const auto& t = resp.ticket();
-                PipeManager::DenuvoAuth::SyncAppTicketToLua(
-                    resp.app_id(), reinterpret_cast<const uint8_t*>(t.data()), t.size());
+                if (PipeManager::IsToolActiveForApp(resp.app_id())) {
+                    LOG_NETPACKET_INFO("OwnershipTicketResponse[858]: appId={} requested by active tool — skipping Lua disk sync", resp.app_id());
+                    AppTicket::WriteAppOwnershipTicket(resp.app_id(), std::vector<uint8_t>(t.begin(), t.end()));
+                } else {
+                    PipeManager::DenuvoAuth::SyncAppTicketToLua(
+                        resp.app_id(), reinterpret_cast<const uint8_t*>(t.data()), t.size());
+                }
             }
             return;
         }

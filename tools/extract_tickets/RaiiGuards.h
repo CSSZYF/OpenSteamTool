@@ -215,6 +215,7 @@ struct SteamSessionGuard {
         SetEnvironmentVariableA("SteamAppId", nullptr);
         SetEnvironmentVariableA("SteamGameId", nullptr);
         SetEnvironmentVariableA("SteamOverlayGameId", nullptr);
+        SetEnvironmentVariableA("OST_TOOL_EXTRACTION", nullptr);
     }
 };
 

@@ -48,6 +48,9 @@ int Run(int argc, char** argv) {
         }
     }
 
+    // Mark process as an OST extraction tool so Steam plugin avoids spurious game-launch Lua sync
+    SetEnvironmentVariableA("OST_TOOL_EXTRACTION", "1");
+
     auto steamPathOpt = FindSteamInstallPath();
     std::string steamPath = steamPathOpt ? *steamPathOpt : "";
 

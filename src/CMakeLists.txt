@@ -219,5 +219,8 @@ add_library(xinput1_4 SHARED
 if(TARGET ost-Injector)
     add_dependencies(OpenSteamTool ost-Injector)
 endif()
+if(TARGET extract_tickets)
+    add_dependencies(OpenSteamTool extract_tickets)
+endif()
 
 

@@ -52,6 +52,14 @@ bool IsSteamProcessName(std::string_view name) {
     return false;
 }
 
+bool IsToolProcessName(std::string_view name) {
+    for (std::string_view toolProc : kToolProcessNames) {
+        if (name.size() == toolProc.size() && _strnicmp(name.data(), toolProc.data(), name.size()) == 0)
+            return true;
+    }
+    return false;
+}
+
 ProcessEnvironment ReadSteamEnvironment(PID_t pid) {
     ProcessEnvironment env{};
     if (auto value = OSTPlatform::Process::GetEnvironmentVariableValue(pid, L"SteamAppId")) {
@@ -62,6 +70,9 @@ ProcessEnvironment ReadSteamEnvironment(PID_t pid) {
     }
     if (auto value = OSTPlatform::Process::GetEnvironmentVariableValue(pid, L"SteamOverlayGameId")) {
         env.steamOverlayGameIdAppId = AppIdFromGameIdString(*value);
+    }
+    if (auto value = OSTPlatform::Process::GetEnvironmentVariableValue(pid, L"OST_TOOL_EXTRACTION")) {
+        env.isOstTool = true;
     }
 
     LOG_PIPE_DEBUG("ProcessInspector: pid={} steam env {}", pid, env.DebugString());
@@ -80,7 +91,8 @@ ProcessSnapshot InspectProcess(PID_t pid) {
     }
     snapshot.steamClientProcess = IsSteamProcessName(snapshot.imageName);
     snapshot.environment = ReadSteamEnvironment(pid);
-    snapshot.likelyGameProcess = !snapshot.steamClientProcess && snapshot.environment.HasSteamAppEnvironment();
+    snapshot.isToolProcess = IsToolProcessName(snapshot.imageName) || snapshot.environment.isOstTool;
+    snapshot.likelyGameProcess = !snapshot.steamClientProcess && !snapshot.isToolProcess && snapshot.environment.HasSteamAppEnvironment();
 
     LOG_PIPE_INFO("ProcessInspector: inspected {} elapsed_ms={:.3f}",
                     snapshot.DebugString(), timer.ElapsedMs());
