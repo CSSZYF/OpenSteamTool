@@ -62,16 +62,19 @@ bool IsToolProcessName(std::string_view name) {
 
 ProcessEnvironment ReadSteamEnvironment(PID_t pid) {
     ProcessEnvironment env{};
-    if (auto value = OSTPlatform::Process::GetEnvironmentVariableValue(pid, L"SteamAppId")) {
+    const auto environment = OSTPlatform::Process::ReadProcessEnvironmentBlock(pid);
+    if (!environment) return env;
+
+    if (auto value = OSTPlatform::Process::FindEnvironmentVariable(*environment, L"SteamAppId")) {
         env.steamAppId = AppIdFromAppIdString(*value);
     }
-    if (auto value = OSTPlatform::Process::GetEnvironmentVariableValue(pid, L"SteamGameId")) {
+    if (auto value = OSTPlatform::Process::FindEnvironmentVariable(*environment, L"SteamGameId")) {
         env.steamGameIdAppId = AppIdFromGameIdString(*value);
     }
-    if (auto value = OSTPlatform::Process::GetEnvironmentVariableValue(pid, L"SteamOverlayGameId")) {
+    if (auto value = OSTPlatform::Process::FindEnvironmentVariable(*environment, L"SteamOverlayGameId")) {
         env.steamOverlayGameIdAppId = AppIdFromGameIdString(*value);
     }
-    if (auto value = OSTPlatform::Process::GetEnvironmentVariableValue(pid, L"OST_TOOL_EXTRACTION")) {
+    if (auto value = OSTPlatform::Process::FindEnvironmentVariable(*environment, L"OST_TOOL_EXTRACTION")) {
         env.isOstTool = true;
     }
 
@@ -90,9 +93,11 @@ ProcessSnapshot InspectProcess(PID_t pid) {
         snapshot.imageName = BaseNameFromPath(snapshot.imagePath);
     }
     snapshot.steamClientProcess = IsSteamProcessName(snapshot.imageName);
-    snapshot.environment = ReadSteamEnvironment(pid);
-    snapshot.isToolProcess = IsToolProcessName(snapshot.imageName) || snapshot.environment.isOstTool;
-    snapshot.likelyGameProcess = !snapshot.steamClientProcess && !snapshot.isToolProcess && snapshot.environment.HasSteamAppEnvironment();
+    if (!snapshot.steamClientProcess) {
+        snapshot.environment = ReadSteamEnvironment(pid);
+        snapshot.isToolProcess = IsToolProcessName(snapshot.imageName) || snapshot.environment.isOstTool;
+        snapshot.likelyGameProcess = !snapshot.isToolProcess && snapshot.environment.HasSteamAppEnvironment();
+    }
 
     LOG_PIPE_INFO("ProcessInspector: inspected {} elapsed_ms={:.3f}",
                     snapshot.DebugString(), timer.ElapsedMs());

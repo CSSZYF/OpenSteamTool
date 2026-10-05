@@ -249,6 +249,9 @@ bool IsToolPipe(const CPipeClient* pipe, AppId_t appId) {
                 }
                 return true;
             } else {
+                if (it->second.appId != k_uAppIdInvalid && it->second.appId != 0) {
+                    g_toolRecentApps[it->second.appId] = std::chrono::steady_clock::now();
+                }
                 g_toolPipes.erase(it);
             }
         }

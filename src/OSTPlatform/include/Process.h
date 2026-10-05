@@ -19,6 +19,8 @@ namespace OSTPlatform::Process {
     std::optional<uint64_t> GetCreationTime(uint32_t pid);
     std::string FormatCreationTime(uint64_t fileTime);
     std::optional<std::string> GetImagePath(uint32_t pid);
+    std::optional<std::vector<wchar_t>> ReadProcessEnvironmentBlock(uint32_t pid);
+    std::optional<std::string> FindEnvironmentVariable(const std::vector<wchar_t>& environment, std::wstring_view name);
     std::optional<std::string> GetEnvironmentVariableValue(uint32_t pid, std::wstring_view name);
     std::optional<std::string> GetProcessCommandLine(uint32_t pid);
     std::vector<ModuleInfo> EnumerateModules(uint32_t pid);

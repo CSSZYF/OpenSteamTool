@@ -265,24 +265,6 @@ std::optional<std::vector<wchar_t>> ReadEnvironmentBlock(HANDLE process) {
     return ReadEnvironmentAt(process, *environmentAddress);
 }
 
-std::optional<std::string> FindEnvironmentVariable(const std::vector<wchar_t>& environment, std::wstring_view name) {
-    if (name.empty()) return std::nullopt;
-
-    size_t offset = 0;
-    while (offset < environment.size() && environment[offset] != L'\0') {
-        const wchar_t* entry = environment.data() + offset;
-        const size_t entryLength = wcslen(entry);
-        if (entryLength > name.size() &&
-            entry[name.size()] == L'=' &&
-            _wcsnicmp(entry, name.data(), name.size()) == 0) {
-            return Encoding::WideToUtf8(std::wstring_view(entry + name.size() + 1, entryLength - name.size() - 1));
-        }
-        offset += entryLength + 1;
-    }
-
-    return std::nullopt;
-}
-
 } // namespace
 
 std::optional<uint64_t> GetCreationTime(uint32_t pid) {
@@ -356,12 +338,34 @@ std::optional<std::string> GetImagePath(uint32_t pid) {
     return std::nullopt;
 }
 
-std::optional<std::string> GetEnvironmentVariableValue(uint32_t pid, std::wstring_view name) {
+std::optional<std::vector<wchar_t>> ReadProcessEnvironmentBlock(uint32_t pid) {
     Windows::UniqueHandle process =
         OpenProcessHandle(pid, PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ);
     if (!process) return std::nullopt;
 
-    const auto environment = ReadEnvironmentBlock(process.get());
+    return ReadEnvironmentBlock(process.get());
+}
+
+std::optional<std::string> FindEnvironmentVariable(const std::vector<wchar_t>& environment, std::wstring_view name) {
+    if (name.empty()) return std::nullopt;
+
+    size_t offset = 0;
+    while (offset < environment.size() && environment[offset] != L'\0') {
+        const wchar_t* entry = environment.data() + offset;
+        const size_t entryLength = wcslen(entry);
+        if (entryLength > name.size() &&
+            entry[name.size()] == L'=' &&
+            _wcsnicmp(entry, name.data(), name.size()) == 0) {
+            return Encoding::WideToUtf8(std::wstring_view(entry + name.size() + 1, entryLength - name.size() - 1));
+        }
+        offset += entryLength + 1;
+    }
+
+    return std::nullopt;
+}
+
+std::optional<std::string> GetEnvironmentVariableValue(uint32_t pid, std::wstring_view name) {
+    const auto environment = ReadProcessEnvironmentBlock(pid);
     if (!environment) return std::nullopt;
     return FindEnvironmentVariable(*environment, name);
 }

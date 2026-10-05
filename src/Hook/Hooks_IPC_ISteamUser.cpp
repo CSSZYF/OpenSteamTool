@@ -82,39 +82,33 @@ namespace {
         GetAppOwnershipTicketExtendedDataResp origResp{pWrite, static_cast<size_t>(req.cbMaxTicket())};
         const bool origTicketValid = origResp.ok() && origResp.returnValue() > 0;
 
-        // If the account has a valid license (truly owned or family shared), Steam client
-        // natively manages tickets. OST does not forge or inject tickets for genuine/shared games,
-        // unless Scheme 2 (-dauth2 / dauth2(appid)) is explicitly requested.
-        // If a Lua file exists (e.g. for manifest locking), sync the genuine ticket to Lua.
-        if (Hooks_Package::HasValidLicense(appId) && !LuaConfig::IsDAuth2(appId)) {
-            if (origTicketValid) {
-                auto ticketSpan = origResp.pTicket();
-                if (!ticketSpan.empty()) {
-                    const size_t ticketSize = (std::min)(ticketSpan.size(), static_cast<size_t>(origResp.returnValue()));
-                    if (PipeManager::IsToolPipe(pipe, appId)) {
-                        LOG_IPC_INFO("IClientUser::GetAppOwnershipTicketExtendedData: AppId={} requested by tool pipe — skipping Lua disk sync", appId);
-                        AppTicket::WriteAppOwnershipTicket(appId, std::vector<uint8_t>(ticketSpan.data(), ticketSpan.data() + ticketSize));
-                    } else {
+        // If Steam's genuine implementation already returned a valid ticket,
+        // process it and pass through cleanly without forging.
+        if (origTicketValid) {
+            auto ticketSpan = origResp.pTicket();
+            const size_t ticketSize = !ticketSpan.empty() ? (std::min)(ticketSpan.size(), static_cast<size_t>(origResp.returnValue())) : 0;
+
+            if (PipeManager::IsToolPipe(pipe, appId)) {
+                if (ticketSize > 0) {
+                    LOG_IPC_INFO("IClientUser::GetAppOwnershipTicketExtendedData: AppId={} requested by tool pipe — skipping Lua disk sync", appId);
+                    AppTicket::WriteAppOwnershipTicket(appId, std::vector<uint8_t>(ticketSpan.data(), ticketSpan.data() + ticketSize));
+                }
+            } else {
+                if (Hooks_Package::HasValidLicense(appId) && !LuaConfig::IsDAuth2(appId)) {
+                    if (ticketSize > 0) {
                         PipeManager::DenuvoAuth::SyncAppTicketToLua(appId, ticketSpan.data(), ticketSize);
                     }
+                } else {
+                    PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
                 }
             }
             return;
         }
 
-        // If Steam's genuine implementation already returned a valid ticket,
-        // leave it untouched and pass through cleanly.
-        if (origTicketValid) {
-            if (PipeManager::IsToolPipe(pipe, appId)) {
-                auto ticketSpan = origResp.pTicket();
-                if (!ticketSpan.empty()) {
-                    const size_t ticketSize = (std::min)(ticketSpan.size(), static_cast<size_t>(origResp.returnValue()));
-                    LOG_IPC_INFO("IClientUser::GetAppOwnershipTicketExtendedData: AppId={} requested by tool pipe — skipping Lua disk sync", appId);
-                    AppTicket::WriteAppOwnershipTicket(appId, std::vector<uint8_t>(ticketSpan.data(), ticketSpan.data() + ticketSize));
-                }
-            } else {
-                PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
-            }
+        // If the account has a valid license (truly owned or family shared), Steam client
+        // natively manages tickets. OST does not forge or inject tickets for genuine/shared games,
+        // unless Scheme 2 (-dauth2 / dauth2(appid)) is explicitly requested.
+        if (Hooks_Package::HasValidLicense(appId) && !LuaConfig::IsDAuth2(appId)) {
             return;
         }
 
