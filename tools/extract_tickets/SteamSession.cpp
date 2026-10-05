@@ -515,19 +515,26 @@ bool ExtractTicketsFromLocalClient(
 
     std::string steamClientPath;
     HMODULE hClient = LoadSteamClient64(*steamPathOpt, steamClientPath);
-    if (!hClient) return false;
+    if (!hClient) {
+        SetEnvironmentVariableA("SteamAppId", nullptr);
+        SetEnvironmentVariableA("OST_TOOL_EXTRACTION", nullptr);
+        return false;
+    }
+
+    SteamSessionGuard guard{nullptr, 0, 0, hClient};
 
     ISteamClient* client = CreateSteamClient(hClient);
     if (!client) {
-        FreeLibrary(hClient);
         return false;
     }
+    guard.client = client;
 
     HSteamPipe pipe{0};
     HSteamUser user{0};
     bool ok = false;
     if (OpenSession(client, pipe, user)) {
-        SteamSessionGuard guard{client, pipe, user, hClient};
+        guard.pipe = pipe;
+        guard.user = user;
         if (!outOwnership || outOwnership->empty()) {
             outOwnership = ExtractAppOwnershipTicket(client, pipe, user, appId);
             if (outOwnership && !outOwnership->empty()) ok = true;
@@ -536,8 +543,6 @@ bool ExtractTicketsFromLocalClient(
             outEncrypted = ExtractEncryptedAppTicket(client, pipe, user, appId);
             if (outEncrypted && !outEncrypted->empty()) ok = true;
         }
-    } else {
-        FreeLibrary(hClient);
     }
     return ok;
 }

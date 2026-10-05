@@ -265,8 +265,13 @@ bool TokenStorage::DeleteAccount(std::string_view accountName) {
         return false;
     }
 
-    // Zero out memory of token before removal
-    SecureZeroMemory(it->refreshToken.data(), it->refreshToken.size());
+    // Zero out memory of tokens before removal
+    if (!it->refreshToken.empty()) {
+        SecureZeroMemory(it->refreshToken.data(), it->refreshToken.size());
+    }
+    if (!it->accessToken.empty()) {
+        SecureZeroMemory(it->accessToken.data(), it->accessToken.size());
+    }
     accounts.erase(it);
 
     LOG_INFO("TokenStorage", "已安全删除账号 {} 的本地凭据缓存", MaskAccount(accountName));

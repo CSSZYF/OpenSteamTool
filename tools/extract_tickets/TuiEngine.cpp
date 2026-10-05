@@ -420,24 +420,39 @@ std::optional<std::string> TuiEngine::PromptInputModal(std::string_view title,
         } else {
             displayVal = value;
         }
-        std::string truncated = TruncateToWidth(displayVal, static_cast<size_t>(inputWidth - 4));
-        std::string boxContent = std::format("[ {} ]", Pad(truncated, static_cast<size_t>(inputWidth - 4)));
+
+        const size_t visibleWidth = static_cast<size_t>((std::max)(4, inputWidth - 4));
+        std::string visibleText;
+        if (GetDisplayWidth(displayVal) > visibleWidth) {
+            // Horizontally scroll to show tail while user is typing
+            visibleText = displayVal.substr(displayVal.size() - visibleWidth);
+        } else {
+            visibleText = displayVal;
+        }
+        std::string boxContent = std::format("[ {} ]", Pad(visibleText, visibleWidth));
         std::cout << "\x1b[30;107m" << boxContent << "\x1b[0m";
         std::cout.flush();
 
         KeyEvent ev = ReadKey();
         if (ev.code == KeyCode::Escape) {
+            if (isPassword && !value.empty()) {
+                SecureZeroMemory(value.data(), value.size());
+            }
             return std::nullopt;
         }
         if (ev.code == KeyCode::Enter) {
-            return value;
+            std::string result = std::move(value);
+            if (isPassword && !value.empty()) {
+                SecureZeroMemory(value.data(), value.size());
+            }
+            return result;
         }
         if (ev.code == KeyCode::Backspace) {
             if (!value.empty()) {
                 value.pop_back();
             }
         } else if (ev.code == KeyCode::Char) {
-            if (ev.ch >= 32 && ev.ch < 127 && value.size() < static_cast<size_t>(inputWidth - 6)) {
+            if (ev.ch >= 32 && ev.ch < 127 && value.size() < 128) {
                 value.push_back(ev.ch);
             }
         }

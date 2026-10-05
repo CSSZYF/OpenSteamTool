@@ -118,13 +118,13 @@ bool WriteOutputs(uint32_t appId,
     text += TicketLine("appticket", ownership);
     text += TicketLine("eticket", encrypted);
 
-    const std::string textPath{JoinPath(dir, "tickets.txt")};
+    const std::filesystem::path textPath = dirPath / "tickets.txt";
     std::ofstream summary{textPath, std::ios::trunc};
     if (!summary || !(summary << text)) {
         if (!TuiEngine::IsActive()) {
-            std::cerr << "Failed to write " << textPath << ".\n";
+            std::cerr << "Failed to write " << textPath.string() << ".\n";
         }
-        LOG_ERROR("OutputWriter", "写入 tickets.txt 失败: {}", textPath);
+        LOG_ERROR("OutputWriter", "写入 tickets.txt 失败: {}", textPath.string());
         return false;
     }
 
@@ -314,13 +314,13 @@ bool WriteOutputs(uint32_t appId,
         luaText += std::format("-- setETicket({}, \"null\") -- [仅 Denuvo 强加密游戏需要，普通游戏无需此项]\n", appId);
     }
 
-    const std::string luaPath{JoinPath(dir, std::to_string(appId) + ".lua")};
+    const std::filesystem::path luaPath = dirPath / (std::to_string(appId) + ".lua");
     std::ofstream luaFile{luaPath, std::ios::trunc};
     if (!luaFile || !(luaFile << luaText)) {
         if (!TuiEngine::IsActive()) {
-            std::cerr << "Failed to write " << luaPath << ".\n";
+            std::cerr << "Failed to write " << luaPath.string() << ".\n";
         }
-        LOG_ERROR("OutputWriter", "写入 Lua 脚本失败: {}", luaPath);
+        LOG_ERROR("OutputWriter", "写入 Lua 脚本失败: {}", luaPath.string());
         ok = false;
     }
 
@@ -383,7 +383,7 @@ bool WriteOutputs(uint32_t appId,
                       << " (this game may not require an access token).\n";
         }
 
-        std::cout << "[INFO] 配置文件已生成 / Ready-to-use Lua script saved to: " << luaPath << "\n";
+        std::cout << "[INFO] 配置文件已生成 / Ready-to-use Lua script saved to: " << luaPath.string() << "\n";
     }
 
     const size_t keyCount = std::count_if(depotKeys.begin(), depotKeys.end(), [](const DepotKeyInfo& dk) {
@@ -391,7 +391,7 @@ bool WriteOutputs(uint32_t appId,
     });
     LOG_INFO("OutputWriter", "输出文件已写入: {}/ (DLCs={}, DepotKeys={}, Manifests={}, Tokens={})",
              dir, dlcs.size(), keyCount, copiedManifests.size(), relevantTokens.size());
-    LOG_INFO("OutputWriter", "Lua 配置文件已保存至: {}", luaPath);
+    LOG_INFO("OutputWriter", "Lua 配置文件已保存至: {}", luaPath.string());
     return ok;
 }
 

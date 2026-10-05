@@ -118,21 +118,24 @@ public:
     bool ReadNext(ProtoField& outField) {
         if (m_ptr >= m_end) return false;
 
-        uint64_t tag = ReadVarint();
+        uint64_t tag = 0;
+        if (!ReadVarint(tag)) return false;
+
         outField.fieldNumber = static_cast<uint32_t>(tag >> 3);
         outField.wireType = static_cast<uint8_t>(tag & 0x7);
+        if (outField.fieldNumber == 0) return false;
 
         switch (outField.wireType) {
             case 0: // Varint
-                outField.varintVal = ReadVarint();
-                return true;
+                return ReadVarint(outField.varintVal);
             case 1: // 64-bit
                 if (m_ptr + 8 > m_end) return false;
                 std::memcpy(&outField.fixed64Val, m_ptr, 8);
                 m_ptr += 8;
                 return true;
             case 2: { // Length-delimited
-                uint64_t len = ReadVarint();
+                uint64_t len = 0;
+                if (!ReadVarint(len)) return false;
                 if (m_ptr + len > m_end) return false;
                 outField.bytesVal = std::span<const uint8_t>(m_ptr, static_cast<size_t>(len));
                 m_ptr += len;
@@ -151,16 +154,16 @@ public:
     [[nodiscard]] bool HasMore() const noexcept { return m_ptr < m_end; }
 
 private:
-    uint64_t ReadVarint() {
-        uint64_t val = 0;
+    bool ReadVarint(uint64_t& outVal) {
+        outVal = 0;
         int shift = 0;
         while (m_ptr < m_end && shift < 64) {
             uint8_t b = *m_ptr++;
-            val |= static_cast<uint64_t>(b & 0x7F) << shift;
-            if ((b & 0x80) == 0) return val;
+            outVal |= static_cast<uint64_t>(b & 0x7F) << shift;
+            if ((b & 0x80) == 0) return true;
             shift += 7;
         }
-        return val;
+        return false;
     }
 
     const uint8_t* m_ptr{nullptr};

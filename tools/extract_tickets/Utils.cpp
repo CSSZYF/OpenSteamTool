@@ -200,11 +200,34 @@ std::string NormalizeDir(std::string dir) {
     return dir;
 }
 
+namespace {
+    std::wstring Utf8ToWide(std::string_view utf8) {
+        if (utf8.empty()) return {};
+        int len = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+        if (len <= 0) return {};
+        std::wstring w(len, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), w.data(), len);
+        return w;
+    }
+
+    std::string WideToUtf8(std::wstring_view wide) {
+        if (wide.empty()) return {};
+        int len = WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
+        if (len <= 0) return {};
+        std::string s(len, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), s.data(), len, nullptr, nullptr);
+        return s;
+    }
+} // namespace
+
 std::optional<std::string> QueryRegistryString(HKEY root, const char* subKey, const char* valueName) {
+    std::wstring wSubKey = Utf8ToWide(subKey ? subKey : "");
+    std::wstring wValueName = Utf8ToWide(valueName ? valueName : "");
+
     HKEY rawKey{nullptr};
-    LSTATUS status = RegOpenKeyExA(root, subKey, 0, KEY_READ | KEY_WOW64_32KEY, &rawKey);
+    LSTATUS status = RegOpenKeyExW(root, wSubKey.c_str(), 0, KEY_READ | KEY_WOW64_32KEY, &rawKey);
     if (status != ERROR_SUCCESS) {
-        status = RegOpenKeyExA(root, subKey, 0, KEY_READ, &rawKey);
+        status = RegOpenKeyExW(root, wSubKey.c_str(), 0, KEY_READ, &rawKey);
     }
     if (status != ERROR_SUCCESS) {
         return std::nullopt;
@@ -212,34 +235,36 @@ std::optional<std::string> QueryRegistryString(HKEY root, const char* subKey, co
     ScopedHKey key{rawKey};
 
     DWORD valueType{0};
-    DWORD valueSize{0};
-    status = RegQueryValueExA(key, valueName, nullptr, &valueType, nullptr, &valueSize);
-    if (status != ERROR_SUCCESS || (valueType != REG_SZ && valueType != REG_EXPAND_SZ) || valueSize == 0) {
+    DWORD byteSize{0};
+    status = RegQueryValueExW(key, wValueName.c_str(), nullptr, &valueType, nullptr, &byteSize);
+    if (status != ERROR_SUCCESS || (valueType != REG_SZ && valueType != REG_EXPAND_SZ) || byteSize == 0) {
         return std::nullopt;
     }
 
-    std::string value(valueSize, '\0');
-    status = RegQueryValueExA(
+    std::wstring wValue(byteSize / sizeof(wchar_t) + 1, L'\0');
+    status = RegQueryValueExW(
         key,
-        valueName,
+        wValueName.c_str(),
         nullptr,
         nullptr,
-        reinterpret_cast<LPBYTE>(value.data()),
-        &valueSize);
+        reinterpret_cast<LPBYTE>(wValue.data()),
+        &byteSize);
 
     if (status != ERROR_SUCCESS) return std::nullopt;
-    value.resize(valueSize);
-    while (!value.empty() && (value.back() == '\0' || value.back() == ' ')) value.pop_back();
+    wValue.resize(byteSize / sizeof(wchar_t));
+    while (!wValue.empty() && (wValue.back() == L'\0' || wValue.back() == L' ')) {
+        wValue.pop_back();
+    }
 
     if (valueType == REG_EXPAND_SZ) {
-        char expanded[MAX_PATH * 2]{0};
-        DWORD expLen = ExpandEnvironmentStringsA(value.c_str(), expanded, static_cast<DWORD>(sizeof(expanded)));
-        if (expLen > 0 && expLen < sizeof(expanded)) {
-            value = expanded;
+        wchar_t expanded[MAX_PATH * 2]{0};
+        DWORD expLen = ExpandEnvironmentStringsW(wValue.c_str(), expanded, static_cast<DWORD>(sizeof(expanded) / sizeof(wchar_t)));
+        if (expLen > 0 && expLen < sizeof(expanded) / sizeof(wchar_t)) {
+            wValue = expanded;
         }
     }
 
-    return value;
+    return WideToUtf8(wValue);
 }
 
 std::optional<std::string> FindSteamInstallPath() {
@@ -257,16 +282,17 @@ std::optional<std::string> FindSteamInstallPath() {
         return norm;
     }
 
-    const char* defaultPaths[] = {
-        "C:\\Program Files (x86)\\Steam",
-        "C:\\Program Files\\Steam"
+    const wchar_t* defaultPaths[] = {
+        L"C:\\Program Files (x86)\\Steam",
+        L"C:\\Program Files\\Steam"
     };
-    for (const char* p : defaultPaths) {
-        std::string checkExe = JoinPath(p, "steam.exe");
-        DWORD attr = GetFileAttributesA(checkExe.c_str());
+    for (const wchar_t* p : defaultPaths) {
+        std::filesystem::path checkExe = std::filesystem::path(p) / L"steam.exe";
+        DWORD attr = GetFileAttributesW(checkExe.c_str());
         if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
-            LOG_DEBUG("SteamPath", "Found Steam install path at default location: {}", p);
-            return NormalizeDir(p);
+            std::string norm = NormalizeDir(WideToUtf8(p));
+            LOG_DEBUG("SteamPath", "Found Steam install path at default location: {}", norm);
+            return norm;
         }
     }
 

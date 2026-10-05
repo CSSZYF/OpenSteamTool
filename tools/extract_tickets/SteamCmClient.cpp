@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <format>
 #include <iostream>
 #include <mutex>
@@ -787,8 +788,10 @@ std::optional<std::string> SteamCmClient::DownloadManifestOnline(
         return std::nullopt;
     }
 
-    if (!CreateDirectoryA(destDir.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
-        LOG_WARN("SteamCM", "创建目录失败: {}", destDir);
+    std::error_code dirEc;
+    std::filesystem::create_directories(std::filesystem::path(destDir), dirEc);
+    if (dirEc) {
+        LOG_WARN("SteamCM", "创建目录失败: {} ({})", destDir, dirEc.message());
     }
 
     std::span<const uint8_t> payload(

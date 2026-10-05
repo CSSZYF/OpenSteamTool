@@ -58,13 +58,18 @@ bool ExtractLocalApp(uint32_t appId, bool forceEticket, bool inTui = false) {
 
     std::string steamClientPath;
     HMODULE steamClient = LoadSteamClient64(steamPath, steamClientPath);
+    SteamSessionGuard sessionGuard{nullptr, 0, 0, steamClient};
+
     ISteamClient* client = steamClient ? CreateSteamClient(steamClient) : nullptr;
+    sessionGuard.client = client;
 
     HSteamPipe pipe{0};
     HSteamUser user{0};
     const bool sessionOpened = (client != nullptr) && OpenSession(client, pipe, user);
-
-    SteamSessionGuard sessionGuard{sessionOpened ? client : nullptr, pipe, sessionOpened ? user : 0, steamClient};
+    if (sessionOpened) {
+        sessionGuard.pipe = pipe;
+        sessionGuard.user = user;
+    }
 
     std::optional<std::vector<uint8_t>> ownership;
     std::optional<std::vector<uint8_t>> encrypted;

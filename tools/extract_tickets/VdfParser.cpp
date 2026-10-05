@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string_view>
 
@@ -115,33 +116,34 @@ std::string FindDepotManifestFile(const std::vector<std::string>& depotcacheDirs
         }
     }
 
-    // 2. Search for <depotId>_*.manifest in depotcache dirs, choosing the latest modified file
     std::string bestPath;
-    FILETIME bestTime{};
+    std::filesystem::file_time_type bestWriteTime{};
     std::string bestManifestId;
 
     for (const auto& dc : depotcacheDirs) {
-        std::string pattern = JoinPath(dc, std::to_string(depotId) + "_*.manifest");
-        WIN32_FIND_DATAA fd{};
-        ScopedFindHandle hFind{FindFirstFileA(pattern.c_str(), &fd)};
-        if (hFind.IsValid()) {
-            do {
-                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-                    std::string_view fname{fd.cFileName};
-                    size_t under = fname.find('_');
-                    size_t dot = fname.rfind('.');
-                    if (under != std::string_view::npos && dot != std::string_view::npos && dot > under + 1) {
-                        std::string_view candidate = fname.substr(under + 1, dot - under - 1);
-                        if (IsValidManifestId(candidate)) {
-                            if (bestPath.empty() || CompareFileTime(&fd.ftLastWriteTime, &bestTime) > 0) {
-                                bestTime = fd.ftLastWriteTime;
-                                bestPath = JoinPath(dc, fname);
-                                bestManifestId = std::string(candidate);
-                            }
+        std::error_code dirEc;
+        std::filesystem::path dirP(dc);
+        if (!std::filesystem::exists(dirP, dirEc) || !std::filesystem::is_directory(dirP, dirEc)) {
+            continue;
+        }
+
+        std::string prefix = std::to_string(depotId) + "_";
+        for (const auto& entry : std::filesystem::directory_iterator(dirP, dirEc)) {
+            if (dirEc) break;
+            if (entry.is_regular_file(dirEc)) {
+                std::string fname = entry.path().filename().string();
+                if (fname.starts_with(prefix) && fname.ends_with(".manifest")) {
+                    std::string_view candidate = std::string_view(fname).substr(prefix.size(), fname.size() - prefix.size() - 9);
+                    if (IsValidManifestId(candidate)) {
+                        auto writeTime = entry.last_write_time(dirEc);
+                        if (!dirEc && (bestPath.empty() || writeTime > bestWriteTime)) {
+                            bestWriteTime = writeTime;
+                            bestPath = entry.path().string();
+                            bestManifestId = std::string(candidate);
                         }
                     }
                 }
-            } while (FindNextFileA(hFind, &fd));
+            }
         }
     }
 
