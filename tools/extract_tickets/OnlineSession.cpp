@@ -350,6 +350,8 @@ void OnlineSession::RunAccountSelectionMenu() {
                             updated.accessToken = activeToken;
                             updated.lastLoginTime = nowSec;
                             TokenStorage::UpsertAccount(updated);
+                        } else if (acc.lastLoginTime > 0 && nowSec - acc.lastLoginTime > 24 * 3600) {
+                            activeToken.clear();
                         }
                     }
 
