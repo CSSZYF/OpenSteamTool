@@ -25,8 +25,11 @@ bool WriteOutputs(uint32_t appId,
                   const std::unordered_map<uint32_t, uint64_t>& appTokens) {
     const std::string dir{std::to_string(appId)};
     if (!CreateDirectoryA(dir.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
-        std::cerr << "Failed to create directory " << dir
-                  << " (GetLastError=" << GetLastError() << ").\n";
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "Failed to create directory " << dir
+                      << " (GetLastError=" << GetLastError() << ").\n";
+        }
+        LOG_ERROR("OutputWriter", "创建输出目录失败: {} (GetLastError={})", dir, GetLastError());
         return false;
     }
 
@@ -50,7 +53,10 @@ bool WriteOutputs(uint32_t appId,
                 } else if (CopyFileA(dk.manifestFilePath.c_str(), dest.c_str(), FALSE)) {
                     copiedManifests.push_back(fname);
                 } else {
-                    std::cerr << "[WARN] Failed to copy manifest " << fname << " (GetLastError=" << GetLastError() << ").\n";
+                    if (!TuiEngine::IsActive()) {
+                        std::cerr << "[WARN] Failed to copy manifest " << fname << " (GetLastError=" << GetLastError() << ").\n";
+                    }
+                    LOG_WARN("OutputWriter", "复制清单文件失败: {} (GetLastError={})", fname, GetLastError());
                 }
             }
         }
@@ -110,7 +116,10 @@ bool WriteOutputs(uint32_t appId,
     const std::string textPath{JoinPath(dir, "tickets.txt")};
     std::ofstream summary{textPath, std::ios::trunc};
     if (!summary || !(summary << text)) {
-        std::cerr << "Failed to write " << textPath << ".\n";
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "Failed to write " << textPath << ".\n";
+        }
+        LOG_ERROR("OutputWriter", "写入 tickets.txt 失败: {}", textPath);
         return false;
     }
 
@@ -303,7 +312,10 @@ bool WriteOutputs(uint32_t appId,
     const std::string luaPath{JoinPath(dir, std::to_string(appId) + ".lua")};
     std::ofstream luaFile{luaPath, std::ios::trunc};
     if (!luaFile || !(luaFile << luaText)) {
-        std::cerr << "Failed to write " << luaPath << ".\n";
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "Failed to write " << luaPath << ".\n";
+        }
+        LOG_ERROR("OutputWriter", "写入 Lua 脚本失败: {}", luaPath);
         ok = false;
     }
 

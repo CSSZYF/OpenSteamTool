@@ -852,8 +852,8 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
         SetGamePlayed(0);
     }
 
-    // 2.2 本地 Steam 客户端会话兜底：若仍缺失，尝试通过本地 Steam 客户端运行时同步凭证
-    if (!creds.appOwnershipTicket || !creds.encryptedAppTicket) {
+    // 2.2 本地 Steam 客户端会话兜底：若所有权票据缺失，尝试通过本地 Steam 客户端运行时同步凭证
+    if (!creds.appOwnershipTicket) {
         LOG_INFO("SteamCM", "尝试从本地 Steam 客户端提取 AppID {} 凭据兜底...", appId);
         bool localExtracted = ExtractTicketsFromLocalClient(appId, creds.appOwnershipTicket, creds.encryptedAppTicket);
         (void)localExtracted;

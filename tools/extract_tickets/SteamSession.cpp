@@ -16,7 +16,10 @@ namespace OST::ExtractTickets {
 
 HMODULE LoadSteamClient64(const std::string& steamPath, std::string& loadedPath) {
     if (steamPath.empty()) {
-        std::cerr << "[WARN] 未在注册表中找到 Steam 安装路径 / Failed to find Steam install path in registry.\n";
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "[WARN] 未在注册表中找到 Steam 安装路径 / Failed to find Steam install path in registry.\n";
+        }
+        LOG_WARN("SteamSession", "未在注册表中找到 Steam 安装路径");
         return nullptr;
     }
 
@@ -30,7 +33,10 @@ HMODULE LoadSteamClient64(const std::string& steamPath, std::string& loadedPath)
     SetDllDirectoryA(steamDir.c_str());
     HMODULE module{LoadLibraryExA(loadedPath.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH)};
     if (!module) {
-        std::cerr << "[WARN] 加载 steamclient64.dll 失败 / Failed to load " << loadedPath << " (GetLastError=" << GetLastError() << ").\n";
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "[WARN] 加载 steamclient64.dll 失败 / Failed to load " << loadedPath << " (GetLastError=" << GetLastError() << ").\n";
+        }
+        LOG_WARN("SteamSession", "加载 steamclient64.dll 失败: {} (GetLastError={})", loadedPath, GetLastError());
         return nullptr;
     }
 
@@ -41,15 +47,21 @@ ISteamClient* CreateSteamClient(HMODULE module) {
     if (!module) return nullptr;
     auto createInterface{reinterpret_cast<CreateInterfaceFn>(GetProcAddress(module, "CreateInterface"))};
     if (!createInterface) {
-        std::cerr << "[WARN] steamclient64.dll 缺少 CreateInterface 导出 / steamclient64.dll has no CreateInterface export.\n";
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "[WARN] steamclient64.dll 缺少 CreateInterface 导出 / steamclient64.dll has no CreateInterface export.\n";
+        }
+        LOG_WARN("SteamSession", "steamclient64.dll 缺少 CreateInterface 导出");
         return nullptr;
     }
 
     int returnCode{0};
     auto* client{reinterpret_cast<ISteamClient*>(createInterface(kSteamClientInterfaceVersion, &returnCode))};
     if (!client) {
-        std::cerr << "[WARN] CreateInterface(" << kSteamClientInterfaceVersion
-                  << ") 失败 / failed (returnCode=" << returnCode << ").\n";
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "[WARN] CreateInterface(" << kSteamClientInterfaceVersion
+                      << ") 失败 / failed (returnCode=" << returnCode << ").\n";
+        }
+        LOG_WARN("SteamSession", "CreateInterface({}) 失败 (returnCode={})", kSteamClientInterfaceVersion, returnCode);
         return nullptr;
     }
     return client;
@@ -77,8 +89,11 @@ std::optional<std::vector<uint8_t>> ExtractAppOwnershipTicket(
     auto* appTicket{reinterpret_cast<ISteamAppTicket*>(
         client->GetISteamGenericInterface(user, pipe, kSteamAppTicketInterfaceVersion))};
     if (!appTicket) {
-        std::cerr << "[WARN] GetISteamGenericInterface(" << kSteamAppTicketInterfaceVersion
-                  << ") 返回空 / returned null.\n";
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "[WARN] GetISteamGenericInterface(" << kSteamAppTicketInterfaceVersion
+                      << ") 返回空 / returned null.\n";
+        }
+        LOG_WARN("SteamSession", "GetISteamGenericInterface({}) 返回空", kSteamAppTicketInterfaceVersion);
         return std::nullopt;
     }
 
@@ -143,13 +158,19 @@ std::optional<std::vector<uint8_t>> ExtractEncryptedAppTicket(
     auto* utils{client->GetISteamUtils(pipe, kSteamUtilsInterfaceVersion)};
     auto* steamUser{client->GetISteamUser(user, pipe, kSteamUserInterfaceVersion)};
     if (!utils || !steamUser) {
-        std::cerr << "[WARN] GetISteamUtils/GetISteamUser 返回空 / returned null.\n";
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "[WARN] GetISteamUtils/GetISteamUser 返回空 / returned null.\n";
+        }
+        LOG_WARN("SteamSession", "GetISteamUtils/GetISteamUser 返回空");
         return std::nullopt;
     }
 
     const SteamAPICall_t hCall{steamUser->RequestEncryptedAppTicket(nullptr, 0)};
     if (!hCall) {
-        std::cerr << "[WARN] 请求 EncryptedAppTicket 启动失败 / RequestEncryptedAppTicket failed to start for AppID " << appId << ".\n";
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "[WARN] 请求 EncryptedAppTicket 启动失败 / RequestEncryptedAppTicket failed to start for AppID " << appId << ".\n";
+        }
+        LOG_WARN("SteamSession", "请求 EncryptedAppTicket 启动失败 (AppID={})", appId);
         return std::nullopt;
     }
 
@@ -160,7 +181,10 @@ std::optional<std::vector<uint8_t>> ExtractEncryptedAppTicket(
     int waited{0};
     while (!utils->IsAPICallCompleted(hCall, &failed)) {
         if (waited >= kMaxWaitMs) {
-            std::cerr << "[WARN] 等待 EncryptedAppTicket 超时 / Timed out waiting for EncryptedAppTicketResponse_t.\n";
+            if (!TuiEngine::IsActive()) {
+                std::cerr << "[WARN] 等待 EncryptedAppTicket 超时 / Timed out waiting for EncryptedAppTicketResponse_t.\n";
+            }
+            LOG_WARN("SteamSession", "等待 EncryptedAppTicket 超时");
             return std::nullopt;
         }
         Sleep(kStepMs);
@@ -176,17 +200,23 @@ std::optional<std::vector<uint8_t>> ExtractEncryptedAppTicket(
         &failed)};
     if (!gotResult || failed) {
         int failureReason = utils->GetAPICallFailureReason(hCall);
-        std::cerr << "[WARN] 获取 EncryptedAppTicket 结果失败 / GetAPICallResult failed for EncryptedAppTicketResponse_t (failureReason="
-                  << failureReason << ").\n";
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "[WARN] 获取 EncryptedAppTicket 结果失败 / GetAPICallResult failed for EncryptedAppTicketResponse_t (failureReason="
+                      << failureReason << ").\n";
+        }
+        LOG_WARN("SteamSession", "获取 EncryptedAppTicket 结果失败 (failureReason={})", failureReason);
         return std::nullopt;
     }
     if (response.m_eResult != k_EResultOK) {
-        std::cerr << "[WARN] 请求 EncryptedAppTicket 返回状态码 / RequestEncryptedAppTicket returned EResult "
-                  << static_cast<int>(response.m_eResult);
-        if (response.m_eResult == k_EResultAccessDenied) {
-            std::cerr << " (AccessDenied: 当前登录账号未拥有该游戏或无权获取其凭据 / Account does not own this app or lacks permission)";
+        if (!TuiEngine::IsActive()) {
+            std::cerr << "[INFO] 请求 EncryptedAppTicket 返回状态码 / RequestEncryptedAppTicket returned EResult "
+                      << static_cast<int>(response.m_eResult);
+            if (response.m_eResult == k_EResultAccessDenied) {
+                std::cerr << " (AccessDenied: 当前登录账号未拥有该游戏或无权获取其凭据 / Account does not own this app or lacks permission)";
+            }
+            std::cerr << ".\n";
         }
-        std::cerr << ".\n";
+        LOG_INFO("SteamSession", "请求 EncryptedAppTicket 返回状态码 EResult {} (游戏未配置加密票据密钥或未授权，通常单机游戏无需此票据)", static_cast<int>(response.m_eResult));
         return std::nullopt;
     }
 
