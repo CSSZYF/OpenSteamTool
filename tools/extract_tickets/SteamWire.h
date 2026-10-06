@@ -136,20 +136,20 @@ public:
             case 0: // Varint
                 return ReadVarint(outField.varintVal);
             case 1: // 64-bit
-                if (m_ptr + 8 > m_end) return false;
+                if (m_end - m_ptr < 8) return false;
                 std::memcpy(&outField.fixed64Val, m_ptr, 8);
                 m_ptr += 8;
                 return true;
             case 2: { // Length-delimited
                 uint64_t len = 0;
                 if (!ReadVarint(len)) return false;
-                if (m_ptr + len > m_end) return false;
+                if (len > static_cast<size_t>(m_end - m_ptr)) return false;
                 outField.bytesVal = std::span<const uint8_t>(m_ptr, static_cast<size_t>(len));
                 m_ptr += len;
                 return true;
             }
             case 5: // 32-bit
-                if (m_ptr + 4 > m_end) return false;
+                if (m_end - m_ptr < 4) return false;
                 std::memcpy(&outField.fixed32Val, m_ptr, 4);
                 m_ptr += 4;
                 return true;
@@ -234,7 +234,7 @@ inline bool UnpackSteamMsg(
     std::memcpy(&hdrLen, packet.data() + 4, 4);
 
     outEMsg = rawMsg & ~kSteamProtoMask;
-    if (8 + hdrLen > packet.size()) return false;
+    if (hdrLen > packet.size() - 8) return false;
 
     outHdr = packet.subspan(8, hdrLen);
     outBody = packet.subspan(8 + hdrLen);

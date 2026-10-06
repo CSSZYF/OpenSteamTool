@@ -541,7 +541,7 @@ bool WebSocketClient::Receive(std::vector<uint8_t>& outData, bool& isBinary, DWO
 
         if (error != ERROR_SUCCESS) {
             LOG_ERROR("WebSocket", "WinHttpWebSocketReceive 错误 (error={})", error);
-            if (error == 12030 || error == ERROR_WINHTTP_CONNECTION_ERROR) {
+            if (error != ERROR_WINHTTP_TIMEOUT) {
                 Close();
             }
             return false;

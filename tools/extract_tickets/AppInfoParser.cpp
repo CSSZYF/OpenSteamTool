@@ -284,7 +284,7 @@ void ParseVdfRecurse(VdfReader& reader,
         };
 
         auto recordDlcId = [&](uint32_t dlcId) {
-            if (dlcId == 0) return;
+            if (dlcId == 0 || dlcId == outData.appId) return;
             if (currentDepotId > 0) {
                 for (auto& d : outData.depots) {
                     if (d.depotId == currentDepotId && d.dlcId == 0) {
@@ -410,7 +410,14 @@ struct TextVdfToken {
 
 class TextVdfLexer {
 public:
-    explicit TextVdfLexer(std::string_view text) : m_text(text), m_pos(0), m_len(text.size()) {}
+    explicit TextVdfLexer(std::string_view text) : m_text(text), m_pos(0), m_len(text.size()) {
+        if (m_len >= 3 &&
+            static_cast<uint8_t>(m_text[0]) == 0xEF &&
+            static_cast<uint8_t>(m_text[1]) == 0xBB &&
+            static_cast<uint8_t>(m_text[2]) == 0xBF) {
+            m_pos = 3;
+        }
+    }
 
     TextVdfToken Next() {
         if (m_peeked.has_value()) {
@@ -500,7 +507,16 @@ void ParseTextVdfRecurse(
     uint32_t currentDepotId,
     ParsedAppInfoData& outData)
 {
-    if (pathStack.size() > 64) return;
+    if (pathStack.size() > 64) {
+        int depth = 1;
+        while (depth > 0) {
+            auto tok = lexer.Next();
+            if (tok.type == TextVdfTokenType::EndOfFile) break;
+            if (tok.type == TextVdfTokenType::OpenBrace) ++depth;
+            else if (tok.type == TextVdfTokenType::CloseBrace) --depth;
+        }
+        return;
+    }
 
     auto recordManifest = [&](uint32_t depotId, std::string_view gidStr, bool isPublic) {
         if (depotId == 0 || gidStr.empty() || !IsValidManifestId(gidStr)) return;
@@ -517,7 +533,7 @@ void ParseTextVdfRecurse(
     };
 
     auto recordDlcId = [&](uint32_t depotId, uint32_t dlcId) {
-        if (dlcId == 0) return;
+        if (dlcId == 0 || dlcId == outData.appId) return;
         if (depotId > 0) {
             for (auto& d : outData.depots) {
                 if (d.depotId == depotId && d.dlcId == 0) {
@@ -574,6 +590,12 @@ void ParseTextVdfRecurse(
         } else if (afterKey.type == TextVdfTokenType::String) {
             TextVdfToken valToken = lexer.Next();
             const std::string& val = valToken.value;
+
+            // Consume optional conditional tag if present (e.g. [$windows], [!$osx])
+            if (lexer.Peek().type == TextVdfTokenType::String &&
+                !lexer.Peek().value.empty() && lexer.Peek().value.front() == '[') {
+                (void)lexer.Next();
+            }
 
             const bool isPublicBranch = (!pathStack.empty() && EqualIgnoreCase(pathStack.back(), "public"));
             const bool isManifestsParent = (!pathStack.empty() && EqualIgnoreCase(pathStack.back(), "manifests"));
@@ -723,8 +745,14 @@ std::optional<ParsedAppInfoData> ParseBinaryVdfAppInfo(
     out.appId = appId;
 
     // Detect format: Text KeyValues vs Binary VDF
+    size_t scanStart = 0;
+    if (buffer.size() >= 3 && buffer[0] == 0xEF && buffer[1] == 0xBB && buffer[2] == 0xBF) {
+        scanStart = 3;
+    }
+
     bool isText = false;
-    for (uint8_t b : buffer) {
+    for (size_t i = scanStart; i < buffer.size(); ++i) {
+        uint8_t b = buffer[i];
         if (b == ' ' || b == '\t' || b == '\r' || b == '\n') continue;
         if (b == '"' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '{') {
             isText = true;

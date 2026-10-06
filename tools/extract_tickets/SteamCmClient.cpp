@@ -784,31 +784,6 @@ std::string SteamCmClient::FetchManifestRequestCode(
         }
     }
 
-    // Track 3: SteamPipe WebAPI fallback (api.steampowered.com/IContentServerDirectoryService)
-    if (!m_accessToken.empty()) {
-        WinHttpTransport http;
-        std::string reqCodeUrl = std::format(
-            "https://api.steampowered.com/IContentServerDirectoryService/GetManifestRequestCode/v1/"
-            "?access_token={}&app_id={}&depot_id={}&manifest_id={}&app_branch=public",
-            m_accessToken, appId, depotId, manifestId);
-
-        HttpResponse resp = http.Get(reqCodeUrl);
-        if (resp.IsSuccess()) {
-            auto codeStr = JsonHelper::GetString(resp.body, "manifest_request_code");
-            if (codeStr && !codeStr->empty() && *codeStr != "0") {
-                reqCode = *codeStr;
-                LOG_DEBUG("SteamCM", "SteamPipe WebAPI 成功返回 manifest_request_code: {}", reqCode);
-                return reqCode;
-            }
-            auto codeNum = JsonHelper::GetUInt64(resp.body, "manifest_request_code");
-            if (codeNum && *codeNum != 0) {
-                reqCode = std::to_string(*codeNum);
-                LOG_DEBUG("SteamCM", "SteamPipe WebAPI 成功返回 manifest_request_code: {}", reqCode);
-                return reqCode;
-            }
-        }
-    }
-
     return "";
 }
 
@@ -1064,6 +1039,13 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
 
         // 3.2 提取官方 Depot 与关联清单 ID (GID)
         for (const auto& dInfo : appInfoData->depots) {
+            if (dInfo.dlcId > 0 && dInfo.dlcId != appId && !knownDlcSet.contains(dInfo.dlcId)) {
+                knownDlcSet.insert(dInfo.dlcId);
+                DlcInfo dInfoObj;
+                dInfoObj.dlcId = dInfo.dlcId;
+                creds.dlcs.push_back(std::move(dInfoObj));
+            }
+
             auto it = std::find_if(depotKeys.begin(), depotKeys.end(),
                                    [&](const DepotKeyInfo& k) { return k.depotId == dInfo.depotId; });
             if (it != depotKeys.end()) {

@@ -454,6 +454,14 @@ void OnlineSession::RunInSessionExtraction(
             TuiEngine::ShowMessageModal("连接失败", "无法建立 Steam CM WebSocket 会话", "请检查网络连接或系统代理设置");
             return;
         }
+    } else {
+        CachedAccount updated;
+        updated.accountName = accountName;
+        updated.steamId = steamId;
+        updated.refreshToken = refreshToken;
+        updated.accessToken = curAccessToken;
+        updated.lastLoginTime = std::time(nullptr);
+        TokenStorage::UpsertAccount(updated);
     }
 
     TuiEngine::PrintBounded(top + 2, left + 4, "登录成功！正在同步当前账号正版游戏列表...", innerW, "\x1b[1;32m");
@@ -729,18 +737,15 @@ int OnlineSession::RunSilent(uint32_t appId, const std::string& accountName) {
             auto refreshed = authService.RefreshAccessToken(curAcc->steamId, curAcc->refreshToken);
             if (refreshed && !refreshed->empty()) {
                 activeToken = *refreshed;
-                CachedAccount updated = *curAcc;
-                updated.accessToken = activeToken;
-                updated.lastLoginTime = std::time(nullptr);
-                TokenStorage::UpsertAccount(updated);
                 logonOk = cmClient.ConnectAndLogon(curAcc->steamId, curAcc->refreshToken, activeToken);
             }
         }
 
         if (logonOk) {
             activeAcc = curAcc;
-            // Update lastLoginTime to reinforce this working account as top priority
+            // Update lastLoginTime and activeToken to reinforce this working account as top priority
             CachedAccount updated = *curAcc;
+            updated.accessToken = activeToken;
             updated.lastLoginTime = std::time(nullptr);
             TokenStorage::UpsertAccount(updated);
             break;
