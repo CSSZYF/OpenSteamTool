@@ -343,17 +343,31 @@ bool TuiEngine::ShowConfirmModal(std::string_view title,
             continue;
         }
         if (ev.code == KeyCode::Char) {
-            if (ev.ch == 'y' || ev.ch == 'Y') return true;
-            if (ev.ch == 'n' || ev.ch == 'N') return false;
+            if (ev.ch == 'y' || ev.ch == 'Y') {
+                FlushInputBuffer();
+                return true;
+            }
+            if (ev.ch == 'n' || ev.ch == 'N') {
+                FlushInputBuffer();
+                return false;
+            }
         } else if (ev.code == KeyCode::Enter) {
+            FlushInputBuffer();
             return selectedYes;
         } else if (ev.code == KeyCode::Escape) {
+            FlushInputBuffer();
             return false;
         }
     }
 }
 
-void TuiEngine::ShowMessageModal(std::string_view title,
+void TuiEngine::FlushInputBuffer() noexcept {
+    while (_kbhit()) {
+        (void)_getch();
+    }
+}
+
+bool TuiEngine::ShowMessageModal(std::string_view title,
                                  std::string_view message,
                                  std::string_view detail) {
     if (!g_tuiActive) {
@@ -363,7 +377,7 @@ void TuiEngine::ShowMessageModal(std::string_view title,
         std::cout.flush();
         std::string s;
         std::getline(std::cin, s);
-        return;
+        return true;
     }
 
     int w = 80, h = 25;
@@ -401,8 +415,13 @@ void TuiEngine::ShowMessageModal(std::string_view title,
 
     while (true) {
         KeyEvent ev = ReadKey();
-        if (ev.code == KeyCode::Enter || ev.code == KeyCode::Escape) {
-            break;
+        if (ev.code == KeyCode::Enter) {
+            FlushInputBuffer();
+            return true;
+        }
+        if (ev.code == KeyCode::Escape) {
+            FlushInputBuffer();
+            return false;
         }
     }
 }
@@ -484,6 +503,7 @@ std::optional<std::string> TuiEngine::PromptInputModal(std::string_view title,
             if (isPassword && !value.empty()) {
                 SecureZeroMemory(value.data(), value.size());
             }
+            FlushInputBuffer();
             return std::nullopt;
         }
         if (ev.code == KeyCode::Enter) {
@@ -491,6 +511,7 @@ std::optional<std::string> TuiEngine::PromptInputModal(std::string_view title,
             if (isPassword && !value.empty()) {
                 SecureZeroMemory(value.data(), value.size());
             }
+            FlushInputBuffer();
             return result;
         }
         if (ev.code == KeyCode::Backspace) {

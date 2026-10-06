@@ -10,6 +10,9 @@
 #include <sstream>
 #include <thread>
 #include <unordered_set>
+#if defined(_WIN32)
+#include <conio.h>
+#endif
 
 namespace OST::ExtractTickets {
 
@@ -144,7 +147,23 @@ SteamLoginResult SteamAuthService::PollAuthSession(
     std::string url = "https://api.steampowered.com/IAuthenticationService/PollAuthSessionStatus/v1";
 
     for (int attempt = 0; attempt < maxAttempts; ++attempt) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+        constexpr int sliceMs = 50;
+        const int slices = delayMs / sliceMs;
+        for (int s = 0; s < slices; ++s) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(sliceMs));
+#if defined(_WIN32)
+            if (_kbhit()) {
+                int ch = _getch();
+                if (ch == 27) { // ESC key
+                    TuiEngine::FlushInputBuffer();
+                    result.cancelled = true;
+                    result.errorMessage = "用户取消授权轮询";
+                    LOG_INFO("SteamAuth", "用户按下 ESC 取消认证轮询");
+                    return result;
+                }
+            }
+#endif
+        }
 
         HttpResponse resp = m_http.Post(url, postData, "application/x-www-form-urlencoded");
         if (!resp.IsSuccess()) {
@@ -325,7 +344,13 @@ SteamLoginResult SteamAuthService::LoginWithCredentials(
         if (conf.type == 3) { // k_EAuthSessionGuardType_DeviceCode (Steam Mobile Authenticator TOTP)
             TuiEngine::ClearScreen();
             auto codeOpt = TuiEngine::PromptInputModal("Steam Guard 手机令牌", "账号已启用手机令牌，请输入手机 App 上的 5 位动态验证码 (TOTP):");
-            if (codeOpt && !codeOpt->empty()) {
+            if (!codeOpt) {
+                failResult.cancelled = true;
+                failResult.errorMessage = "用户取消二次验证输入";
+                LOG_INFO("SteamAuth", "用户在 2FA 手机令牌界面按 ESC 取消登录");
+                return failResult;
+            }
+            if (!codeOpt->empty()) {
                 SubmitSteamGuardCode(*session, *codeOpt, 3);
             }
             break;
@@ -335,20 +360,34 @@ SteamLoginResult SteamAuthService::LoginWithCredentials(
                 ? "验证码已发送至您的注册邮箱，请输入邮件中的验证码:"
                 : std::format("验证码已发送至邮箱 ({})，请输入邮件中的验证码:", conf.associatedMessage);
             auto codeOpt = TuiEngine::PromptInputModal("Steam Guard 邮箱验证码", prompt);
-            if (codeOpt && !codeOpt->empty()) {
+            if (!codeOpt) {
+                failResult.cancelled = true;
+                failResult.errorMessage = "用户取消二次验证输入";
+                LOG_INFO("SteamAuth", "用户在邮箱验证码界面按 ESC 取消登录");
+                return failResult;
+            }
+            if (!codeOpt->empty()) {
                 SubmitSteamGuardCode(*session, *codeOpt, 2);
             }
             break;
         } else if (conf.type == 4) { // k_EAuthSessionGuardType_DeviceConfirmation (Steam App 1-tap)
             TuiEngine::ClearScreen();
-            TuiEngine::ShowMessageModal("Steam 手机确认", "请在手机 Steam App 上点击【确认登录】", "确认通过后按 Enter 键继续...");
+            bool proceed = TuiEngine::ShowMessageModal("Steam 手机确认", "请在手机 Steam App 上点击【确认登录】", "确认通过后按 Enter 键继续，按 ESC 取消...");
+            if (!proceed) {
+                failResult.cancelled = true;
+                failResult.errorMessage = "用户取消手机确认";
+                LOG_INFO("SteamAuth", "用户在手机确认提示界面按 ESC 取消登录");
+                return failResult;
+            }
             break;
         }
     }
 
     auto result = PollAuthSession(*session, accountName);
     if (!result.success) {
-        LOG_WARN("SteamAuth", "{}", result.errorMessage);
+        if (!result.cancelled) {
+            LOG_WARN("SteamAuth", "{}", result.errorMessage);
+        }
         return result;
     }
 
@@ -368,7 +407,8 @@ SteamLoginResult SteamAuthService::InteractiveLogin(std::string_view accountName
     if (password.Empty()) {
         SteamLoginResult fail;
         fail.accountName = accountName;
-        fail.errorMessage = "密码不能为空";
+        fail.cancelled = true;
+        fail.errorMessage = "用户取消输入密码";
         return fail;
     }
     return LoginWithCredentials(accountName, password);

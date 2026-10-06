@@ -347,9 +347,18 @@ int Run(int argc, char** argv) {
             continue;
         }
 
-        // Single-key 'q' or 'Q' or ESC directly exits
-        if (ev.code == KeyCode::Escape ||
-            (ev.code == KeyCode::Char && (ev.ch == 'q' || ev.ch == 'Q'))) {
+        // ESC -> Clear input if non-empty; otherwise exit
+        if (ev.code == KeyCode::Escape) {
+            if (!inputAppId.empty()) {
+                inputAppId.clear();
+                UpdateLevel1Input(layout, inputAppId);
+                continue;
+            }
+            return 0;
+        }
+
+        // Single-key 'q' or 'Q' directly exits
+        if (ev.code == KeyCode::Char && (ev.ch == 'q' || ev.ch == 'Q')) {
             return 0;
         }
 

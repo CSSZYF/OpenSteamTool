@@ -28,6 +28,7 @@ struct SteamAuthSession {
 
 struct SteamLoginResult {
     bool success{false};
+    bool cancelled{false};
     std::string accountName;
     uint64_t steamId{0};
     std::string refreshToken;

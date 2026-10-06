@@ -12,6 +12,9 @@
 #include <format>
 #include <iostream>
 #include <thread>
+#if defined(_WIN32)
+#include <conio.h>
+#endif
 
 namespace OST::ExtractTickets {
 
@@ -328,6 +331,9 @@ void OnlineSession::RunAccountSelectionMenu() {
                     if (loginRes.success) {
                         TuiEngine::ClearScreen();
                         RunInSessionExtraction(loginRes.accountName, loginRes.steamId, loginRes.refreshToken, loginRes.accessToken);
+                    } else if (loginRes.cancelled) {
+                        needFullClear = true;
+                        continue;
                     } else {
                         TuiEngine::ClearScreen();
                         TuiEngine::ShowMessageModal("登录失败",
@@ -377,6 +383,9 @@ void OnlineSession::RunAccountSelectionMenu() {
                                 if (loginRes.success) {
                                     TuiEngine::ClearScreen();
                                     RunInSessionExtraction(loginRes.accountName, loginRes.steamId, loginRes.refreshToken, loginRes.accessToken);
+                                } else if (loginRes.cancelled) {
+                                    needFullClear = true;
+                                    continue;
                                 } else {
                                     TuiEngine::ClearScreen();
                                     TuiEngine::ShowMessageModal("登录失败", loginRes.errorMessage);
@@ -572,8 +581,19 @@ void OnlineSession::RunInSessionExtraction(
                 size_t progress = 0;
                 size_t succeeded = 0;
                 const size_t total = gameMgr.TotalGames();
+                bool aborted = false;
 
                 for (const auto& game : gameMgr.Games()) {
+#if defined(_WIN32)
+                    if (_kbhit()) {
+                        int ch = _getch();
+                        if (ch == 27) {
+                            TuiEngine::FlushInputBuffer();
+                            aborted = true;
+                            break;
+                        }
+                    }
+#endif
                     ++progress;
                     TuiEngine::DrawProgressBar(bTop + 3, bLeft + 4, bModalW - 8, progress, total, game.name);
 
@@ -582,14 +602,35 @@ void OnlineSession::RunInSessionExtraction(
                                      creds.depotKeys, creds.dlcs, creds.appTokens)) {
                         ++succeeded;
                     }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+                    for (int s = 0; s < 4; ++s) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+#if defined(_WIN32)
+                        if (_kbhit()) {
+                            int ch = _getch();
+                            if (ch == 27) {
+                                TuiEngine::FlushInputBuffer();
+                                aborted = true;
+                                break;
+                            }
+                        }
+#endif
+                    }
+                    if (aborted) break;
                 }
 
                 TuiEngine::ClearScreen();
-                TuiEngine::ShowMessageModal(
-                    "批量提取完成",
-                    std::format("成功处理 {} / {} 款游戏凭证！", succeeded, total),
-                    "所有配置与 Lua 已生成在各自 AppID 目录下");
+                if (aborted) {
+                    TuiEngine::ShowMessageModal(
+                        "批量提取已中止",
+                        std::format("用户主动中止！已成功处理 {} / {} 款游戏凭证", succeeded, total),
+                        "已完成项配置与 Lua 已保存在对应 AppID 目录");
+                } else {
+                    TuiEngine::ShowMessageModal(
+                        "批量提取完成",
+                        std::format("成功处理 {} / {} 款游戏凭证！", succeeded, total),
+                        "所有配置与 Lua 已生成在各自 AppID 目录下");
+                }
             }
             continue;
         }
@@ -669,9 +710,20 @@ void OnlineSession::RunInSessionExtraction(
             continue;
         }
 
-        // 'q' / 'Q' or ESC -> Return to Level 2
-        if (ev.code == KeyCode::Escape ||
-            (ev.code == KeyCode::Char && (ev.ch == 'q' || ev.ch == 'Q'))) {
+        // ESC -> Clear quick extract input if non-empty; otherwise return to Level 2
+        if (ev.code == KeyCode::Escape) {
+            if (!inputAppId.empty()) {
+                inputAppId.clear();
+                UpdateLevel3Input(inputAppId);
+                continue;
+            }
+            cmClient.Disconnect();
+            TuiEngine::ClearScreen();
+            return;
+        }
+
+        // 'q' / 'Q' -> Return to Level 2
+        if (ev.code == KeyCode::Char && (ev.ch == 'q' || ev.ch == 'Q')) {
             cmClient.Disconnect();
             TuiEngine::ClearScreen();
             return;
