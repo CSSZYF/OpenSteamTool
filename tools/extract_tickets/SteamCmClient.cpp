@@ -31,15 +31,35 @@ namespace {
         return hex;
     }
 
-    std::string FetchAppNameFromStore(uint32_t appId) {
-        WinHttpTransport http;
+    std::string FetchAppNameFromStore(uint32_t appId, WinHttpTransport* httpPtr = nullptr) {
+        WinHttpTransport localHttp;
+        WinHttpTransport& http = httpPtr ? *httpPtr : localHttp;
         HttpResponse resp = http.Get(std::format("https://store.steampowered.com/api/appdetails?appids={}&filters=basic", appId));
         if (!resp.IsSuccess()) return "";
         auto nameOpt = JsonHelper::GetString(resp.body, "name");
         return nameOpt.value_or("");
     }
 
+    static std::vector<std::string> s_cachedCmList;
+    static std::mutex s_cmListMutex;
+
+    void PromoteWorkingCmServer(std::string_view endpoint) {
+        if (endpoint.empty()) return;
+        std::lock_guard lock(s_cmListMutex);
+        auto it = std::find(s_cachedCmList.begin(), s_cachedCmList.end(), endpoint);
+        if (it != s_cachedCmList.end() && it != s_cachedCmList.begin()) {
+            std::string s = std::move(*it);
+            s_cachedCmList.erase(it);
+            s_cachedCmList.insert(s_cachedCmList.begin(), std::move(s));
+        }
+    }
+
     std::vector<std::string> QueryCmWebSockets() {
+        std::lock_guard lock(s_cmListMutex);
+        if (!s_cachedCmList.empty()) {
+            return s_cachedCmList;
+        }
+
         std::vector<std::string> endpoints;
         WinHttpTransport http;
         LOG_DEBUG("SteamCM", "正在从 Steam 官方 API 查询可用 CM 服务器列表 (GetCMList)...");
@@ -73,7 +93,9 @@ namespace {
             };
             LOG_INFO("SteamCM", "使用预置的高可用 CM 服务器集群 (共 {} 个)", endpoints.size());
         }
-        return endpoints;
+
+        s_cachedCmList = endpoints;
+        return s_cachedCmList;
     }
 } // namespace
 
@@ -359,6 +381,7 @@ bool SteamCmClient::ConnectAndLogon(uint64_t steamId, std::string_view refreshTo
         if (eresult == 1) { // 1 == k_EResultOK
             m_isLoggedOn = true;
             logonSuccess = true;
+            PromoteWorkingCmServer(endpoint);
             LOG_INFO("SteamCM", "CM WebSocket 登录成功！节点: {}, SteamID: {}, SessionID: {}, CellID: {}",
                      endpoint, MaskSteamId(m_steamId), m_clientSessionId, m_cellId);
             if (!TuiEngine::IsActive()) {
@@ -1085,6 +1108,8 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
 
     std::vector<DepotKeyInfo> depotKeys;
     std::unordered_set<uint32_t> unauthorizedDepots;
+    std::unordered_set<uint32_t> unownedDlcIds;
+    bool unownedBaseApp = false;
     std::unordered_set<uint32_t> knownDlcSet;
     const std::string outDir = std::to_string(appId);
     size_t downloadedManifests = 0;
@@ -1146,6 +1171,16 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
 
         for (auto& dk : depotKeys) {
             if (IsValidManifestId(dk.manifestId)) {
+                const bool isBaseDepot = (dk.dlcId == 0 || dk.dlcId == appId);
+                if (isBaseDepot && unownedBaseApp) {
+                    unauthorizedDepots.insert(dk.depotId);
+                    continue;
+                }
+                if (!isBaseDepot && unownedDlcIds.contains(dk.dlcId)) {
+                    unauthorizedDepots.insert(dk.depotId);
+                    continue;
+                }
+
                 // 本地磁盘快速检查：若已存在则直接秒级复用，完全跳过网络查询
                 std::string fileName = std::format("{}_{}.manifest", dk.depotId, dk.manifestId);
                 std::filesystem::path localPath = std::filesystem::path(outDir) / fileName;
@@ -1163,6 +1198,13 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
                     downloadTasks.push_back({dk.depotId, dk.manifestId, std::move(reqCode)});
                 } else if (accessDenied) {
                     unauthorizedDepots.insert(dk.depotId);
+                    if (isBaseDepot && !creds.appOwnershipTicket) {
+                        unownedBaseApp = true;
+                        LOG_DEBUG("SteamCM", "基底游戏 Depot {} 访问被拒绝且账号无所有权票据，跳过后续所有基底子 Depot", dk.depotId);
+                    } else if (!isBaseDepot) {
+                        unownedDlcIds.insert(dk.dlcId);
+                        LOG_DEBUG("SteamCM", "Depot {} 访问被拒绝，标记所属 DLC {} 为未拥有，跳过后续所有关联子 Depot", dk.depotId, dk.dlcId);
+                    }
                 }
             }
         }
@@ -1219,9 +1261,10 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
             }
 
             // 官方 Store WebAPI 补充兜底 (针对极少数 CM PICS 未返回公共名称的 DLC)
+            WinHttpTransport storeHttp;
             for (auto& d : creds.dlcs) {
                 if (d.name.empty()) {
-                    std::string storeName = FetchAppNameFromStore(d.dlcId);
+                    std::string storeName = FetchAppNameFromStore(d.dlcId, &storeHttp);
                     if (!storeName.empty()) {
                         d.name = std::move(storeName);
                     }
@@ -1232,9 +1275,17 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
 
     // 4. 纯官方云端向 Steam CM 查询全部真实 Depot 解密密钥 (严格排除无独立 Depot 的纯逻辑 DLC 与已知未授权 Depot，防止触发 CM 风控)
     std::unordered_set<uint32_t> depotsNeedingKeys;
-    depotsNeedingKeys.insert(appId);
+    if (!unauthorizedDepots.contains(appId) && !unownedBaseApp) {
+        depotsNeedingKeys.insert(appId);
+    }
     for (const auto& dk : depotKeys) {
         if (dk.hexKey.empty() && !unauthorizedDepots.contains(dk.depotId)) {
+            if (dk.dlcId > 0 && unownedDlcIds.contains(dk.dlcId)) {
+                continue;
+            }
+            if ((dk.dlcId == 0 || dk.dlcId == appId) && unownedBaseApp) {
+                continue;
+            }
             // 严格剔除无独立 Depot 的纯逻辑 DLC 容器 (dlcId == depotId 或属于已知 DLC AppID 且无清单)
             if (dk.manifestId.empty() && (dk.depotId == dk.dlcId || knownDlcSet.contains(dk.depotId))) {
                 continue;

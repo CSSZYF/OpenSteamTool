@@ -719,6 +719,9 @@ int OnlineSession::RunSilent(uint32_t appId, const std::string& accountName) {
     SteamAuthService authService;
     SteamCmClient cmClient;
     const CachedAccount* activeAcc = nullptr;
+    ExtractedAppCredentials creds;
+    std::optional<ExtractedAppCredentials> fallbackCreds;
+    const CachedAccount* fallbackAcc = nullptr;
 
     for (size_t i = 0; i < candidates.size(); ++i) {
         const auto* curAcc = candidates[i];
@@ -742,13 +745,37 @@ int OnlineSession::RunSilent(uint32_t appId, const std::string& accountName) {
         }
 
         if (logonOk) {
-            activeAcc = curAcc;
-            // Update lastLoginTime and activeToken to reinforce this working account as top priority
-            CachedAccount updated = *curAcc;
-            updated.accessToken = activeToken;
-            updated.lastLoginTime = std::time(nullptr);
-            TokenStorage::UpsertAccount(updated);
-            break;
+            std::cout << "  -> Steam CM 登录成功，正在提取票据、密钥与清单...\n";
+            auto curCreds = cmClient.ExtractFullCredentials(appId);
+
+            const bool hasTicket = curCreds.appOwnershipTicket.has_value() || curCreds.encryptedAppTicket.has_value();
+            const bool hasKeys = std::any_of(curCreds.depotKeys.begin(), curCreds.depotKeys.end(),
+                                             [](const DepotKeyInfo& k) { return !k.hexKey.empty(); });
+
+            if (hasTicket || hasKeys || !accountName.empty() || candidates.size() == 1) {
+                // 当前账号拥有正版授权，或者为用户显式指定/唯一账号
+                activeAcc = curAcc;
+                creds = std::move(curCreds);
+
+                CachedAccount updated = *curAcc;
+                updated.accessToken = activeToken;
+                updated.lastLoginTime = std::time(nullptr);
+                TokenStorage::UpsertAccount(updated);
+                break;
+            }
+
+            // 当前账号未拥有目标游戏正版授权（无票据且无密钥）
+            if (!fallbackCreds.has_value()) {
+                fallbackCreds = std::move(curCreds);
+                fallbackAcc = curAcc;
+            }
+
+            if (i + 1 < candidates.size()) {
+                std::cout << std::format("[INFO] 账号 [{}] 未检测到 AppID {} 的正版授权 (无所有权票据及密钥)，自动切换下一账号尝试...\n",
+                                         curAcc->accountName, appId);
+                cmClient.Disconnect();
+            }
+            continue;
         }
 
         if (accountName.empty() && i + 1 < candidates.size()) {
@@ -757,13 +784,17 @@ int OnlineSession::RunSilent(uint32_t appId, const std::string& accountName) {
     }
 
     if (!activeAcc) {
-        std::cerr << "[ERROR] 本地已保存账号的登录凭据均验证失败。\n";
-        std::cerr << "[提示] 请运行 extract_tickets --online 完成重新登录以更新凭据。\n";
-        return 1;
+        if (fallbackAcc && fallbackCreds.has_value()) {
+            activeAcc = fallbackAcc;
+            creds = std::move(*fallbackCreds);
+            LOG_INFO("OnlineSession", "所有已保存账号均未直接拥有 AppID {}，使用基础元数据生成通用配置", appId);
+        } else {
+            std::cerr << "[ERROR] 本地已保存账号的登录凭据均验证失败。\n";
+            std::cerr << "[提示] 请运行 extract_tickets --online 完成重新登录以更新凭据。\n";
+            return 1;
+        }
     }
 
-    std::cout << "  -> Steam CM 登录成功，正在提取票据、密钥与清单...\n";
-    auto creds = cmClient.ExtractFullCredentials(appId);
     bool ok = WriteOutputs(appId, creds.appOwnershipTicket, creds.encryptedAppTicket,
                            creds.depotKeys, creds.dlcs, creds.appTokens);
     if (ok) {
