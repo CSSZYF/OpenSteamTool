@@ -37,6 +37,14 @@ enum class LogLevel {
     Error
 };
 
+#if defined(_DEBUG) || defined(EXTRACT_TICKETS_LOGGING_ENABLED)
+    #define EXTRACT_TICKETS_HAS_LOGGING 1
+#else
+    #define EXTRACT_TICKETS_HAS_LOGGING 0
+#endif
+
+#if EXTRACT_TICKETS_HAS_LOGGING
+
 void LogMessage(LogLevel level, std::string_view tag, std::string_view message);
 void InitLogging(const std::string& logFileName = "extract_tickets_debug.log");
 void CloseLogging();
@@ -75,5 +83,19 @@ inline void LogError(std::string_view tag, std::format_string<Args...> fmt, Args
 #define LOG_INFO(...)  ::OST::ExtractTickets::LogInfo(__VA_ARGS__)
 #define LOG_WARN(...)  ::OST::ExtractTickets::LogWarn(__VA_ARGS__)
 #define LOG_ERROR(...) ::OST::ExtractTickets::LogError(__VA_ARGS__)
+
+#else
+
+inline void LogMessage(LogLevel, std::string_view, std::string_view) noexcept {}
+inline void InitLogging(const std::string& = "") noexcept {}
+inline void CloseLogging() noexcept {}
+
+#define LOG_TRACE(...) ((void)0)
+#define LOG_DEBUG(...) ((void)0)
+#define LOG_INFO(...)  ((void)0)
+#define LOG_WARN(...)  ((void)0)
+#define LOG_ERROR(...) ((void)0)
+
+#endif
 
 } // namespace OST::ExtractTickets

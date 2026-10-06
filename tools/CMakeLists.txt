@@ -43,6 +43,10 @@ target_link_libraries(extract_tickets PRIVATE
     crypt32
     bcrypt
 )
+target_compile_definitions(extract_tickets PRIVATE
+    $<$<CONFIG:Debug>:EXTRACT_TICKETS_LOGGING_ENABLED>
+)
+
 
 if(WIN32)
     add_executable(ost-Injector
