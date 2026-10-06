@@ -511,6 +511,7 @@ bool WebSocketClient::Send(std::span<const uint8_t> data, bool isBinary) {
 
     if (error != ERROR_SUCCESS) {
         LOG_ERROR("WebSocket", "WinHttpWebSocketSend 失败 (error={})", error);
+        Close();
         return false;
     }
     return true;
@@ -540,6 +541,9 @@ bool WebSocketClient::Receive(std::vector<uint8_t>& outData, bool& isBinary, DWO
 
         if (error != ERROR_SUCCESS) {
             LOG_ERROR("WebSocket", "WinHttpWebSocketReceive 错误 (error={})", error);
+            if (error == 12030 || error == ERROR_WINHTTP_CONNECTION_ERROR) {
+                Close();
+            }
             return false;
         }
 

@@ -251,6 +251,7 @@ int Run(int argc, char** argv) {
     } logGuard;
 
     std::optional<uint32_t> cliAppId;
+    std::string cliAccount;
     bool forceEticket{false};
     bool onlineMode{false};
     bool workerMode{false};
@@ -259,6 +260,12 @@ int Run(int argc, char** argv) {
         std::string_view arg{argv[i]};
         if (arg == "--online" || arg == "-o" || arg == "-O") {
             onlineMode = true;
+        } else if (arg == "--account" || arg == "-a") {
+            if (i + 1 < argc) {
+                cliAccount = argv[++i];
+            }
+        } else if (arg.starts_with("--account=")) {
+            cliAccount = arg.substr(10);
         } else if (arg == "--force-eticket" || arg == "-f") {
             forceEticket = true;
         } else if (arg == "--worker") {
@@ -279,6 +286,9 @@ int Run(int argc, char** argv) {
     }
 
     if (onlineMode) {
+        if (cliAppId) {
+            return OnlineSession::RunSilent(*cliAppId, cliAccount);
+        }
         TuiSessionGuard tuiGuard(_isatty(_fileno(stdin)) != 0);
         return OnlineSession::RunInteractive();
     }

@@ -671,4 +671,103 @@ void OnlineSession::RunInSessionExtraction(
     }
 }
 
+int OnlineSession::RunSilent(uint32_t appId, const std::string& accountName) {
+    if (appId == 0) {
+        std::cerr << "[ERROR] 无效的 AppID (Invalid AppID: 0)\n";
+        return 1;
+    }
+
+    auto accounts = TokenStorage::LoadAccounts();
+    if (accounts.empty()) {
+        std::cerr << "[ERROR] 本地未检测到已授权的 Steam 账号凭据。\n";
+        std::cerr << "[提示] 请先运行 extract_tickets --online 完成首次扫码/登录并保存凭据。\n";
+        return 1;
+    }
+
+    std::vector<const CachedAccount*> candidates;
+    if (!accountName.empty()) {
+        for (const auto& acc : accounts) {
+            if (acc.accountName == accountName) {
+                candidates.push_back(&acc);
+                break;
+            }
+        }
+        if (candidates.empty()) {
+            std::cerr << std::format("[ERROR] 未找到指定的已保存账号: '{}'\n", accountName);
+            std::cerr << "[提示] 当前已保存的账号列表:\n";
+            for (const auto& acc : accounts) {
+                std::cerr << "  - " << acc.accountName << "\n";
+            }
+            return 1;
+        }
+    } else {
+        for (const auto& acc : accounts) candidates.push_back(&acc);
+        // Sort by lastLoginTime descending
+        std::sort(candidates.begin(), candidates.end(), [](const auto* a, const auto* b) {
+            return a->lastLoginTime > b->lastLoginTime;
+        });
+    }
+
+    SteamAuthService authService;
+    SteamCmClient cmClient;
+    const CachedAccount* activeAcc = nullptr;
+
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        const auto* curAcc = candidates[i];
+        if (candidates.size() > 1 && accountName.empty()) {
+            std::cout << std::format("[INFO] 正在尝试账号 [{}] ({}/{})...\n",
+                                     curAcc->accountName, i + 1, candidates.size());
+        } else {
+            std::cout << std::format("[INFO] 正在使用账号 [{}] 进行云端凭据提取 (目标 AppID: {})...\n",
+                                     curAcc->accountName, appId);
+        }
+
+        std::string activeToken = curAcc->accessToken;
+        bool logonOk = cmClient.ConnectAndLogon(curAcc->steamId, curAcc->refreshToken, activeToken);
+        if (!logonOk && !curAcc->refreshToken.empty()) {
+            std::cout << "  -> 当前访问凭据已过期，尝试通过官方接口自动续期...\n";
+            auto refreshed = authService.RefreshAccessToken(curAcc->steamId, curAcc->refreshToken);
+            if (refreshed && !refreshed->empty()) {
+                activeToken = *refreshed;
+                CachedAccount updated = *curAcc;
+                updated.accessToken = activeToken;
+                updated.lastLoginTime = std::time(nullptr);
+                TokenStorage::UpsertAccount(updated);
+                logonOk = cmClient.ConnectAndLogon(curAcc->steamId, curAcc->refreshToken, activeToken);
+            }
+        }
+
+        if (logonOk) {
+            activeAcc = curAcc;
+            // Update lastLoginTime to reinforce this working account as top priority
+            CachedAccount updated = *curAcc;
+            updated.lastLoginTime = std::time(nullptr);
+            TokenStorage::UpsertAccount(updated);
+            break;
+        }
+
+        if (accountName.empty() && i + 1 < candidates.size()) {
+            std::cout << std::format("[WARN] 账号 [{}] 登录失败，自动尝试下一个可用账号...\n", curAcc->accountName);
+        }
+    }
+
+    if (!activeAcc) {
+        std::cerr << "[ERROR] 本地已保存账号的登录凭据均验证失败。\n";
+        std::cerr << "[提示] 请运行 extract_tickets --online 完成重新登录以更新凭据。\n";
+        return 1;
+    }
+
+    std::cout << "  -> Steam CM 登录成功，正在提取票据、密钥与清单...\n";
+    auto creds = cmClient.ExtractFullCredentials(appId);
+    bool ok = WriteOutputs(appId, creds.appOwnershipTicket, creds.encryptedAppTicket,
+                           creds.depotKeys, creds.dlcs, creds.appTokens);
+    if (ok) {
+        std::cout << std::format("[OK] AppID {} 凭据提取成功！输出文件已写入 ./{}/ 目录。\n", appId, appId);
+        return 0;
+    } else {
+        std::cerr << std::format("[WARN] AppID {} 凭据提取完成，但部分输出受限。\n", appId);
+        return 1;
+    }
+}
+
 } // namespace OST::ExtractTickets

@@ -12,6 +12,9 @@ namespace OST::ExtractTickets {
 // Steam EMsg constants
 enum class ESteamMsg : uint32_t {
     Invalid = 0,
+    ServiceMethodResponse = 147,
+    ServiceMethodCallFromClient = 151,
+    ServiceMethodSendToClient = 152,
     ClientHeartBeat = 703,
     ClientGamesPlayed = 742,
     ClientLogonResponse = 751,
@@ -180,15 +183,23 @@ inline std::vector<uint8_t> PackSteamMsg(
     ESteamMsg eMsg,
     uint64_t steamId,
     uint64_t jobIdSource,
-    std::span<const uint8_t> bodyBytes) {
+    std::span<const uint8_t> bodyBytes,
+    int32_t clientSessionId = 0,
+    std::string_view targetJobName = {}) {
 
     // 1. Build CMsgProtoBufHeader
     ProtoWriter hdrWriter;
     if (steamId != 0) {
         hdrWriter.WriteFixed64(1, steamId);
     }
+    if (clientSessionId != 0) {
+        hdrWriter.WriteInt32(2, clientSessionId);
+    }
     if (jobIdSource != 0 && jobIdSource != UINT64_MAX) {
         hdrWriter.WriteFixed64(10, jobIdSource);
+    }
+    if (!targetJobName.empty()) {
+        hdrWriter.WriteString(12, targetJobName);
     }
 
     const auto& hdrBytes = hdrWriter.Data();

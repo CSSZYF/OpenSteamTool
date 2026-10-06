@@ -86,12 +86,28 @@ void SteamCmClient::Disconnect() {
     m_isLoggedOn = false;
 }
 
-bool SteamCmClient::SendProtoMsg(ESteamMsg eMsg, const ProtoWriter& body, uint64_t jobId) {
-    if (!m_ws.IsConnected()) return false;
+bool SteamCmClient::SendProtoMsg(ESteamMsg eMsg, const ProtoWriter& body, uint64_t jobId, std::string_view targetJobName) {
+    if (eMsg != ESteamMsg::ClientLogon) {
+        if (!EnsureConnected()) return false;
+    } else {
+        if (!m_ws.IsConnected()) return false;
+    }
 
-    auto packet = PackSteamMsg(eMsg, m_steamId, jobId, body.Data());
+    auto packet = PackSteamMsg(eMsg, m_steamId, jobId, body.Data(), m_clientSessionId, targetJobName);
     LOG_TRACE("SteamCM", "发送 eMsg: {} ({} 字节)", static_cast<uint32_t>(eMsg), packet.size());
-    return m_ws.Send(packet, true);
+    if (!m_ws.Send(packet, true)) {
+        if (eMsg != ESteamMsg::ClientLogon) {
+            LOG_WARN("SteamCM", "发送 eMsg: {} 失败，连接可能已失效，尝试重新建立安全会话并重试...", static_cast<uint32_t>(eMsg));
+            m_ws.Close();
+            m_isLoggedOn = false;
+            if (EnsureConnected()) {
+                LOG_INFO("SteamCM", "连接已成功恢复，正在重发 eMsg: {} (jobId={})...", static_cast<uint32_t>(eMsg), jobId);
+                return m_ws.Send(packet, true);
+            }
+        }
+        return false;
+    }
+    return true;
 }
 
 void SteamCmClient::UnpackMultiMsg(std::span<const uint8_t> bodySpan) {
@@ -239,9 +255,10 @@ bool SteamCmClient::ReadMatchingMsg(uint32_t expectedEMsg, std::vector<uint8_t>&
 bool SteamCmClient::ConnectAndLogon(uint64_t steamId, std::string_view refreshToken, std::string_view accessToken) {
     Disconnect();
     m_steamId = steamId;
+    m_refreshToken = refreshToken;
     m_accessToken = accessToken;
 
-    std::string_view tokenToUse = !refreshToken.empty() ? refreshToken : accessToken;
+    std::string_view tokenToUse = !m_refreshToken.empty() ? m_refreshToken : m_accessToken;
     if (tokenToUse.empty()) {
         LOG_ERROR("SteamCM", "缺少登录令牌 (refreshToken / accessToken 均为空)");
         return false;
@@ -318,17 +335,22 @@ bool SteamCmClient::ConnectAndLogon(uint64_t steamId, std::string_view refreshTo
         while (reader.ReadNext(field)) {
             if (field.fieldNumber == 1) { // eresult
                 eresult = static_cast<int32_t>(field.varintVal);
+            } else if (field.fieldNumber == 14) { // client_sessionid
+                m_clientSessionId = static_cast<int32_t>(field.varintVal);
             } else if (field.fieldNumber == 20) { // client_supplied_steamid
                 if (field.fixed64Val != 0) {
                     m_steamId = field.fixed64Val;
                 }
+            } else if (field.fieldNumber == 43) { // cell_id
+                m_cellId = static_cast<uint32_t>(field.varintVal);
             }
         }
 
         if (eresult == 1) { // 1 == k_EResultOK
             m_isLoggedOn = true;
             logonSuccess = true;
-            LOG_INFO("SteamCM", "CM WebSocket 登录成功！节点: {}, SteamID: {}", endpoint, MaskSteamId(m_steamId));
+            LOG_INFO("SteamCM", "CM WebSocket 登录成功！节点: {}, SteamID: {}, SessionID: {}, CellID: {}",
+                     endpoint, MaskSteamId(m_steamId), m_clientSessionId, m_cellId);
             if (!TuiEngine::IsActive()) {
                 std::cout << "[OK] Steam CM 登录就绪！(SteamID: " << m_steamId << ")\n";
             }
@@ -369,8 +391,15 @@ bool SteamCmClient::ConnectAndLogon(uint64_t steamId, std::string_view refreshTo
     return true;
 }
 
+bool SteamCmClient::EnsureConnected() {
+    if (IsConnected()) return true;
+    if (m_steamId == 0 || (m_refreshToken.empty() && m_accessToken.empty())) return false;
+    LOG_INFO("SteamCM", "检测到 CM 连接已断开，正在自动恢复会话...");
+    return ConnectAndLogon(m_steamId, m_refreshToken, m_accessToken);
+}
+
 std::optional<std::vector<uint8_t>> SteamCmClient::RequestAppOwnershipTicket(uint32_t appId) {
-    if (!IsConnected()) return std::nullopt;
+    if (!EnsureConnected()) return std::nullopt;
 
     LOG_DEBUG("SteamCM", "正在请求 AppOwnershipTicket (AppID={})", appId);
 
@@ -412,7 +441,7 @@ std::optional<std::vector<uint8_t>> SteamCmClient::RequestAppOwnershipTicket(uin
 }
 
 std::optional<std::vector<uint8_t>> SteamCmClient::RequestEncryptedAppTicket(uint32_t appId) {
-    if (!IsConnected()) return std::nullopt;
+    if (!EnsureConnected()) return std::nullopt;
 
     LOG_DEBUG("SteamCM", "正在请求 EncryptedAppTicket (AppID={})", appId);
 
@@ -460,7 +489,7 @@ std::optional<std::vector<uint8_t>> SteamCmClient::RequestEncryptedAppTicket(uin
 
 std::vector<DepotKeyInfo> SteamCmClient::RequestDepotKeys(uint32_t appId, const std::vector<uint32_t>& depotIds) {
     std::vector<DepotKeyInfo> keys;
-    if (!IsConnected()) return keys;
+    if (!EnsureConnected()) return keys;
 
     for (uint32_t depotId : depotIds) {
         LOG_DEBUG("SteamCM", "正在请求 Depot 密钥: DepotID={}, AppID={}", depotId, appId);
@@ -511,7 +540,7 @@ std::vector<DepotKeyInfo> SteamCmClient::RequestDepotKeys(uint32_t appId, const 
 
 std::unordered_map<uint32_t, uint64_t> SteamCmClient::RequestAppTokens(const std::vector<uint32_t>& appIds) {
     std::unordered_map<uint32_t, uint64_t> tokens;
-    if (!IsConnected() || appIds.empty()) return tokens;
+    if (appIds.empty() || !EnsureConnected()) return tokens;
 
     ProtoWriter body;
     for (uint32_t appId : appIds) {
@@ -545,6 +574,9 @@ std::unordered_map<uint32_t, uint64_t> SteamCmClient::RequestAppTokens(const std
                 tokens[aId] = aToken;
                 LOG_DEBUG("SteamCM", "获得 AppID {} 的 PICS AccessToken: {}", aId, aToken);
             }
+        } else if (field.fieldNumber == 4) { // app_denied_tokens (repeated)
+            uint32_t deniedAppId = static_cast<uint32_t>(field.varintVal);
+            LOG_DEBUG("SteamCM", "AppID {} 属于公开产品，无需独立 PICS AccessToken (使用公开模式 token=0)", deniedAppId);
         }
     }
 
@@ -552,7 +584,7 @@ std::unordered_map<uint32_t, uint64_t> SteamCmClient::RequestAppTokens(const std
 }
 
 std::optional<ParsedAppInfoData> SteamCmClient::RequestPicsProductInfo(uint32_t appId, uint64_t accessToken) {
-    if (!IsConnected()) return std::nullopt;
+    if (!EnsureConnected()) return std::nullopt;
 
     LOG_DEBUG("SteamCM", "正在向 Steam CM 请求 PICS 产品元数据 (AppID={}, token={})...", appId, accessToken);
 
@@ -606,7 +638,7 @@ std::unordered_map<uint32_t, std::string> SteamCmClient::RequestPicsAppNames(
     const std::vector<uint32_t>& appIds) {
 
     std::unordered_map<uint32_t, std::string> outNames;
-    if (appIds.empty() || !IsConnected()) return outNames;
+    if (appIds.empty() || !EnsureConnected()) return outNames;
 
     constexpr size_t kBatchSize = 50;
     for (size_t i = 0; i < appIds.size(); i += kBatchSize) {
@@ -660,7 +692,7 @@ std::unordered_map<uint32_t, std::string> SteamCmClient::RequestPicsAppNames(
 }
 
 bool SteamCmClient::SetGamePlayed(uint32_t appId) {
-    if (!IsConnected()) return false;
+    if (!EnsureConnected()) return false;
     ProtoWriter body;
     if (appId > 0) {
         ProtoWriter gamePlayed;
@@ -677,23 +709,51 @@ std::string SteamCmClient::FetchManifestRequestCode(
     uint32_t appId, uint32_t depotId, const std::string& manifestId) {
     if (manifestId.empty() || !IsValidManifestId(manifestId)) return "";
 
+    // 0. Ensure active CM connection
+    (void)EnsureConnected();
+
     std::string reqCode;
 
-    // 1. Try requesting ManifestRequestCode via CM WebSocket (ContentServerDirectory.GetManifestRequestCode#1, eMsg 5594)
-    if (m_ws.IsConnected() && m_isLoggedOn) {
-        ProtoWriter innerReq;
-        innerReq.WriteUInt32(1, appId); // app_id
-        innerReq.WriteUInt32(2, depotId); // depot_id
-        innerReq.WriteUInt64(3, std::strtoull(manifestId.c_str(), nullptr, 10)); // manifest_id
-        innerReq.WriteString(4, "public"); // app_branch
-        innerReq.WriteString(5, ""); // branch_password
+    ProtoWriter innerReq;
+    innerReq.WriteUInt32(1, appId); // app_id
+    innerReq.WriteUInt32(2, depotId); // depot_id
+    innerReq.WriteUInt64(3, std::strtoull(manifestId.c_str(), nullptr, 10)); // manifest_id
+    innerReq.WriteString(4, "public"); // app_branch
+    innerReq.WriteString(5, ""); // branch_password
 
+    // Track 1: Unified RPC eMsg 151 (ServiceMethodCallFromClient)
+    if (m_ws.IsConnected() && m_isLoggedOn) {
+        const uint64_t jobId = ++m_nextJobId;
+        LOG_DEBUG("SteamCM", "向 Steam CM 发送统一 RPC 请求 ManifestRequestCode: Depot={}, Manifest={}", depotId, manifestId);
+        if (SendProtoMsg(ESteamMsg::ServiceMethodCallFromClient, innerReq, jobId, "ContentServerDirectory.GetManifestRequestCode#1")) {
+            std::vector<uint8_t> respBody;
+            if (ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ServiceMethodResponse), respBody, 4000) ||
+                ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ServiceMethodSendToClient), respBody, 2000)) {
+                ProtoReader respReader(respBody);
+                ProtoField field;
+                uint64_t codeVal = 0;
+                while (respReader.ReadNext(field)) {
+                    if (field.fieldNumber == 1) { // manifest_request_code
+                        codeVal = field.varintVal ? field.varintVal : field.fixed64Val;
+                    }
+                }
+                if (codeVal != 0) {
+                    reqCode = std::to_string(codeVal);
+                    LOG_DEBUG("SteamCM", "统一 RPC eMsg 151 成功返回 manifest_request_code: {}", reqCode);
+                    return reqCode;
+                }
+            }
+        }
+    }
+
+    // Track 2: Legacy wrapper eMsg 5594 (ClientServiceMethod) fallback
+    if (m_ws.IsConnected() && m_isLoggedOn) {
         ProtoWriter svcMsg;
         svcMsg.WriteString(1, "ContentServerDirectory.GetManifestRequestCode#1");
         svcMsg.WriteBytes(2, innerReq.Data());
 
         const uint64_t jobId = ++m_nextJobId;
-        LOG_DEBUG("SteamCM", "正在向 Steam CM 请求 ManifestRequestCode: Depot={}, Manifest={}", depotId, manifestId);
+        LOG_DEBUG("SteamCM", "回退尝试传统 eMsg 5594 请求 ManifestRequestCode: Depot={}, Manifest={}", depotId, manifestId);
         if (SendProtoMsg(ESteamMsg::ClientServiceMethod, svcMsg, jobId)) {
             std::vector<uint8_t> respBody;
             if (ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientServiceMethodResponse), respBody, 4000)) {
@@ -711,12 +771,12 @@ std::string SteamCmClient::FetchManifestRequestCode(
                     uint64_t reqCodeNum = 0;
                     while (innerReader.ReadNext(innerField)) {
                         if (innerField.fieldNumber == 1) { // manifest_request_code
-                            reqCodeNum = innerField.varintVal;
+                            reqCodeNum = innerField.varintVal ? innerField.varintVal : innerField.fixed64Val;
                         }
                     }
                     if (reqCodeNum != 0) {
                         reqCode = std::to_string(reqCodeNum);
-                        LOG_DEBUG("SteamCM", "CM 成功返回 manifest_request_code: {}", reqCode);
+                        LOG_DEBUG("SteamCM", "传统 RPC eMsg 5594 成功返回 manifest_request_code: {}", reqCode);
                         return reqCode;
                     }
                 }
@@ -724,7 +784,7 @@ std::string SteamCmClient::FetchManifestRequestCode(
         }
     }
 
-    // 2. Fallback to WebAPI if CM method was unavailable
+    // Track 3: SteamPipe WebAPI fallback (api.steampowered.com/IContentServerDirectoryService)
     if (!m_accessToken.empty()) {
         WinHttpTransport http;
         std::string reqCodeUrl = std::format(
@@ -737,13 +797,13 @@ std::string SteamCmClient::FetchManifestRequestCode(
             auto codeStr = JsonHelper::GetString(resp.body, "manifest_request_code");
             if (codeStr && !codeStr->empty() && *codeStr != "0") {
                 reqCode = *codeStr;
-                LOG_DEBUG("SteamCM", "WebAPI 成功返回 manifest_request_code: {}", reqCode);
+                LOG_DEBUG("SteamCM", "SteamPipe WebAPI 成功返回 manifest_request_code: {}", reqCode);
                 return reqCode;
             }
             auto codeNum = JsonHelper::GetUInt64(resp.body, "manifest_request_code");
             if (codeNum && *codeNum != 0) {
                 reqCode = std::to_string(*codeNum);
-                LOG_DEBUG("SteamCM", "WebAPI 成功返回 manifest_request_code: {}", reqCode);
+                LOG_DEBUG("SteamCM", "SteamPipe WebAPI 成功返回 manifest_request_code: {}", reqCode);
                 return reqCode;
             }
         }
@@ -752,7 +812,7 @@ std::string SteamCmClient::FetchManifestRequestCode(
     return "";
 }
 
-std::vector<std::string> SteamCmClient::GetCdnServers() {
+std::vector<std::string> SteamCmClient::GetCdnServers(uint32_t cellId) {
     static std::vector<std::string> s_cachedServers;
     static std::mutex s_mutex;
     std::lock_guard lock(s_mutex);
@@ -762,7 +822,10 @@ std::vector<std::string> SteamCmClient::GetCdnServers() {
     }
 
     WinHttpTransport http;
-    HttpResponse resp = http.Get("https://api.steampowered.com/IContentServerDirectoryService/GetServersForSteamPipe/v1/?cell_id=0");
+    std::string directoryUrl = std::format(
+        "https://api.steampowered.com/IContentServerDirectoryService/GetServersForSteamPipe/v1/?cell_id={}",
+        cellId);
+    HttpResponse resp = http.Get(directoryUrl);
     if (resp.IsSuccess() && !resp.body.empty()) {
         size_t pos = 0;
         while ((pos = resp.body.find("\"host\"", pos)) != std::string::npos) {
@@ -785,11 +848,12 @@ std::vector<std::string> SteamCmClient::GetCdnServers() {
 
     if (s_cachedServers.empty()) {
         s_cachedServers = {
-            "cache1-lax2.steamcontent.com",
-            "cache2-lax2.steamcontent.com",
-            "cache3-lax2.steamcontent.com",
             "valve.steamcontent.com",
-            "content.steampowered.com"
+            "cdn.steamcontent.com",
+            "content1.steampowered.com",
+            "content2.steampowered.com",
+            "content.steampowered.com",
+            "cache1-lax2.steamcontent.com"
         };
     }
 
@@ -806,10 +870,10 @@ std::optional<std::string> SteamCmClient::DownloadManifestOnline(
     std::string fileName = std::format("{}_{}.manifest", depotId, manifestId);
     std::filesystem::path localPath = std::filesystem::path(destDir) / fileName;
 
-    // Fast check if already exists in destination
+    // Fast check if already exists in destination and non-empty
     std::error_code checkEc;
-    if (std::filesystem::is_regular_file(localPath, checkEc)) {
-        LOG_INFO("SteamCM", "清单文件已存在于目标目录: {}", localPath.string());
+    if (std::filesystem::is_regular_file(localPath, checkEc) && std::filesystem::file_size(localPath, checkEc) > 0) {
+        LOG_INFO("SteamCM", "清单文件已存在于目标目录，直接秒级复用: {}", localPath.string());
         return localPath.string();
     }
 
@@ -819,7 +883,7 @@ std::optional<std::string> SteamCmClient::DownloadManifestOnline(
         return std::nullopt;
     }
 
-    auto cdnServers = GetCdnServers();
+    auto cdnServers = GetCdnServers(m_cellId);
     WinHttpTransport http;
     HttpResponse cdnResp;
 
@@ -868,24 +932,33 @@ std::optional<std::string> SteamCmClient::DownloadManifestOnline(
         if (payload.size() >= 18) {
             std::memcpy(&isize, payload.data() + payload.size() - 4, sizeof(uint32_t));
         }
-        unsigned int destLen = (isize > 0 && isize < 256 * 1024 * 1024)
-            ? (isize + 1024)
-            : static_cast<unsigned int>(payload.size() * 15);
-        uncompressed.resize(destLen);
+        size_t bufSize = (isize > 0 && isize < 256 * 1024 * 1024)
+            ? (static_cast<size_t>(isize) + 4096)
+            : (std::max<size_t>(payload.size() * 10, 1024 * 1024));
+        bufSize = (std::max<size_t>)(bufSize, 1024 * 1024);
+        uncompressed.resize(bufSize);
 
-        int res = tinf_gzip_uncompress(uncompressed.data(), &destLen, payload.data(), static_cast<unsigned int>(payload.size()));
-        if (res == TINF_BUF_ERROR) {
-            destLen = static_cast<unsigned int>(uncompressed.size() * 2);
-            uncompressed.resize(destLen);
+        int res = TINF_DATA_ERROR;
+        while (bufSize <= 256 * 1024 * 1024) {
+            unsigned int destLen = static_cast<unsigned int>(bufSize);
             res = tinf_gzip_uncompress(uncompressed.data(), &destLen, payload.data(), static_cast<unsigned int>(payload.size()));
+            if (res == TINF_OK) {
+                uncompressed.resize(destLen);
+                payload = uncompressed;
+                LOG_DEBUG("SteamCM", "清单 GZIP 解压成功 ({} 压缩 -> {} 原始字节)", cdnResp.body.size(), destLen);
+                break;
+            }
+            if (res == TINF_BUF_ERROR) {
+                bufSize *= 2;
+                uncompressed.resize(bufSize);
+                continue;
+            }
+            break; // Fatal format error
         }
 
-        if (res == TINF_OK) {
-            uncompressed.resize(destLen);
-            payload = uncompressed;
-            LOG_DEBUG("SteamCM", "清单 GZIP 解压成功 ({} 压缩 -> {} 原始字节)", cdnResp.body.size(), destLen);
-        } else {
-            LOG_WARN("SteamCM", "清单 GZIP 解压失败 (res={}), 将以原始数据保存", res);
+        if (res != TINF_OK) {
+            LOG_WARN("SteamCM", "清单 GZIP 解压失败 (res={}), 丢弃损坏数据", res);
+            return std::nullopt;
         }
     }
 
@@ -1009,7 +1082,27 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
             }
         }
 
-        // 3.3 纯官方云端批量解析所有 DLC 名称 (Steam CM PICS 公开元数据查询 + Store WebAPI 补充兜底)
+        // 3.3 优先拉取官方清单文件 (独立流: 仅需 DepotID 与 Manifest GID，完全不依赖 Depot Key)
+        const std::string outDir = std::to_string(appId);
+        LOG_INFO("SteamCM", "正在纯云端拉取官方清单文件 (共 {} 个待处理 Depot)...", depotKeys.size());
+        if (!TuiEngine::IsActive()) {
+            std::cout << "  -> 正在纯云端拉取官方清单文件 (.manifest)...\n";
+        }
+        size_t downloadedManifests = 0;
+        for (auto& dk : depotKeys) {
+            if (IsValidManifestId(dk.manifestId)) {
+                auto downloaded = DownloadManifestOnline(appId, dk.depotId, dk.manifestId, outDir);
+                if (downloaded) {
+                    dk.manifestFilePath = *downloaded;
+                    ++downloadedManifests;
+                }
+            }
+        }
+        if (downloadedManifests > 0 && !TuiEngine::IsActive()) {
+            std::cout << "     [OK] 成功拉取 " << downloadedManifests << " 个官方清单文件\n";
+        }
+
+        // 3.4 纯官方云端批量解析所有 DLC 名称 (Steam CM PICS 公开元数据查询 + Store WebAPI 补充兜底)
         std::vector<uint32_t> missingDlcNames;
         for (const auto& d : creds.dlcs) {
             if (d.name.empty()) {
@@ -1040,7 +1133,7 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
         }
     }
 
-    // 4. 纯官方云端向 Steam CM 查询全部 Depot 解密密钥
+    // 4. 纯官方云端向 Steam CM 查询全部真实 Depot 解密密钥 (严格排除无独立 Depot 的纯逻辑 DLC，防止触发 CM 风控)
     std::unordered_set<uint32_t> depotsNeedingKeys;
     depotsNeedingKeys.insert(appId);
     for (const auto& dk : depotKeys) {
@@ -1048,11 +1141,9 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
             depotsNeedingKeys.insert(dk.depotId);
         }
     }
-    for (const auto& dlc : creds.dlcs) {
-        depotsNeedingKeys.insert(dlc.dlcId);
-    }
+    // 严格剔除纯逻辑 DLC，避免触发 CM 连续拒绝导致风控断线
 
-    LOG_DEBUG("SteamCM", "正在向 Steam CM 查询 Depot 解密密钥 (AppID={}, 共 {} 个待查 Depot)...", appId, depotsNeedingKeys.size());
+    LOG_DEBUG("SteamCM", "正在向 Steam CM 查询 Depot 解密密钥 (AppID={}, 共 {} 个真实 Depot)...", appId, depotsNeedingKeys.size());
     if (!TuiEngine::IsActive()) {
         std::cout << "  -> 正在向 Steam CM 查询 Depot 解密密钥...\n";
     }
@@ -1082,17 +1173,6 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
         if (std::none_of(depotKeys.begin(), depotKeys.end(),
                          [&](const DepotKeyInfo& k) { return k.depotId == cmKey.depotId; })) {
             depotKeys.push_back(cmKey);
-        }
-    }
-
-    // 5. 纯云端清单文件拉取 (优先检查输出目录，未下载则直接从 Steam 官方 CDN 拉取)
-    const std::string outDir = std::to_string(appId);
-    for (auto& dk : depotKeys) {
-        if (IsValidManifestId(dk.manifestId)) {
-            auto downloaded = DownloadManifestOnline(appId, dk.depotId, dk.manifestId, outDir);
-            if (downloaded) {
-                dk.manifestFilePath = *downloaded;
-            }
         }
     }
 

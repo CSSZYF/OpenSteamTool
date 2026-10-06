@@ -61,7 +61,7 @@ public:
         uint32_t appId, uint32_t depotId, const std::string& manifestId);
 
     // Dynamically queries active Steam CDN servers from GetServersForSteamPipe
-    [[nodiscard]] static std::vector<std::string> GetCdnServers();
+    [[nodiscard]] static std::vector<std::string> GetCdnServers(uint32_t cellId = 0);
 
     // Downloads manifest binary directly from Steam CDN via GetManifestRequestCode
     [[nodiscard]] std::optional<std::string> DownloadManifestOnline(
@@ -72,9 +72,10 @@ public:
 
     void SetAccessToken(std::string_view token) { m_accessToken = token; }
     [[nodiscard]] bool IsConnected() const noexcept { return m_ws.IsConnected() && m_isLoggedOn; }
+    [[nodiscard]] bool EnsureConnected();
 
 private:
-    [[nodiscard]] bool SendProtoMsg(ESteamMsg eMsg, const ProtoWriter& body, uint64_t jobId = 0);
+    [[nodiscard]] bool SendProtoMsg(ESteamMsg eMsg, const ProtoWriter& body, uint64_t jobId = 0, std::string_view targetJobName = {});
     [[nodiscard]] bool ReadMatchingMsg(uint32_t expectedEMsg, std::vector<uint8_t>& outBody, DWORD timeoutMs = 8000);
     void UnpackMultiMsg(std::span<const uint8_t> bodySpan);
 
@@ -85,9 +86,12 @@ private:
 
     WebSocketClient m_ws;
     std::vector<QueuedMsg> m_msgQueue;
+    std::string m_refreshToken;
     std::string m_accessToken;
     uint64_t m_steamId{0};
     uint64_t m_nextJobId{100};
+    int32_t m_clientSessionId{0};
+    uint32_t m_cellId{0};
     bool m_isLoggedOn{false};
 };
 

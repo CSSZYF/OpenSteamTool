@@ -11,6 +11,12 @@ public:
     // Returns 0 on normal exit, non-zero on critical error
     static int RunInteractive();
 
+    // Runs silent, non-interactive online extraction of a single AppID using cached DPAPI credentials
+    // If accountName is empty:
+    //   - Automatically picks the account if exactly one account is cached, or latest active account
+    // Returns 0 on success, non-zero on error
+    static int RunSilent(uint32_t appId, const std::string& accountName = "");
+
 private:
     // Level 2: Account Selection and Management Menu
     static void RunAccountSelectionMenu();
