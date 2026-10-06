@@ -56,16 +56,17 @@ public:
     // Sets or clears playing state via CMsgClientGamesPlayed (eMsg 742) for session license activation
     bool SetGamePlayed(uint32_t appId);
 
-    // Resolves manifest request code via CM ServiceMethod, WebAPI, or community mirrors
+    // Resolves manifest request code via CM ServiceMethod or legacy RPC
     [[nodiscard]] std::string FetchManifestRequestCode(
-        uint32_t appId, uint32_t depotId, const std::string& manifestId);
+        uint32_t appId, uint32_t depotId, const std::string& manifestId, bool* outAccessDenied = nullptr);
 
     // Dynamically queries active Steam CDN servers from GetServersForSteamPipe
     [[nodiscard]] static std::vector<std::string> GetCdnServers(uint32_t cellId = 0);
 
     // Downloads manifest binary directly from Steam CDN via GetManifestRequestCode
     [[nodiscard]] std::optional<std::string> DownloadManifestOnline(
-        uint32_t appId, uint32_t depotId, const std::string& manifestId, const std::string& destDir);
+        uint32_t appId, uint32_t depotId, const std::string& manifestId, const std::string& destDir,
+        bool* outAccessDenied = nullptr, WinHttpTransport* sharedHttp = nullptr);
 
     // High-level extraction pipeline for a single target AppID
     [[nodiscard]] ExtractedAppCredentials ExtractFullCredentials(uint32_t appId);
@@ -76,11 +77,12 @@ public:
 
 private:
     [[nodiscard]] bool SendProtoMsg(ESteamMsg eMsg, const ProtoWriter& body, uint64_t jobId = 0, std::string_view targetJobName = {});
-    [[nodiscard]] bool ReadMatchingMsg(uint32_t expectedEMsg, std::vector<uint8_t>& outBody, DWORD timeoutMs = 8000);
+    [[nodiscard]] bool ReadMatchingMsg(uint32_t expectedEMsg, std::vector<uint8_t>& outBody, DWORD timeoutMs = 8000, int32_t* outEResult = nullptr);
     void UnpackMultiMsg(std::span<const uint8_t> bodySpan);
 
     struct QueuedMsg {
         uint32_t eMsg{0};
+        int32_t eresult{1};
         std::vector<uint8_t> body;
     };
 

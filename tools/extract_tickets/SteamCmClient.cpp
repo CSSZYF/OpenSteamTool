@@ -173,7 +173,8 @@ void SteamCmClient::UnpackMultiMsg(std::span<const uint8_t> bodySpan) {
         std::span<const uint8_t> subHdr;
         std::span<const uint8_t> subBody;
         if (UnpackSteamMsg(subPacket, subEMsg, subHdr, subBody)) {
-            LOG_TRACE("SteamCM", "  -> CMsgMulti 内部消息: eMsg {} (Body: {} 字节)", subEMsg, subBody.size());
+            int32_t subEResult = ExtractHeaderEResult(subHdr);
+            LOG_TRACE("SteamCM", "  -> CMsgMulti 内部消息: eMsg {} (EResult: {}, Body: {} 字节)", subEMsg, subEResult, subBody.size());
 
             if (subEMsg == static_cast<uint32_t>(ESteamMsg::ClientHeartBeat)) {
                 ProtoWriter hb;
@@ -181,18 +182,19 @@ void SteamCmClient::UnpackMultiMsg(std::span<const uint8_t> bodySpan) {
                 continue;
             }
 
-            m_msgQueue.push_back({subEMsg, std::vector<uint8_t>(subBody.begin(), subBody.end())});
+            m_msgQueue.push_back({subEMsg, subEResult, std::vector<uint8_t>(subBody.begin(), subBody.end())});
         }
     }
 }
 
-bool SteamCmClient::ReadMatchingMsg(uint32_t expectedEMsg, std::vector<uint8_t>& outBody, DWORD timeoutMs) {
+bool SteamCmClient::ReadMatchingMsg(uint32_t expectedEMsg, std::vector<uint8_t>& outBody, DWORD timeoutMs, int32_t* outEResult) {
     auto startTime = std::chrono::steady_clock::now();
 
     while (true) {
         // 1. Check if expected message already in queue
         for (auto it = m_msgQueue.begin(); it != m_msgQueue.end(); ++it) {
             if (it->eMsg == expectedEMsg) {
+                if (outEResult) *outEResult = it->eresult;
                 outBody = std::move(it->body);
                 m_msgQueue.erase(it);
                 return true;
@@ -220,7 +222,8 @@ bool SteamCmClient::ReadMatchingMsg(uint32_t expectedEMsg, std::vector<uint8_t>&
         std::span<const uint8_t> bodySpan;
 
         if (UnpackSteamMsg(frame, eMsg, hdrSpan, bodySpan)) {
-            LOG_TRACE("SteamCM", "收到 eMsg: {} (Body: {} 字节)", eMsg, bodySpan.size());
+            int32_t eresult = ExtractHeaderEResult(hdrSpan);
+            LOG_TRACE("SteamCM", "收到 eMsg: {} (EResult: {}, Body: {} 字节)", eMsg, eresult, bodySpan.size());
 
             // If heartbeat request from server, reply ClientHeartBeat
             if (eMsg == static_cast<uint32_t>(ESteamMsg::ClientHeartBeat)) {
@@ -234,6 +237,7 @@ bool SteamCmClient::ReadMatchingMsg(uint32_t expectedEMsg, std::vector<uint8_t>&
                 UnpackMultiMsg(bodySpan);
                 for (auto it = m_msgQueue.begin(); it != m_msgQueue.end(); ++it) {
                     if (it->eMsg == expectedEMsg) {
+                        if (outEResult) *outEResult = it->eresult;
                         outBody = std::move(it->body);
                         m_msgQueue.erase(it);
                         return true;
@@ -243,11 +247,12 @@ bool SteamCmClient::ReadMatchingMsg(uint32_t expectedEMsg, std::vector<uint8_t>&
             }
 
             if (eMsg == expectedEMsg) {
+                if (outEResult) *outEResult = eresult;
                 outBody.assign(bodySpan.begin(), bodySpan.end());
                 return true;
             }
 
-            m_msgQueue.push_back({eMsg, std::vector<uint8_t>(bodySpan.begin(), bodySpan.end())});
+            m_msgQueue.push_back({eMsg, eresult, std::vector<uint8_t>(bodySpan.begin(), bodySpan.end())});
         }
     }
 }
@@ -706,7 +711,8 @@ bool SteamCmClient::SetGamePlayed(uint32_t appId) {
 }
 
 std::string SteamCmClient::FetchManifestRequestCode(
-    uint32_t appId, uint32_t depotId, const std::string& manifestId) {
+    uint32_t appId, uint32_t depotId, const std::string& manifestId, bool* outAccessDenied) {
+    if (outAccessDenied) *outAccessDenied = false;
     if (manifestId.empty() || !IsValidManifestId(manifestId)) return "";
 
     // 0. Ensure active CM connection
@@ -721,33 +727,43 @@ std::string SteamCmClient::FetchManifestRequestCode(
     innerReq.WriteString(4, "public"); // app_branch
     innerReq.WriteString(5, ""); // branch_password
 
+    int32_t rpcResult = 0;
+    bool gotReply = false;
+
     // Track 1: Unified RPC eMsg 151 (ServiceMethodCallFromClient)
     if (m_ws.IsConnected() && m_isLoggedOn) {
         const uint64_t jobId = ++m_nextJobId;
         LOG_DEBUG("SteamCM", "向 Steam CM 发送统一 RPC 请求 ManifestRequestCode: Depot={}, Manifest={}", depotId, manifestId);
         if (SendProtoMsg(ESteamMsg::ServiceMethodCallFromClient, innerReq, jobId, "ContentServerDirectory.GetManifestRequestCode#1")) {
             std::vector<uint8_t> respBody;
-            if (ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ServiceMethodResponse), respBody, 4000) ||
-                ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ServiceMethodSendToClient), respBody, 2000)) {
-                ProtoReader respReader(respBody);
-                ProtoField field;
-                uint64_t codeVal = 0;
-                while (respReader.ReadNext(field)) {
-                    if (field.fieldNumber == 1) { // manifest_request_code
-                        codeVal = field.varintVal ? field.varintVal : field.fixed64Val;
+            if (ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ServiceMethodResponse), respBody, 4000, &rpcResult) ||
+                ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ServiceMethodSendToClient), respBody, 2000, &rpcResult)) {
+                gotReply = true;
+                if (rpcResult == 1) { // k_EResultOK
+                    ProtoReader respReader(respBody);
+                    ProtoField field;
+                    uint64_t codeVal = 0;
+                    while (respReader.ReadNext(field)) {
+                        if (field.fieldNumber == 1) { // manifest_request_code
+                            codeVal = field.varintVal ? field.varintVal : field.fixed64Val;
+                        }
                     }
-                }
-                if (codeVal != 0) {
-                    reqCode = std::to_string(codeVal);
-                    LOG_DEBUG("SteamCM", "统一 RPC eMsg 151 成功返回 manifest_request_code: {}", reqCode);
-                    return reqCode;
+                    if (codeVal != 0) {
+                        reqCode = std::to_string(codeVal);
+                        LOG_DEBUG("SteamCM", "统一 RPC eMsg 151 成功返回 manifest_request_code: {}", reqCode);
+                        return reqCode;
+                    }
+                } else if (rpcResult == 15) { // k_EResultAccessDenied
+                    LOG_DEBUG("SteamCM", "统一 RPC eMsg 151 明确返回 AccessDenied (eresult=15)，账号未拥有 Depot {} 授权", depotId);
+                    if (outAccessDenied) *outAccessDenied = true;
+                    return ""; // Short-circuit: definitively not owned, never do redundant Track 2 fallback
                 }
             }
         }
     }
 
-    // Track 2: Legacy wrapper eMsg 5594 (ClientServiceMethod) fallback
-    if (m_ws.IsConnected() && m_isLoggedOn) {
+    // Track 2: Legacy wrapper eMsg 5594 (ClientServiceMethod) fallback (only if Track 1 received no response from CM)
+    if (!gotReply && m_ws.IsConnected() && m_isLoggedOn) {
         ProtoWriter svcMsg;
         svcMsg.WriteString(1, "ContentServerDirectory.GetManifestRequestCode#1");
         svcMsg.WriteBytes(2, innerReq.Data());
@@ -756,7 +772,12 @@ std::string SteamCmClient::FetchManifestRequestCode(
         LOG_DEBUG("SteamCM", "回退尝试传统 eMsg 5594 请求 ManifestRequestCode: Depot={}, Manifest={}", depotId, manifestId);
         if (SendProtoMsg(ESteamMsg::ClientServiceMethod, svcMsg, jobId)) {
             std::vector<uint8_t> respBody;
-            if (ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientServiceMethodResponse), respBody, 4000)) {
+            int32_t legacyResult = 0;
+            if (ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientServiceMethodResponse), respBody, 4000, &legacyResult)) {
+                if (legacyResult == 15) {
+                    if (outAccessDenied) *outAccessDenied = true;
+                    return "";
+                }
                 ProtoReader respReader(respBody);
                 ProtoField field;
                 std::span<const uint8_t> innerBytes;
@@ -836,8 +857,10 @@ std::vector<std::string> SteamCmClient::GetCdnServers(uint32_t cellId) {
 }
 
 std::optional<std::string> SteamCmClient::DownloadManifestOnline(
-    uint32_t appId, uint32_t depotId, const std::string& manifestId, const std::string& destDir) {
+    uint32_t appId, uint32_t depotId, const std::string& manifestId, const std::string& destDir,
+    bool* outAccessDenied, WinHttpTransport* sharedHttp) {
 
+    if (outAccessDenied) *outAccessDenied = false;
     if (appId == 0 || depotId == 0 || !IsValidManifestId(manifestId)) {
         return std::nullopt;
     }
@@ -852,14 +875,17 @@ std::optional<std::string> SteamCmClient::DownloadManifestOnline(
         return localPath.string();
     }
 
-    std::string reqCode = FetchManifestRequestCode(appId, depotId, manifestId);
+    std::string reqCode = FetchManifestRequestCode(appId, depotId, manifestId, outAccessDenied);
     if (reqCode.empty() || reqCode == "0") {
-        LOG_WARN("SteamCM", "未能获得 manifest_request_code (Depot={}, Manifest={})", depotId, manifestId);
+        if (!outAccessDenied || !*outAccessDenied) {
+            LOG_WARN("SteamCM", "未能获得 manifest_request_code (Depot={}, Manifest={})", depotId, manifestId);
+        }
         return std::nullopt;
     }
 
     auto cdnServers = GetCdnServers(m_cellId);
-    WinHttpTransport http;
+    WinHttpTransport localHttp;
+    WinHttpTransport& http = sharedHttp ? *sharedHttp : localHttp;
     HttpResponse cdnResp;
 
     for (const auto& server : cdnServers) {
@@ -1022,6 +1048,8 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
     auto appInfoData = RequestPicsProductInfo(appId, appToken);
 
     std::vector<DepotKeyInfo> depotKeys;
+    std::unordered_set<uint32_t> unauthorizedDepots;
+
     if (appInfoData) {
         LOG_INFO("SteamCM", "获得官方 AppInfo 数据 (共 {} 个 Depot, {} 个 DLC)",
                  appInfoData->depots.size(), appInfoData->dlcAppIds.size());
@@ -1071,12 +1099,17 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
             std::cout << "  -> 正在纯云端拉取官方清单文件 (.manifest)...\n";
         }
         size_t downloadedManifests = 0;
+        WinHttpTransport sharedHttp;
+
         for (auto& dk : depotKeys) {
             if (IsValidManifestId(dk.manifestId)) {
-                auto downloaded = DownloadManifestOnline(appId, dk.depotId, dk.manifestId, outDir);
+                bool accessDenied = false;
+                auto downloaded = DownloadManifestOnline(appId, dk.depotId, dk.manifestId, outDir, &accessDenied, &sharedHttp);
                 if (downloaded) {
                     dk.manifestFilePath = *downloaded;
                     ++downloadedManifests;
+                } else if (accessDenied) {
+                    unauthorizedDepots.insert(dk.depotId);
                 }
             }
         }
@@ -1115,11 +1148,11 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
         }
     }
 
-    // 4. 纯官方云端向 Steam CM 查询全部真实 Depot 解密密钥 (严格排除无独立 Depot 的纯逻辑 DLC，防止触发 CM 风控)
+    // 4. 纯官方云端向 Steam CM 查询全部真实 Depot 解密密钥 (严格排除无独立 Depot 的纯逻辑 DLC 与已知未授权 Depot，防止触发 CM 风控)
     std::unordered_set<uint32_t> depotsNeedingKeys;
     depotsNeedingKeys.insert(appId);
     for (const auto& dk : depotKeys) {
-        if (dk.hexKey.empty()) {
+        if (dk.hexKey.empty() && !unauthorizedDepots.contains(dk.depotId)) {
             depotsNeedingKeys.insert(dk.depotId);
         }
     }

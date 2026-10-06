@@ -241,4 +241,17 @@ inline bool UnpackSteamMsg(
     return true;
 }
 
+// Extracts EResult (field 13) from CMsgProtoBufHeader
+inline int32_t ExtractHeaderEResult(std::span<const uint8_t> hdrBytes) {
+    if (hdrBytes.empty()) return 1;
+    ProtoReader r(hdrBytes);
+    ProtoField f;
+    while (r.ReadNext(f)) {
+        if (f.fieldNumber == 13) { // eresult
+            return static_cast<int32_t>(f.varintVal);
+        }
+    }
+    return 1;
+}
+
 } // namespace OST::ExtractTickets
