@@ -268,35 +268,39 @@ std::optional<std::string> QueryRegistryString(HKEY root, const char* subKey, co
 }
 
 std::optional<std::string> FindSteamInstallPath() {
-    constexpr const char* kSteamKey = "Software\\Valve\\Steam";
+    static const auto s_cachedPath = []() -> std::optional<std::string> {
+        constexpr const char* kSteamKey = "Software\\Valve\\Steam";
 
-    if (auto path = QueryRegistryString(HKEY_CURRENT_USER, kSteamKey, "SteamPath")) {
-        std::string norm = NormalizeDir(*path);
-        LOG_DEBUG("SteamPath", "Found SteamPath in HKEY_CURRENT_USER: {}", MaskPath(norm));
-        return norm;
-    }
-
-    if (auto path = QueryRegistryString(HKEY_LOCAL_MACHINE, kSteamKey, "InstallPath")) {
-        std::string norm = NormalizeDir(*path);
-        LOG_DEBUG("SteamPath", "Found InstallPath in HKEY_LOCAL_MACHINE: {}", MaskPath(norm));
-        return norm;
-    }
-
-    const wchar_t* defaultPaths[] = {
-        L"C:\\Program Files (x86)\\Steam",
-        L"C:\\Program Files\\Steam"
-    };
-    for (const wchar_t* p : defaultPaths) {
-        std::filesystem::path checkExe = std::filesystem::path(p) / L"steam.exe";
-        DWORD attr = GetFileAttributesW(checkExe.c_str());
-        if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
-            std::string norm = NormalizeDir(WideToUtf8(p));
-            LOG_DEBUG("SteamPath", "Found Steam install path at default location: {}", norm);
+        if (auto path = QueryRegistryString(HKEY_CURRENT_USER, kSteamKey, "SteamPath")) {
+            std::string norm = NormalizeDir(*path);
+            LOG_DEBUG("SteamPath", "Found SteamPath in HKEY_CURRENT_USER: {}", MaskPath(norm));
             return norm;
         }
-    }
 
-    return std::nullopt;
+        if (auto path = QueryRegistryString(HKEY_LOCAL_MACHINE, kSteamKey, "InstallPath")) {
+            std::string norm = NormalizeDir(*path);
+            LOG_DEBUG("SteamPath", "Found InstallPath in HKEY_LOCAL_MACHINE: {}", MaskPath(norm));
+            return norm;
+        }
+
+        const wchar_t* defaultPaths[] = {
+            L"C:\\Program Files (x86)\\Steam",
+            L"C:\\Program Files\\Steam"
+        };
+        for (const wchar_t* p : defaultPaths) {
+            std::filesystem::path checkExe = std::filesystem::path(p) / L"steam.exe";
+            DWORD attr = GetFileAttributesW(checkExe.c_str());
+            if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+                std::string norm = NormalizeDir(WideToUtf8(p));
+                LOG_DEBUG("SteamPath", "Found Steam install path at default location: {}", norm);
+                return norm;
+            }
+        }
+
+        return std::nullopt;
+    }();
+
+    return s_cachedPath;
 }
 
 } // namespace OST::ExtractTickets
