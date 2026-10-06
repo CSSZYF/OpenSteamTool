@@ -17,6 +17,7 @@
 
 #include <chrono>
 #include <thread>
+#include <unordered_set>
 #include <windows.h>
 
 // Prepare key runtime paths.
@@ -184,17 +185,26 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
     Log::InstallPlatformLogSink();
     SteamDiagnostics::Initialize(SteamclientPath, SteamUIPath);
 
-    std::vector<std::string> watchDirs = Config::GetLuaPaths();
-    watchDirs.push_back(std::string(LuaDir));
+    std::vector<std::string> watchDirs;
+    std::unordered_set<std::string> seenDirs;
+    auto addWatchDir = [&](const std::string& dir) {
+        if (dir.empty()) return;
+        std::string norm = OSTPlatform::Encoding::PathToUtf8(
+            OSTPlatform::Encoding::PathFromUtf8(dir).lexically_normal());
+        if (seenDirs.insert(norm).second) {
+            watchDirs.push_back(std::move(norm));
+        }
+    };
+    for (const auto& p : Config::GetLuaPaths()) {
+        addWatchDir(p);
+    }
+    addWatchDir(std::string(LuaDir));
     // In portable mode, also watch Steam's config/lua if it already exists
     if (IsPortableMode()) {
         const auto steamLuaFs = OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath) / "config" / "lua";
         std::error_code ecLua;
         if (std::filesystem::exists(steamLuaFs, ecLua) && !ecLua) {
-            std::string steamLua = OSTPlatform::Encoding::PathToUtf8(steamLuaFs);
-            if (steamLua != std::string(LuaDir)) {
-                watchDirs.push_back(std::move(steamLua));
-            }
+            addWatchDir(OSTPlatform::Encoding::PathToUtf8(steamLuaFs));
         }
     }
 

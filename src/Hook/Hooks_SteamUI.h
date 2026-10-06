@@ -2,7 +2,7 @@
 
 #include "dllmain.h"
 
-#include <span >
+#include <span>
 
 // Hooks targeting steamui.dll:
 
