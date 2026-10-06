@@ -19,6 +19,7 @@ struct AppDepotManifest {
 struct ParsedAppInfoData {
     uint32_t appId{0};
     std::string name;
+    std::string localizedName;
     std::vector<AppDepotManifest> depots;
     std::vector<uint32_t> dlcAppIds;
 };

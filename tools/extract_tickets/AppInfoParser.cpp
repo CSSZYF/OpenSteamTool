@@ -1,4 +1,5 @@
 #include "AppInfoParser.h"
+#include "I18n.h"
 #include "Log.h"
 #include "RaiiGuards.h"
 #include "Utils.h"
@@ -352,6 +353,16 @@ void ParseVdfRecurse(VdfReader& reader,
                     outData.name = std::string(val);
                     LOG_DEBUG("AppInfoParser", "解析到游戏官方名称: '{}'", outData.name);
                 }
+            } else if (pathStack.size() >= 2 && EqualIgnoreCase(pathStack.back(), "name_localized") &&
+                       EqualIgnoreCase(pathStack[pathStack.size() - 2], "common")) {
+                if (EqualIgnoreCase(key, I18n::GetSteamLanguageCode())) {
+                    outData.localizedName = std::string(val);
+                    LOG_DEBUG("AppInfoParser", "解析到匹配语言的官方本地化名称: '{}' ({})", outData.localizedName, key);
+                } else if (I18n::GetCurrentLanguage() == Language::Chinese && EqualIgnoreCase(key, "tchinese") && outData.localizedName.empty()) {
+                    outData.localizedName = std::string(val);
+                } else if (I18n::GetCurrentLanguage() == Language::Spanish && EqualIgnoreCase(key, "latam") && outData.localizedName.empty()) {
+                    outData.localizedName = std::string(val);
+                }
             }
         } else if (type == 0x02) { // Int32
             int32_t val = 0;
@@ -632,6 +643,16 @@ void ParseTextVdfRecurse(
                     outData.name = val;
                     LOG_DEBUG("AppInfoParser", "解析到游戏官方名称: '{}'", outData.name);
                 }
+            } else if (pathStack.size() >= 2 && EqualIgnoreCase(pathStack.back(), "name_localized") &&
+                       EqualIgnoreCase(pathStack[pathStack.size() - 2], "common")) {
+                if (EqualIgnoreCase(key, I18n::GetSteamLanguageCode())) {
+                    outData.localizedName = val;
+                    LOG_DEBUG("AppInfoParser", "解析到匹配语言的官方本地化名称: '{}' ({})", outData.localizedName, key);
+                } else if (I18n::GetCurrentLanguage() == Language::Chinese && EqualIgnoreCase(key, "tchinese") && outData.localizedName.empty()) {
+                    outData.localizedName = val;
+                } else if (I18n::GetCurrentLanguage() == Language::Spanish && EqualIgnoreCase(key, "latam") && outData.localizedName.empty()) {
+                    outData.localizedName = val;
+                }
             }
         }
     }
@@ -720,6 +741,9 @@ std::optional<ParsedAppInfoData> ParseAppInfoDepots(
             std::vector<std::string_view> pathStack;
             uint32_t curDepot = 0;
             ParseVdfRecurse(reader, pathStack, out, curDepot);
+            if (!out.localizedName.empty()) {
+                out.name = std::move(out.localizedName);
+            }
             return out;
         }
 
@@ -770,6 +794,9 @@ std::optional<ParsedAppInfoData> ParseBinaryVdfAppInfo(
         std::vector<std::string_view> pathStack;
         uint32_t curDepot = 0;
         ParseVdfRecurse(reader, pathStack, out, curDepot);
+    }
+    if (!out.localizedName.empty()) {
+        out.name = std::move(out.localizedName);
     }
 
     LOG_INFO("AppInfoParser", "PICS VDF 解析完成 (AppID: {}, 提取到 {} 个 Depot, {} 个 DLC)",
@@ -854,6 +881,9 @@ std::unordered_map<uint32_t, std::string> ParseAppNames(
             std::vector<std::string_view> pathStack;
             uint32_t curDepot = 0;
             ParseVdfRecurse(reader, pathStack, out, curDepot);
+            if (!out.localizedName.empty()) {
+                out.name = std::move(out.localizedName);
+            }
             if (!out.name.empty()) {
                 names[entryAppId] = std::move(out.name);
             }
