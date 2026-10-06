@@ -1,5 +1,6 @@
 #include "SteamCmClient.h"
 #include "AppInfoParser.h"
+#include "I18n.h"
 #include "JsonHelper.h"
 #include "Log.h"
 #include "TuiEngine.h"
@@ -34,7 +35,8 @@ namespace {
     std::string FetchAppNameFromStore(uint32_t appId, WinHttpTransport* httpPtr = nullptr) {
         WinHttpTransport localHttp;
         WinHttpTransport& http = httpPtr ? *httpPtr : localHttp;
-        HttpResponse resp = http.Get(std::format("https://store.steampowered.com/api/appdetails?appids={}&filters=basic", appId));
+        HttpResponse resp = http.Get(std::format("https://store.steampowered.com/api/appdetails?appids={}&filters=basic&l={}",
+                                                  appId, I18n::GetSteamLanguageCode()));
         if (!resp.IsSuccess()) return "";
         auto nameOpt = JsonHelper::GetString(resp.body, "name");
         return nameOpt.value_or("");
@@ -337,7 +339,7 @@ bool SteamCmClient::ConnectAndLogon(uint64_t steamId, std::string_view refreshTo
         ProtoWriter logonBody;
         logonBody.WriteUInt32(1, 65580);                          // protocol_version
         logonBody.WriteUInt32(3, 0);                              // cell_id
-        logonBody.WriteString(6, "schinese");                     // client_language
+        logonBody.WriteString(6, I18n::GetSteamLanguageCode());   // client_language
         logonBody.WriteUInt32(7, 16);                             // client_os_type (Windows 10/11)
         logonBody.WriteBool(8, true);                             // should_remember_password
         if (m_steamId != 0) {
@@ -605,7 +607,7 @@ std::unordered_map<uint32_t, uint64_t> SteamCmClient::RequestAppTokens(const std
             }
             if (aId > 0 && aToken > 0) {
                 tokens[aId] = aToken;
-                LOG_DEBUG("SteamCM", "获得 AppID {} 的 PICS AccessToken: {}", aId, aToken);
+                LOG_DEBUG("SteamCM", "获得 AppID {} 的 PICS AccessToken: {}", aId, MaskPicsToken(aToken));
             }
         } else if (field.fieldNumber == 4) { // app_denied_tokens (repeated)
             uint32_t deniedAppId = static_cast<uint32_t>(field.varintVal);
@@ -619,7 +621,7 @@ std::unordered_map<uint32_t, uint64_t> SteamCmClient::RequestAppTokens(const std
 std::optional<ParsedAppInfoData> SteamCmClient::RequestPicsProductInfo(uint32_t appId, uint64_t accessToken) {
     if (!EnsureConnected()) return std::nullopt;
 
-    LOG_DEBUG("SteamCM", "正在向 Steam CM 请求 PICS 产品元数据 (AppID={}, token={})...", appId, accessToken);
+    LOG_DEBUG("SteamCM", "正在向 Steam CM 请求 PICS 产品元数据 (AppID={}, token={})...", appId, MaskPicsToken(accessToken));
 
     ProtoWriter appInfoWriter;
     appInfoWriter.WriteUInt32(1, appId); // appid = 1
@@ -1103,7 +1105,7 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
         appToken = tokMap[appId];
     }
 
-    LOG_DEBUG("SteamCM", "正在向 Steam CM PICS 请求官方产品元数据 (AppID={}, token={})...", appId, appToken);
+    LOG_DEBUG("SteamCM", "正在向 Steam CM PICS 请求官方产品元数据 (AppID={}, token={})...", appId, MaskPicsToken(appToken));
     auto appInfoData = RequestPicsProductInfo(appId, appToken);
 
     std::vector<DepotKeyInfo> depotKeys;

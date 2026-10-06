@@ -55,7 +55,7 @@ namespace {
         urlComp.dwExtraInfoLength = static_cast<DWORD>(-1);
 
         if (!WinHttpCrackUrl(wideUrl.c_str(), static_cast<DWORD>(wideUrl.size()), 0, &urlComp)) {
-            LOG_WARN("WinHttp", "WinHttpCrackUrl 失败: {} (GetLastError={})", urlStr, GetLastError());
+            LOG_WARN("WinHttp", "WinHttpCrackUrl 失败: {} (GetLastError={})", MaskUrl(urlStr), GetLastError());
             return false;
         }
 

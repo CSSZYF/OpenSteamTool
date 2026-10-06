@@ -134,7 +134,7 @@ std::vector<CachedAccount> TokenStorage::LoadAccounts() {
 
     std::ifstream ifs(filePath, std::ios::binary);
     if (!ifs.is_open()) {
-        LOG_WARN("TokenStorage", "无法打开凭据缓存文件: {}", filePath.string());
+        LOG_WARN("TokenStorage", "无法打开凭据缓存文件: {}", MaskPath(filePath.string()));
         return {};
     }
 
@@ -217,7 +217,7 @@ bool TokenStorage::SaveAccounts(const std::vector<CachedAccount>& accounts) {
 
     std::ofstream ofs(filePath, std::ios::binary | std::ios::trunc);
     if (!ofs.is_open()) {
-        LOG_ERROR("TokenStorage", "无法创建凭据目标文件: {}", filePath.string());
+        LOG_ERROR("TokenStorage", "无法创建凭据目标文件: {}", MaskPath(filePath.string()));
         LocalFree(outBlob.pbData);
         return false;
     }

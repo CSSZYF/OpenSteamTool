@@ -104,6 +104,10 @@ SecureString ReadPasswordFromConsole(const char* prompt) {
         } else if (ch == 0 || ch == 0xE0) {
             // Extended keys (arrows, function keys) -> consume trailing byte
             _getch();
+        } else if (ch == 27) { // ESC
+            pwd.Clear();
+            std::cout << "\n";
+            return pwd;
         } else if (ch == 3) { // Ctrl+C
             pwd.Clear();
             std::cout << "\n[INFO] 用户中断输入。\n";

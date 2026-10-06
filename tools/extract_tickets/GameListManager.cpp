@@ -1,8 +1,10 @@
 #include "GameListManager.h"
+#include "I18n.h"
 #include "Log.h"
 
 #include <algorithm>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -121,11 +123,12 @@ bool GameListManager::ExportCsv(std::string_view accountName, std::string* outPa
     ofs.write(reinterpret_cast<const char*>(bom), sizeof(bom));
 
     // Write header
-    ofs << "序号,AppID,游戏名称\n";
+    ofs << std::format("{},{},{},{}\n", TR(MsgKey::CsvIndex), TR(MsgKey::CsvAppId), TR(MsgKey::CsvName), TR(MsgKey::CsvType));
 
     for (size_t i = 0; i < m_games.size(); ++i) {
         const auto& g = m_games[i];
-        ofs << (i + 1) << ',' << g.appId << ',' << EscapeCsv(g.name) << '\n';
+        ofs << (i + 1) << ',' << g.appId << ',' << EscapeCsv(g.name) << ','
+            << (g.isShared ? TR(MsgKey::CsvShared) : TR(MsgKey::CsvOwned)) << '\n';
     }
 
     ofs.flush();

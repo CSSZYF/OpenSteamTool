@@ -1,5 +1,6 @@
 #include "TuiEngine.h"
 #include "Crypto.h"
+#include "I18n.h"
 #include "Utils.h"
 
 #include <conio.h>
@@ -23,6 +24,25 @@ void TuiEngine::SetActive(bool active) noexcept {
     g_tuiActive = active;
 }
 
+#if defined(_WIN32)
+namespace {
+    BOOL WINAPI ConsoleCtrlHandler(DWORD fdwCtrlType) {
+        switch (fdwCtrlType) {
+            case CTRL_C_EVENT:
+            case CTRL_BREAK_EVENT:
+            case CTRL_CLOSE_EVENT:
+                if (g_tuiActive) {
+                    TuiEngine::ShowCursor(true);
+                    TuiEngine::ExitAlternateScreen();
+                }
+                return FALSE;
+            default:
+                return FALSE;
+        }
+    }
+} // namespace
+#endif
+
 void TuiEngine::EnableVirtualTerminal() {
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     if (hOut == INVALID_HANDLE_VALUE) return;
@@ -33,6 +53,15 @@ void TuiEngine::EnableVirtualTerminal() {
         SetConsoleMode(hOut, dwMode);
     }
     SetConsoleOutputCP(CP_UTF8);
+
+#if defined(_WIN32)
+    static bool handlerInstalled = false;
+    if (!handlerInstalled) {
+        SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+        handlerInstalled = true;
+    }
+    SetConsoleTitleW(L"extract_tickets");
+#endif
 }
 
 void TuiEngine::EnterAlternateScreen() {
@@ -321,12 +350,14 @@ bool TuiEngine::ShowConfirmModal(std::string_view title,
 
     auto renderButtons = [&]() {
         MoveCursor(top + modalH - 2, left + 4);
+        std::string_view btnYes = TR(MsgKey::BtnYes);
+        std::string_view btnNo = TR(MsgKey::BtnNo);
         if (selectedYes) {
-            std::cout << "\x1b[1;97;42m  [ Y: 确定 ]  \x1b[0m    \x1b[90m  [ N: 取消 ]  \x1b[0m";
+            std::cout << "\x1b[1;97;42m" << btnYes << "\x1b[0m    \x1b[90m" << btnNo << "\x1b[0m";
         } else {
-            std::cout << "\x1b[90m  [ Y: 确定 ]  \x1b[0m    \x1b[1;97;41m  [ N: 取消 ]  \x1b[0m";
+            std::cout << "\x1b[90m" << btnYes << "\x1b[0m    \x1b[1;97;41m" << btnNo << "\x1b[0m";
         }
-        size_t buttonsW = 32;
+        size_t buttonsW = GetDisplayWidth(btnYes) + GetDisplayWidth(btnNo) + 4;
         if (static_cast<size_t>(modalW - 8) > buttonsW) {
             std::cout << std::string(static_cast<size_t>(modalW - 8) - buttonsW, ' ');
         }
@@ -343,17 +374,31 @@ bool TuiEngine::ShowConfirmModal(std::string_view title,
             continue;
         }
         if (ev.code == KeyCode::Char) {
-            if (ev.ch == 'y' || ev.ch == 'Y') return true;
-            if (ev.ch == 'n' || ev.ch == 'N') return false;
+            if (ev.ch == 'y' || ev.ch == 'Y') {
+                FlushInputBuffer();
+                return true;
+            }
+            if (ev.ch == 'n' || ev.ch == 'N') {
+                FlushInputBuffer();
+                return false;
+            }
         } else if (ev.code == KeyCode::Enter) {
+            FlushInputBuffer();
             return selectedYes;
         } else if (ev.code == KeyCode::Escape) {
+            FlushInputBuffer();
             return false;
         }
     }
 }
 
-void TuiEngine::ShowMessageModal(std::string_view title,
+void TuiEngine::FlushInputBuffer() noexcept {
+    while (_kbhit()) {
+        (void)_getch();
+    }
+}
+
+bool TuiEngine::ShowMessageModal(std::string_view title,
                                  std::string_view message,
                                  std::string_view detail) {
     if (!g_tuiActive) {
@@ -363,7 +408,7 @@ void TuiEngine::ShowMessageModal(std::string_view title,
         std::cout.flush();
         std::string s;
         std::getline(std::cin, s);
-        return;
+        return true;
     }
 
     int w = 80, h = 25;
@@ -392,8 +437,9 @@ void TuiEngine::ShowMessageModal(std::string_view title,
     }
 
     MoveCursor(top + modalH - 2, left + 4);
-    std::cout << "\x1b[1;97;44m  [ 按 Enter 或 ESC 关闭 ]  \x1b[0m";
-    size_t btnW = 28;
+    std::string_view btnClose = TR(MsgKey::BtnClose);
+    std::cout << "\x1b[1;97;44m" << btnClose << "\x1b[0m";
+    size_t btnW = GetDisplayWidth(btnClose);
     if (static_cast<size_t>(modalW - 8) > btnW) {
         std::cout << std::string(static_cast<size_t>(modalW - 8) - btnW, ' ');
     }
@@ -401,8 +447,13 @@ void TuiEngine::ShowMessageModal(std::string_view title,
 
     while (true) {
         KeyEvent ev = ReadKey();
-        if (ev.code == KeyCode::Enter || ev.code == KeyCode::Escape) {
-            break;
+        if (ev.code == KeyCode::Enter) {
+            FlushInputBuffer();
+            return true;
+        }
+        if (ev.code == KeyCode::Escape) {
+            FlushInputBuffer();
+            return false;
         }
     }
 }
@@ -451,7 +502,7 @@ std::optional<std::string> TuiEngine::PromptInputModal(std::string_view title,
     std::cout << "\x1b[1;37m" << TruncateToWidth(prompt, modalW - 8) << "\x1b[0m";
 
     MoveCursor(top + modalH - 2, left + 4);
-    std::cout << "\x1b[90m[ Enter: 提交  ESC: 取消 ]\x1b[0m";
+    std::cout << "\x1b[90m" << TR(MsgKey::HintInputEnterEsc) << "\x1b[0m";
 
     std::string value{defaultValue};
     const int inputTop = top + 4;
@@ -484,6 +535,7 @@ std::optional<std::string> TuiEngine::PromptInputModal(std::string_view title,
             if (isPassword && !value.empty()) {
                 SecureZeroMemory(value.data(), value.size());
             }
+            FlushInputBuffer();
             return std::nullopt;
         }
         if (ev.code == KeyCode::Enter) {
@@ -491,6 +543,7 @@ std::optional<std::string> TuiEngine::PromptInputModal(std::string_view title,
             if (isPassword && !value.empty()) {
                 SecureZeroMemory(value.data(), value.size());
             }
+            FlushInputBuffer();
             return result;
         }
         if (ev.code == KeyCode::Backspace) {

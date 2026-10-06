@@ -1,5 +1,6 @@
 #include "SteamAuthService.h"
 #include "AppInfoParser.h"
+#include "I18n.h"
 #include "Log.h"
 #include "TuiEngine.h"
 #include "Utils.h"
@@ -10,6 +11,9 @@
 #include <sstream>
 #include <thread>
 #include <unordered_set>
+#if defined(_WIN32)
+#include <conio.h>
+#endif
 
 namespace OST::ExtractTickets {
 
@@ -90,7 +94,7 @@ std::optional<SteamAuthSession> SteamAuthService::BeginAuthSession(
     auto steamIdOpt = JsonHelper::GetUInt64(resp.body, "steamid");
 
     if (!clientIdOpt || !requestIdOpt) {
-        LOG_ERROR("SteamAuth", "认证响应缺少 client_id 或 request_id: {}", resp.body);
+        LOG_ERROR("SteamAuth", "认证响应缺少 client_id 或 request_id (HTTP {})", resp.statusCode);
         return std::nullopt;
     }
 
@@ -144,7 +148,23 @@ SteamLoginResult SteamAuthService::PollAuthSession(
     std::string url = "https://api.steampowered.com/IAuthenticationService/PollAuthSessionStatus/v1";
 
     for (int attempt = 0; attempt < maxAttempts; ++attempt) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+        constexpr int sliceMs = 50;
+        const int slices = delayMs / sliceMs;
+        for (int s = 0; s < slices; ++s) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(sliceMs));
+#if defined(_WIN32)
+            if (_kbhit()) {
+                int ch = _getch();
+                if (ch == 27) { // ESC key
+                    TuiEngine::FlushInputBuffer();
+                    result.cancelled = true;
+                    result.errorMessage = std::string(TR(MsgKey::ErrUserCancelledPoll));
+                    LOG_INFO("SteamAuth", "用户按下 ESC 取消认证轮询");
+                    return result;
+                }
+            }
+#endif
+        }
 
         HttpResponse resp = m_http.Post(url, postData, "application/x-www-form-urlencoded");
         if (!resp.IsSuccess()) {
@@ -164,7 +184,7 @@ SteamLoginResult SteamAuthService::PollAuthSession(
         }
     }
 
-    result.errorMessage = "认证轮询超时或用户取消授权";
+    result.errorMessage = std::string(TR(MsgKey::ErrAuthTimeoutOrCancelled));
     LOG_WARN("SteamAuth", "{}", result.errorMessage);
     return result;
 }
@@ -185,7 +205,7 @@ std::optional<std::string> SteamAuthService::RefreshAccessToken(
         return std::nullopt;
     }
 
-    LOG_DEBUG("SteamAuth", "GenerateAccessTokenForApp 响应 (HTTP {}): {}", resp.statusCode, resp.body);
+    LOG_DEBUG("SteamAuth", "GenerateAccessTokenForApp 响应成功 (HTTP {})", resp.statusCode);
 
     auto accessOpt = JsonHelper::GetString(resp.body, "access_token");
     if (accessOpt && !accessOpt->empty()) {
@@ -193,7 +213,7 @@ std::optional<std::string> SteamAuthService::RefreshAccessToken(
         return accessOpt;
     }
 
-    LOG_WARN("SteamAuth", "响应体中未包含 access_token: {}", resp.body);
+    LOG_WARN("SteamAuth", "响应体中未包含 access_token (HTTP {})", resp.statusCode);
     return std::nullopt;
 }
 
@@ -204,7 +224,8 @@ std::vector<OwnedGameInfo> SteamAuthService::FetchOwnedGames(
     std::string url = "https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/?access_token=" +
                       UrlEncode(accessToken) +
                       "&steamid=" + std::to_string(steamId) +
-                      "&include_appinfo=1&include_played_free_games=0";
+                      "&include_appinfo=1&include_played_free_games=0&language=" +
+                      std::string(I18n::GetSteamLanguageCode());
 
     LOG_DEBUG("SteamAuth", "正在通过官方 WebAPI 拉取拥有的游戏列表...");
     HttpResponse resp = m_http.Get(url);
@@ -236,7 +257,8 @@ std::vector<OwnedGameInfo> SteamAuthService::FetchOwnedGames(
             std::string sharedUrl = "https://api.steampowered.com/IFamilyGroupsService/GetSharedLibraryApps/v1/?access_token=" +
                                     UrlEncode(accessToken) +
                                     "&family_groupid=" + *familyGroupIdOpt +
-                                    "&include_own=false&include_non_games=false";
+                                    "&include_own=false&include_non_games=false&language=" +
+                                    std::string(I18n::GetSteamLanguageCode());
             HttpResponse sharedResp = m_http.Get(sharedUrl);
             if (sharedResp.IsSuccess()) {
                 auto sharedGames = JsonHelper::ParseSharedLibraryApps(sharedResp.body);
@@ -247,23 +269,29 @@ std::vector<OwnedGameInfo> SteamAuthService::FetchOwnedGames(
                     existing.insert(g.appId);
                 }
 
-                // Batch resolve app names from local appinfo.vdf if shared games lack names
+                // Collect all shared game AppIDs not already owned directly
+                std::unordered_set<uint32_t> sharedAppIds;
                 std::unordered_set<uint32_t> missingNameAppIds;
                 for (const auto& sg : sharedGames) {
-                    if (!existing.contains(sg.appId) && sg.name.empty()) {
-                        missingNameAppIds.insert(sg.appId);
+                    if (!existing.contains(sg.appId)) {
+                        sharedAppIds.insert(sg.appId);
+                        if (sg.name.empty()) {
+                            missingNameAppIds.insert(sg.appId);
+                        }
                     }
                 }
 
                 std::unordered_map<uint32_t, std::string> resolvedNames;
-                if (!missingNameAppIds.empty()) {
+                if (!sharedAppIds.empty()) {
                     auto steamPathOpt = FindSteamInstallPath();
                     if (steamPathOpt && !steamPathOpt->empty()) {
-                        resolvedNames = ParseAppNames(*steamPathOpt, missingNameAppIds);
+                        // Fast local appinfo.vdf lookup (<1ms) prioritizing name_localized for all shared games
+                        resolvedNames = ParseAppNames(*steamPathOpt, sharedAppIds);
                     }
                     for (uint32_t mId : missingNameAppIds) {
                         if (!resolvedNames.contains(mId) || resolvedNames[mId].empty()) {
-                            std::string storeUrl = std::format("https://store.steampowered.com/api/appdetails?appids={}&filters=basic", mId);
+                            std::string storeUrl = std::format("https://store.steampowered.com/api/appdetails?appids={}&filters=basic&l={}",
+                                                               mId, I18n::GetSteamLanguageCode());
                             HttpResponse sResp = m_http.Get(storeUrl);
                             if (sResp.IsSuccess()) {
                                 auto nameOpt = JsonHelper::GetString(sResp.body, "name");
@@ -278,15 +306,13 @@ std::vector<OwnedGameInfo> SteamAuthService::FetchOwnedGames(
                 for (auto& sg : sharedGames) {
                     if (!existing.contains(sg.appId)) {
                         existing.insert(sg.appId);
-                        if (sg.name.empty()) {
-                            auto it = resolvedNames.find(sg.appId);
-                            if (it != resolvedNames.end() && !it->second.empty()) {
-                                sg.name = it->second;
-                            } else {
-                                sg.name = "App " + std::to_string(sg.appId);
-                            }
+                        auto it = resolvedNames.find(sg.appId);
+                        if (it != resolvedNames.end() && !it->second.empty()) {
+                            sg.name = it->second;
+                        } else if (sg.name.empty()) {
+                            sg.name = "App " + std::to_string(sg.appId);
                         }
-                        sg.name = "[共享] " + sg.name;
+                        sg.isShared = true;
                         games.push_back(std::move(sg));
                     }
                 }
@@ -308,47 +334,68 @@ SteamLoginResult SteamAuthService::LoginWithCredentials(
 
     auto rsaKey = GetPasswordRsaKey(accountName);
     if (!rsaKey) {
-        failResult.errorMessage = "无法从 Steam 服务器获取安全 RSA 公钥";
+        failResult.errorMessage = std::string(TR(MsgKey::ErrRsaKeyFailed));
         LOG_WARN("SteamAuth", "{}", failResult.errorMessage);
         return failResult;
     }
 
     auto session = BeginAuthSession(accountName, password, *rsaKey);
     if (!session) {
-        failResult.errorMessage = "发起认证会话失败，请检查账号密码是否正确";
+        failResult.errorMessage = std::string(TR(MsgKey::ErrAuthSessionFailed));
         LOG_WARN("SteamAuth", "{}", failResult.errorMessage);
         return failResult;
     }
 
     for (const auto& conf : session->allowedConfirmations) {
-        LOG_INFO("SteamAuth", "检测到需要二次验证: type={}, message={}", conf.type, conf.associatedMessage);
+        LOG_INFO("SteamAuth", "检测到需要二次验证: type={}, message={}", conf.type,
+                 conf.type == 2 ? MaskEmail(conf.associatedMessage) : conf.associatedMessage);
         if (conf.type == 3) { // k_EAuthSessionGuardType_DeviceCode (Steam Mobile Authenticator TOTP)
             TuiEngine::ClearScreen();
-            auto codeOpt = TuiEngine::PromptInputModal("Steam Guard 手机令牌", "账号已启用手机令牌，请输入手机 App 上的 5 位动态验证码 (TOTP):");
-            if (codeOpt && !codeOpt->empty()) {
+            auto codeOpt = TuiEngine::PromptInputModal(TR(MsgKey::GuardMobileTitle), TR(MsgKey::GuardMobilePrompt));
+            if (!codeOpt) {
+                failResult.cancelled = true;
+                failResult.errorMessage = std::string(TR(MsgKey::ErrUserCancelledInput));
+                LOG_INFO("SteamAuth", "用户在 2FA 手机令牌界面按 ESC 取消登录");
+                return failResult;
+            }
+            if (!codeOpt->empty()) {
                 SubmitSteamGuardCode(*session, *codeOpt, 3);
             }
             break;
         } else if (conf.type == 2) { // k_EAuthSessionGuardType_EmailCode (Steam Guard Email Code)
             TuiEngine::ClearScreen();
             std::string prompt = conf.associatedMessage.empty()
-                ? "验证码已发送至您的注册邮箱，请输入邮件中的验证码:"
-                : std::format("验证码已发送至邮箱 ({})，请输入邮件中的验证码:", conf.associatedMessage);
-            auto codeOpt = TuiEngine::PromptInputModal("Steam Guard 邮箱验证码", prompt);
-            if (codeOpt && !codeOpt->empty()) {
+                ? std::string(TR(MsgKey::GuardEmailTitle))
+                : TR_FMT(MsgKey::GuardEmailPrompt, MaskEmail(conf.associatedMessage));
+            auto codeOpt = TuiEngine::PromptInputModal(TR(MsgKey::GuardEmailTitle), prompt);
+            if (!codeOpt) {
+                failResult.cancelled = true;
+                failResult.errorMessage = std::string(TR(MsgKey::ErrUserCancelledInput));
+                LOG_INFO("SteamAuth", "用户在邮箱验证码界面按 ESC 取消登录");
+                return failResult;
+            }
+            if (!codeOpt->empty()) {
                 SubmitSteamGuardCode(*session, *codeOpt, 2);
             }
             break;
         } else if (conf.type == 4) { // k_EAuthSessionGuardType_DeviceConfirmation (Steam App 1-tap)
             TuiEngine::ClearScreen();
-            TuiEngine::ShowMessageModal("Steam 手机确认", "请在手机 Steam App 上点击【确认登录】", "确认通过后按 Enter 键继续...");
+            bool proceed = TuiEngine::ShowMessageModal(TR(MsgKey::GuardDeviceTitle), TR(MsgKey::GuardDevicePrompt), TR(MsgKey::GuardDeviceDetail));
+            if (!proceed) {
+                failResult.cancelled = true;
+                failResult.errorMessage = std::string(TR(MsgKey::ErrUserCancelledDevice));
+                LOG_INFO("SteamAuth", "用户在手机确认提示界面按 ESC 取消登录");
+                return failResult;
+            }
             break;
         }
     }
 
     auto result = PollAuthSession(*session, accountName);
     if (!result.success) {
-        LOG_WARN("SteamAuth", "{}", result.errorMessage);
+        if (!result.cancelled) {
+            LOG_WARN("SteamAuth", "{}", result.errorMessage);
+        }
         return result;
     }
 
@@ -364,11 +411,12 @@ SteamLoginResult SteamAuthService::LoginWithCredentials(
 }
 
 SteamLoginResult SteamAuthService::InteractiveLogin(std::string_view accountName) {
-    SecureString password = ReadPasswordFromConsole("请输入 Steam 登录密码: ");
+    SecureString password = ReadPasswordFromConsole("Password: ");
     if (password.Empty()) {
         SteamLoginResult fail;
         fail.accountName = accountName;
-        fail.errorMessage = "密码不能为空";
+        fail.cancelled = true;
+        fail.errorMessage = std::string(TR(MsgKey::ErrUserCancelledPwd));
         return fail;
     }
     return LoginWithCredentials(accountName, password);

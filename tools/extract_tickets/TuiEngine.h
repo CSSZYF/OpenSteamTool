@@ -65,10 +65,12 @@ public:
                                 std::string_view detail = "",
                                 bool defaultYes = false);
 
-    // Modal message alert dialog (waits for Enter or ESC)
-    static void ShowMessageModal(std::string_view title,
-                                std::string_view message,
-                                std::string_view detail = "");
+    // Modal message alert dialog (returns true for Enter, false for ESC)
+    static bool ShowMessageModal(std::string_view title,
+                                 std::string_view message,
+                                 std::string_view detail = "");
+
+    static void FlushInputBuffer() noexcept;
 
     // Modal text/password input dialog (returns std::nullopt if cancelled via ESC)
     static std::optional<std::string> PromptInputModal(std::string_view title,
