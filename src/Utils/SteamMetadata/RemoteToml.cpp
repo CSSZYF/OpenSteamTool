@@ -92,10 +92,46 @@ namespace {
         return body;
     }
 
+    struct CacheValidator {
+        std::string url;
+        std::string etag;
+    };
+
+    static bool IsUsableEtag(std::string_view etag)
+    {
+        return !etag.empty() && etag.find_first_of("\r\n") == std::string_view::npos;
+    }
+
+    static CacheValidator ReadValidator(const std::filesystem::path& path)
+    {
+        CacheValidator validator;
+        const std::string body = ReadNonEmptyFile(path);
+        const size_t split = body.find('\n');
+        if (split == std::string::npos)
+            return validator;
+
+        validator.url = body.substr(0, split);
+        size_t etagEnd = body.find('\n', split + 1);
+        if (etagEnd == std::string::npos)
+            etagEnd = body.size();
+        validator.etag = body.substr(split + 1, etagEnd - split - 1);
+
+        if (!validator.url.empty() && validator.url.back() == '\r')
+            validator.url.pop_back();
+        if (!validator.etag.empty() && validator.etag.back() == '\r')
+            validator.etag.pop_back();
+
+        if (validator.url.empty() || !IsUsableEtag(validator.etag))
+            return {};
+        return validator;
+    }
+
     struct CachePaths {
         std::filesystem::path cacheDir;
         std::filesystem::path cachePath;
         std::filesystem::path localPath;
+        std::filesystem::path validatorPath;
+        std::filesystem::path localValidatorPath;
     };
 
     struct PendingRefresh {
@@ -120,6 +156,8 @@ namespace {
         paths.cacheDir = baseDir / "opensteamtool" / request.channel / request.component;
         paths.cachePath = paths.cacheDir / (std::string(sha256) + ".toml");
         paths.localPath = paths.cachePath;
+        paths.validatorPath = paths.cacheDir / (std::string(sha256) + ".etag");
+        paths.localValidatorPath = paths.validatorPath;
 
         std::error_code ec;
         if ((!fs::exists(paths.localPath, ec) || ec) && IsPortableMode()) {
@@ -127,8 +165,11 @@ namespace {
             const fs::path steamCachePath =
                 steamRoot / "opensteamtool" / request.channel / request.component /
                 (std::string(sha256) + ".toml");
-            if (fs::exists(steamCachePath, ec) && !ec)
+            if (fs::exists(steamCachePath, ec) && !ec) {
                 paths.localPath = steamCachePath;
+                paths.localValidatorPath = steamCachePath.parent_path() /
+                    (std::string(sha256) + ".etag");
+            }
         }
         return paths;
     }
@@ -162,7 +203,7 @@ namespace {
             if (outLastUrl)
                 *outLastUrl = url;
 
-            LOG_INFO("RemoteToml({}/{}): downloading {}",
+            LOG_INFO("RemoteToml({}/{}): requesting {}",
                      request.channel, request.component, url);
 
             http = OSTPlatform::Http::Execute(L"GET", url.c_str(),
@@ -235,6 +276,34 @@ namespace {
         fs::remove(tempPath, rmEc);
         return false;
     }
+
+    static bool WriteValidator(const std::filesystem::path& path,
+                               std::string_view url,
+                               std::string_view etag)
+    {
+        if (url.empty() || !IsUsableEtag(etag))
+            return false;
+
+        std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
+        if (!ofs)
+            return false;
+        ofs << url << '\n' << etag << '\n';
+        return ofs.good();
+    }
+
+    static void RemoveFileBestEffort(const std::filesystem::path& path)
+    {
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+
+    static std::string CanonicalUrl(const Request& request, std::string_view sha256)
+    {
+        const std::vector<std::string> urlTemplates = BuildUrlTemplates();
+        if (urlTemplates.empty())
+            return {};
+        return ExpandTemplate(urlTemplates.front(), request, sha256);
+    }
 } // namespace
 
 Result Fetch(const Request& request)
@@ -281,6 +350,14 @@ Result Fetch(const Request& request)
         if (WriteCacheAtomically(paths, out.sha256, http.body)) {
             LOG_INFO("RemoteToml({}/{}): cached to {}",
                      request.channel, request.component, PathToUtf8(paths.cachePath));
+
+            const std::string canonicalUrl = CanonicalUrl(request, out.sha256);
+            if (lastUrl == canonicalUrl && IsUsableEtag(http.etag)) {
+                if (!WriteValidator(paths.validatorPath, lastUrl, http.etag))
+                    RemoveFileBestEffort(paths.validatorPath);
+            } else {
+                RemoveFileBestEffort(paths.validatorPath);
+            }
         }
         out.body = std::move(http.body);
         out.ok = true;
@@ -306,8 +383,37 @@ void RefreshQueuedCaches()
 
     for (const auto& item : pending) {
         const CachePaths paths = ResolveCachePaths(item.request, item.sha256);
-        OSTPlatform::Http::Result http =
-            FetchRemote(item.request, item.sha256, false, nullptr);
+        const std::string canonicalUrl = CanonicalUrl(item.request, item.sha256);
+        if (canonicalUrl.empty()) {
+            LOG_INFO("RemoteToml({}/{}): background refresh disabled; keeping cache {}",
+                     item.request.channel, item.request.component,
+                     PathToUtf8(paths.localPath));
+            continue;
+        }
+
+        const CacheValidator validator = ReadValidator(paths.localValidatorPath);
+        const bool hasValidator = validator.url == canonicalUrl &&
+                                  IsUsableEtag(validator.etag);
+
+        std::wstring requestHeaders;
+        if (hasValidator) {
+            requestHeaders = L"If-None-Match: ";
+            requestHeaders += OSTPlatform::Encoding::Utf8ToWide(validator.etag);
+            requestHeaders += L"\r\n";
+        }
+
+        LOG_INFO("RemoteToml({}/{}): validating {}{}",
+                 item.request.channel, item.request.component, canonicalUrl,
+                 hasValidator ? " with ETag" : "");
+        OSTPlatform::Http::Result http = OSTPlatform::Http::Execute(
+            L"GET", canonicalUrl.c_str(), nullptr, 0,
+            hasValidator ? requestHeaders.c_str() : nullptr);
+
+        if (http.ok && http.status == 304 && hasValidator) {
+            LOG_DEBUG("RemoteToml({}/{}): cache validator matched; remote metadata unchanged",
+                      item.request.channel, item.request.component);
+            continue;
+        }
 
         if (!http.ok || http.status != 200 || http.body.empty()) {
             LOG_INFO("RemoteToml({}/{}): background refresh unavailable; keeping cache {}",
@@ -317,16 +423,33 @@ void RefreshQueuedCaches()
         }
 
         const std::string cachedBody = ReadNonEmptyFile(paths.localPath);
+        std::filesystem::path validatorTarget = paths.localValidatorPath;
         if (http.body == cachedBody) {
             LOG_DEBUG("RemoteToml({}/{}): cache already current",
                       item.request.channel, item.request.component);
-            continue;
-        }
-
-        if (WriteCacheAtomically(paths, item.sha256, http.body)) {
+        } else if (WriteCacheAtomically(paths, item.sha256, http.body)) {
             LOG_INFO("RemoteToml({}/{}): refreshed cache {}; update applies next startup",
                      item.request.channel, item.request.component,
                      PathToUtf8(paths.cachePath));
+            validatorTarget = paths.validatorPath;
+        } else {
+            continue;
+        }
+
+        if (IsUsableEtag(http.etag)) {
+            if (!WriteValidator(validatorTarget, canonicalUrl, http.etag)) {
+                RemoveFileBestEffort(validatorTarget);
+            } else if (validatorTarget == paths.validatorPath &&
+                       paths.localValidatorPath != paths.validatorPath) {
+                RemoveFileBestEffort(paths.localValidatorPath);
+            } else if (validatorTarget == paths.localValidatorPath &&
+                       paths.validatorPath != paths.localValidatorPath) {
+                RemoveFileBestEffort(paths.validatorPath);
+            }
+        } else {
+            RemoveFileBestEffort(paths.localValidatorPath);
+            if (paths.validatorPath != paths.localValidatorPath)
+                RemoveFileBestEffort(paths.validatorPath);
         }
     }
 }

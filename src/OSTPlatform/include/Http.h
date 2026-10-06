@@ -7,6 +7,7 @@ namespace OSTPlatform::Http {
 
     struct Result {
         std::string body;
+        std::string etag;
         uint32_t status = 0;
         // True once WinHTTP produced a response; callers must still check status for 2xx.
         bool ok = false;

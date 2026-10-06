@@ -21,9 +21,10 @@ namespace RemoteToml {
     // startup path once a matching SHA has been cached.
     Result Fetch(const Request& request);
 
-    // Best-effort refresh for cache entries that were served by Fetch() during
-    // this startup. Call only after critical initialization is complete; updated
-    // metadata is written atomically for the next launch and is not hot-reloaded.
+    // Best-effort conditional refresh for cache entries that were served by Fetch()
+    // during this startup. Call only after critical initialization is complete;
+    // ETag validators avoid unchanged response bodies, while updated metadata is
+    // written atomically for the next launch and is not hot-reloaded.
     void RefreshQueuedCaches();
 
 } // namespace RemoteToml

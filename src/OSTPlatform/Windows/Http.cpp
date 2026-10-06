@@ -62,6 +62,36 @@ ParsedUrl ParseUrl(const char* rawUrl) {
     return out;
 }
 
+std::string QueryStringHeader(HINTERNET request, DWORD query) {
+    DWORD size = 0;
+    if (WinHttpQueryHeaders(
+            request,
+            query,
+            WINHTTP_HEADER_NAME_BY_INDEX,
+            WINHTTP_NO_OUTPUT_BUFFER,
+            &size,
+            WINHTTP_NO_HEADER_INDEX)) {
+        return {};
+    }
+
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || size < sizeof(wchar_t))
+        return {};
+
+    std::wstring value(size / sizeof(wchar_t), L'\0');
+    if (!WinHttpQueryHeaders(
+            request,
+            query,
+            WINHTTP_HEADER_NAME_BY_INDEX,
+            value.data(),
+            &size,
+            WINHTTP_NO_HEADER_INDEX)) {
+        return {};
+    }
+
+    value.resize(wcslen(value.c_str()));
+    return Encoding::WideToUtf8(value);
+}
+
 } // namespace
 
 Result Execute(const wchar_t* method,
@@ -167,6 +197,8 @@ Result Execute(const wchar_t* method,
             OSTP_LOG_WARN("{} - WinHttpQueryHeaders(status) failed (error={})", url ? url : "", GetLastError());
         }
 
+        r.etag = QueryStringHeader(hRequest.get(), WINHTTP_QUERY_ETAG);
+
         DWORD avail = 0;
         while (true) {
             if (!WinHttpQueryDataAvailable(hRequest.get(), &avail)) {
@@ -192,7 +224,10 @@ Result Execute(const wchar_t* method,
             }
         }
 
-        if (r.status < 200 || r.status >= 300) {
+        if (r.status == 304) {
+            OSTP_LOG_TRACE("{} - not modified (etag={})",
+                           url ? url : "", r.etag);
+        } else if (r.status < 200 || r.status >= 300) {
             OSTP_LOG_WARN("{} - unexpected HTTP {}  body={}",
                              url ? url : "",
                              r.status,
