@@ -25,6 +25,7 @@ enum class MsgKey : size_t {
     LuaBaseManifests,
     LuaManifestMissing,
     LuaOwnedDlcs,
+    LuaDlcDepotMissing,
     LuaDlcManifests,
     LuaAppTicket,
     LuaAppTicketMissing,
@@ -209,6 +210,11 @@ inline constexpr std::array<std::array<std::string_view, kLanguageCount>, kMsgKe
         "-- Owned DLCs",
         "-- 已拥有 DLC 内容",
         "-- DLCs Adquiridos"
+    },
+    /* LuaDlcDepotMissing */ {
+        "[Depot key or manifest missing; commented out to avoid download failure]",
+        "[未获取到该 DLC 对应 Depot 的密钥或清单，已注释以避免客户端下载失败]",
+        "[Falta la clave o manifiesto del Depot; comentado para evitar errores de descarga]"
     },
     /* LuaDlcManifests */ {
         "-- DLC Manifests",

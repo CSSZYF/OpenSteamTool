@@ -502,12 +502,21 @@ std::optional<std::vector<uint8_t>> SteamCmClient::RequestEncryptedAppTicket(uin
         if (field.fieldNumber == 2) { // eresult
             eresult = static_cast<int32_t>(field.varintVal);
         } else if (field.fieldNumber == 3) { // encrypted_app_ticket submessage
+            // The Steamworks SDK API (ISteamUser::GetEncryptedAppTicket / SteamEncryptedAppTicket_BDecryptTicket)
+            // expects the entire serialized EncryptedAppTicket container (ticket_version_no, crc,
+            // cb_encrypteduserdata, cb_encrypted_appownershipticket, and encrypted_ticket), matching
+            // the exact binary format delivered by genuine Steam Client IPC.
             ProtoReader subReader(field.bytesVal);
             ProtoField subField;
+            bool hasEncryptedTicket = false;
             while (subReader.ReadNext(subField)) {
-                if (subField.fieldNumber == 5) { // encrypted_ticket bytes
-                    ticket.assign(subField.bytesVal.begin(), subField.bytesVal.end());
+                if (subField.fieldNumber == 5 && !subField.bytesVal.empty()) {
+                    hasEncryptedTicket = true;
+                    break;
                 }
+            }
+            if (hasEncryptedTicket) {
+                ticket.assign(field.bytesVal.begin(), field.bytesVal.end());
             }
         }
     }
