@@ -257,7 +257,8 @@ std::vector<OwnedGameInfo> SteamAuthService::FetchOwnedGames(
             std::string sharedUrl = "https://api.steampowered.com/IFamilyGroupsService/GetSharedLibraryApps/v1/?access_token=" +
                                     UrlEncode(accessToken) +
                                     "&family_groupid=" + *familyGroupIdOpt +
-                                    "&include_own=false&include_non_games=false";
+                                    "&include_own=false&include_non_games=false&language=" +
+                                    std::string(I18n::GetSteamLanguageCode());
             HttpResponse sharedResp = m_http.Get(sharedUrl);
             if (sharedResp.IsSuccess()) {
                 auto sharedGames = JsonHelper::ParseSharedLibraryApps(sharedResp.body);
@@ -268,19 +269,24 @@ std::vector<OwnedGameInfo> SteamAuthService::FetchOwnedGames(
                     existing.insert(g.appId);
                 }
 
-                // Batch resolve app names from local appinfo.vdf if shared games lack names
+                // Collect all shared game AppIDs not already owned directly
+                std::unordered_set<uint32_t> sharedAppIds;
                 std::unordered_set<uint32_t> missingNameAppIds;
                 for (const auto& sg : sharedGames) {
-                    if (!existing.contains(sg.appId) && sg.name.empty()) {
-                        missingNameAppIds.insert(sg.appId);
+                    if (!existing.contains(sg.appId)) {
+                        sharedAppIds.insert(sg.appId);
+                        if (sg.name.empty()) {
+                            missingNameAppIds.insert(sg.appId);
+                        }
                     }
                 }
 
                 std::unordered_map<uint32_t, std::string> resolvedNames;
-                if (!missingNameAppIds.empty()) {
+                if (!sharedAppIds.empty()) {
                     auto steamPathOpt = FindSteamInstallPath();
                     if (steamPathOpt && !steamPathOpt->empty()) {
-                        resolvedNames = ParseAppNames(*steamPathOpt, missingNameAppIds);
+                        // Fast local appinfo.vdf lookup (<1ms) prioritizing name_localized for all shared games
+                        resolvedNames = ParseAppNames(*steamPathOpt, sharedAppIds);
                     }
                     for (uint32_t mId : missingNameAppIds) {
                         if (!resolvedNames.contains(mId) || resolvedNames[mId].empty()) {
@@ -300,13 +306,11 @@ std::vector<OwnedGameInfo> SteamAuthService::FetchOwnedGames(
                 for (auto& sg : sharedGames) {
                     if (!existing.contains(sg.appId)) {
                         existing.insert(sg.appId);
-                        if (sg.name.empty()) {
-                            auto it = resolvedNames.find(sg.appId);
-                            if (it != resolvedNames.end() && !it->second.empty()) {
-                                sg.name = it->second;
-                            } else {
-                                sg.name = "App " + std::to_string(sg.appId);
-                            }
+                        auto it = resolvedNames.find(sg.appId);
+                        if (it != resolvedNames.end() && !it->second.empty()) {
+                            sg.name = it->second;
+                        } else if (sg.name.empty()) {
+                            sg.name = "App " + std::to_string(sg.appId);
                         }
                         sg.isShared = true;
                         games.push_back(std::move(sg));
