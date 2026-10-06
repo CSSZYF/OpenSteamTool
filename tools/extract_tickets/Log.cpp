@@ -12,10 +12,12 @@
 
 namespace OST::ExtractTickets {
 
+#if EXTRACT_TICKETS_HAS_LOGGING
 namespace {
     std::mutex g_logMutex;
     std::ofstream g_logFile;
     bool g_loggingInitialized = false;
+
 
     std::string GetTimestampString() {
         const auto now = std::chrono::system_clock::now();
@@ -82,6 +84,7 @@ namespace {
         return result;
     }
 } // namespace
+#endif // EXTRACT_TICKETS_HAS_LOGGING
 
 std::string MaskAccount(std::string_view account) {
     if (account.empty()) return "***";
@@ -245,6 +248,8 @@ std::string MaskUrl(std::string_view url) {
     return s;
 }
 
+#if EXTRACT_TICKETS_HAS_LOGGING
+
 void InitLogging(const std::string& logFileName) {
     std::lock_guard<std::mutex> lock(g_logMutex);
     if (!g_loggingInitialized) {
@@ -299,4 +304,7 @@ void LogMessage(LogLevel level, std::string_view tag, std::string_view message) 
     }
 }
 
+#endif // EXTRACT_TICKETS_HAS_LOGGING
+
 } // namespace OST::ExtractTickets
+
