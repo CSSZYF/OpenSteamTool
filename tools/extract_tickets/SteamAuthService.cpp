@@ -224,7 +224,8 @@ std::vector<OwnedGameInfo> SteamAuthService::FetchOwnedGames(
     std::string url = "https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/?access_token=" +
                       UrlEncode(accessToken) +
                       "&steamid=" + std::to_string(steamId) +
-                      "&include_appinfo=1&include_played_free_games=0";
+                      "&include_appinfo=1&include_played_free_games=0&language=" +
+                      std::string(I18n::GetSteamLanguageCode());
 
     LOG_DEBUG("SteamAuth", "正在通过官方 WebAPI 拉取拥有的游戏列表...");
     HttpResponse resp = m_http.Get(url);
@@ -283,7 +284,8 @@ std::vector<OwnedGameInfo> SteamAuthService::FetchOwnedGames(
                     }
                     for (uint32_t mId : missingNameAppIds) {
                         if (!resolvedNames.contains(mId) || resolvedNames[mId].empty()) {
-                            std::string storeUrl = std::format("https://store.steampowered.com/api/appdetails?appids={}&filters=basic", mId);
+                            std::string storeUrl = std::format("https://store.steampowered.com/api/appdetails?appids={}&filters=basic&l={}",
+                                                               mId, I18n::GetSteamLanguageCode());
                             HttpResponse sResp = m_http.Get(storeUrl);
                             if (sResp.IsSuccess()) {
                                 auto nameOpt = JsonHelper::GetString(sResp.body, "name");

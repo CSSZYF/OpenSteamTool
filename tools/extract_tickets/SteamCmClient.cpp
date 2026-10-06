@@ -35,7 +35,8 @@ namespace {
     std::string FetchAppNameFromStore(uint32_t appId, WinHttpTransport* httpPtr = nullptr) {
         WinHttpTransport localHttp;
         WinHttpTransport& http = httpPtr ? *httpPtr : localHttp;
-        HttpResponse resp = http.Get(std::format("https://store.steampowered.com/api/appdetails?appids={}&filters=basic", appId));
+        HttpResponse resp = http.Get(std::format("https://store.steampowered.com/api/appdetails?appids={}&filters=basic&l={}",
+                                                  appId, I18n::GetSteamLanguageCode()));
         if (!resp.IsSuccess()) return "";
         auto nameOpt = JsonHelper::GetString(resp.body, "name");
         return nameOpt.value_or("");
