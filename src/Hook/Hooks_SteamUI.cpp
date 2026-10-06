@@ -817,7 +817,7 @@ namespace
 
             if (!drainingAdditions.empty())
             {
-                std::vector<AppId_t> parentsToNotify;
+                std::unordered_set<AppId_t> parentsToNotify;
 
                 for (AppId_t appId : drainingAdditions)
                 {
@@ -839,17 +839,16 @@ namespace
                         {
                             if (pApp->ParentAppID != 0 && pApp->ParentAppID != k_uAppIdInvalid && pApp->ParentAppID != appId)
                             {
-                                if (std::ranges::find(parentsToNotify, pApp->ParentAppID) == parentsToNotify.end())
-                                {
-                                    parentsToNotify.push_back(pApp->ParentAppID);
-                                }
+                                parentsToNotify.insert(pApp->ParentAppID);
                             }
                         }
                     }
 
-                    LOG_STEAMUI_INFO("RunFrame: restoring added appId {}", appId);
+                    LOG_STEAMUI_TRACE("RunFrame: restoring added appId {}", appId);
                     oMarkAppChange(g_pAppChangeSource, appId, EAppChangeFlags::AppInfoOrConfig);
                 }
+
+                LOG_STEAMUI_DEBUG("RunFrame: restored {} pending Lua additions to SteamUI", drainingAdditions.size());
 
                 for (AppId_t parentId : parentsToNotify)
                 {
@@ -860,7 +859,7 @@ namespace
 
             if (!drainingRemovals.empty())
             {
-                std::vector<AppId_t> parentsToNotify;
+                std::unordered_set<AppId_t> parentsToNotify;
 
                 for (AppId_t appId : drainingRemovals)
                 {
@@ -886,10 +885,7 @@ namespace
                         {
                             if (pApp->ParentAppID != 0 && pApp->ParentAppID != k_uAppIdInvalid && pApp->ParentAppID != appId)
                             {
-                                if (std::ranges::find(parentsToNotify, pApp->ParentAppID) == parentsToNotify.end())
-                                {
-                                    parentsToNotify.push_back(pApp->ParentAppID);
-                                }
+                                parentsToNotify.insert(pApp->ParentAppID);
                             }
                         }
                     }
@@ -1014,6 +1010,27 @@ namespace Hooks_SteamUI
         if (std::ranges::find(g_pendingAdditions, appId) == g_pendingAdditions.end()) {
             g_pendingAdditions.push_back(appId);
         }
+    }
+
+    void QueueAdditions(std::span<const AppId_t> appIds)
+    {
+        if (appIds.empty()) return;
+        std::lock_guard<std::mutex> lock(g_removalMutex);
+        if (g_pendingAdditions.empty()) {
+            g_pendingAdditions.assign(appIds.begin(), appIds.end());
+        } else {
+            std::unordered_set<AppId_t> existing(g_pendingAdditions.begin(), g_pendingAdditions.end());
+            for (AppId_t id : appIds) {
+                if (existing.insert(id).second) {
+                    g_pendingAdditions.push_back(id);
+                }
+            }
+        }
+        for (AppId_t id : appIds) {
+            std::erase(g_pendingRemovals, id);
+            g_removedAppIds.erase(id);
+        }
+        g_hasRemovedAppIds.store(!g_removedAppIds.empty(), std::memory_order_release);
     }
 
     bool IsRemoved(AppId_t appId)

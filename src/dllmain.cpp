@@ -184,6 +184,32 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
     Log::InstallPlatformLogSink();
     SteamDiagnostics::Initialize(SteamclientPath, SteamUIPath);
 
+    std::vector<std::string> watchDirs = Config::GetLuaPaths();
+    watchDirs.push_back(std::string(LuaDir));
+    // In portable mode, also watch Steam's config/lua if it already exists
+    if (IsPortableMode()) {
+        const auto steamLuaFs = OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath) / "config" / "lua";
+        std::error_code ecLua;
+        if (std::filesystem::exists(steamLuaFs, ecLua) && !ecLua) {
+            std::string steamLua = OSTPlatform::Encoding::PathToUtf8(steamLuaFs);
+            if (steamLua != std::string(LuaDir)) {
+                watchDirs.push_back(std::move(steamLua));
+            }
+        }
+    }
+
+    // Pre-parse Lua directory in Phase 0 (before PatternLoader / hooks),
+    // ensuring Lua configuration is immutable and ready before any UI overview generation.
+    try {
+        for (const auto& dir : watchDirs) {
+            LuaConfig::ParseDirectory(dir);
+        }
+    } catch (const std::exception& ex) {
+        LOG_ERROR("LuaConfig::ParseDirectory exception in Phase 0: {}", ex.what());
+    } catch (...) {
+        LOG_ERROR("LuaConfig::ParseDirectory unknown exception in Phase 0");
+    }
+
     // Load pattern files for steamclient64.dll and steamui.dll.
     // Each call computes the SHA-256 of the DLL on disk, checks the local
     // cache, and downloads from GitHub if needed.  Both calls are synchronous
@@ -200,20 +226,6 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
     // IPC method metadata (funcHash, fencepost, argc, ...)
     IPCLoader::Load(SteamclientPath);
 
-    std::vector<std::string> watchDirs = Config::GetLuaPaths();
-    watchDirs.push_back(std::string(LuaDir));
-    // In portable mode, also watch Steam's config/lua if it already exists
-    if (IsPortableMode()) {
-        const auto steamLuaFs = OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath) / "config" / "lua";
-        std::error_code ecLua;
-        if (std::filesystem::exists(steamLuaFs, ecLua) && !ecLua) {
-            std::string steamLua = OSTPlatform::Encoding::PathToUtf8(steamLuaFs);
-            if (steamLua != std::string(LuaDir)) {
-                watchDirs.push_back(std::move(steamLua));
-            }
-        }
-    }
-
     // Wire up lower-layer callbacks to hook notifications (IoC decoupling)
     ConfigFileWatcher::SetLicenseChangedCallback(&Hooks_Package::NotifyLicenseChanged);
     LuaFileWatcher::SetLicenseChangedCallback(&Hooks_Package::NotifyLicenseChanged);
@@ -223,24 +235,13 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
         return Hooks_Misc::IsOnlineFixActive() ? Hooks_Misc::ResolveAppId() : 0;
     });
 
-    for (const auto& dir : watchDirs)
-        LuaConfig::ParseDirectory(dir);
-
     // Match the proven pre-Diversion startup ordering for library/UI hooks:
     // Lua is fully loaded before SteamUI can evaluate ownership/overview data.
     HookManager::InstallUIHooks();
 
-    // ParseDirectory intentionally clears its startup pending-addition list.
-    // Because the Lua-dependent UI hooks are installed only after that initial
-    // parse, SteamUI may already have completed its first library overview and
-    // never receive change notifications for those configured apps. Replay the
-    // configured set into the UI queue once the hooks exist. The RunFrame hook
-    // will drain this after client/package hooks are installed and
-    // g_HooksInstalled becomes true.
+    // Replay configured apps via batch queue for eventual consistency across late injections.
     if (auto configuredApps = LuaConfig::GetConfiguredAppIdsSnapshot()) {
-        for (AppId_t appId : *configuredApps) {
-            Hooks_SteamUI::QueueAddition(appId);
-        }
+        Hooks_SteamUI::QueueAdditions(*configuredApps);
     }
 
     // Awaken installed scanner after its worker has been started by Install().

@@ -2,6 +2,8 @@
 
 #include "dllmain.h"
 
+#include <span >
+
 // Hooks targeting steamui.dll:
 
 namespace Hooks_SteamUI {
@@ -19,6 +21,8 @@ namespace Hooks_SteamUI {
     void CancelRemoval(AppId_t appId);
     // Queues an appId for addition/restoration in the library UI
     void QueueAddition(AppId_t appId);
+    // Batch queues appIds for addition/restoration in the library UI with O(N) complexity
+    void QueueAdditions(std::span<const AppId_t> appIds);
     // Checks if an appId is currently marked as removed in the UI
     bool IsRemoved(AppId_t appId);
     // Triggers an immediate background rescan of libraryfolders.vdf for installed apps
