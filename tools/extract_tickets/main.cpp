@@ -182,7 +182,7 @@ namespace {
         TuiEngine::ClearScreen();
 
         const bool hasSteam = FindSteamInstallPath().has_value();
-        TuiEngine::DrawHeader("OpenSteamTool 凭证与配置提取中心 v1.0",
+        TuiEngine::DrawHeader("extract_tickets",
                               hasSteam ? "模式: 本地快速模式" : "提示: 未检测到本地 Steam");
 
         const int boxW = std::clamp(w - 4, 70, 100);
@@ -195,7 +195,7 @@ namespace {
         const size_t innerW = static_cast<size_t>(boxW - 8);
 
         TuiEngine::PrintBounded(top + 2, left + 4,
-            "欢迎使用 OpenSteamTool 凭据与配置提取中心 (Local/Online Extractor)",
+            "欢迎使用 extract_tickets (Local/Online Extractor)",
             innerW, "\x1b[1;37m");
 
         if (!hasSteam) {

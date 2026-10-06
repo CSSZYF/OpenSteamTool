@@ -45,7 +45,7 @@ namespace {
             TuiEngine::RepositionCursor();
         }
 
-        TuiEngine::DrawHeader("Steam 在线凭据中心 (Windows DPAPI 内核级硬件保护)",
+        TuiEngine::DrawHeader("extract_tickets",
                               std::format("已保存 {} 个账号", accounts.size()));
 
         const int boxW = std::clamp(w - 4, 70, 110);

@@ -23,6 +23,25 @@ void TuiEngine::SetActive(bool active) noexcept {
     g_tuiActive = active;
 }
 
+#if defined(_WIN32)
+namespace {
+    BOOL WINAPI ConsoleCtrlHandler(DWORD fdwCtrlType) {
+        switch (fdwCtrlType) {
+            case CTRL_C_EVENT:
+            case CTRL_BREAK_EVENT:
+            case CTRL_CLOSE_EVENT:
+                if (g_tuiActive) {
+                    TuiEngine::ShowCursor(true);
+                    TuiEngine::ExitAlternateScreen();
+                }
+                return FALSE;
+            default:
+                return FALSE;
+        }
+    }
+} // namespace
+#endif
+
 void TuiEngine::EnableVirtualTerminal() {
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     if (hOut == INVALID_HANDLE_VALUE) return;
@@ -33,6 +52,15 @@ void TuiEngine::EnableVirtualTerminal() {
         SetConsoleMode(hOut, dwMode);
     }
     SetConsoleOutputCP(CP_UTF8);
+
+#if defined(_WIN32)
+    static bool handlerInstalled = false;
+    if (!handlerInstalled) {
+        SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+        handlerInstalled = true;
+    }
+    SetConsoleTitleW(L"extract_tickets");
+#endif
 }
 
 void TuiEngine::EnterAlternateScreen() {
