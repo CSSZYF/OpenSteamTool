@@ -44,6 +44,12 @@ public:
 
 private:
     HINTERNET m_hSession{nullptr};
+    std::wstring m_cachedConnectHost;
+    INTERNET_PORT m_cachedConnectPort{0};
+    HINTERNET m_hCachedConnect{nullptr};
+
+    HINTERNET GetOrCreateConnection(const std::wstring& host, INTERNET_PORT port);
+    void InvalidateConnection();
 };
 
 class WebSocketClient {

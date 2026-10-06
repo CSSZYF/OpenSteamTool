@@ -7,9 +7,11 @@
 #include "tinf.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <format>
+#include <future>
 #include <iostream>
 #include <mutex>
 #include <thread>
@@ -17,6 +19,9 @@
 namespace OST::ExtractTickets {
 
 namespace {
+    std::vector<std::string> s_cachedCdnServers;
+    std::mutex s_cdnMutex;
+
     std::string BytesToHex(std::span<const uint8_t> bytes) {
         std::string hex;
         hex.reserve(bytes.size() * 2);
@@ -753,8 +758,8 @@ std::string SteamCmClient::FetchManifestRequestCode(
                         LOG_DEBUG("SteamCM", "统一 RPC eMsg 151 成功返回 manifest_request_code: {}", reqCode);
                         return reqCode;
                     }
-                } else if (rpcResult == 15) { // k_EResultAccessDenied
-                    LOG_DEBUG("SteamCM", "统一 RPC eMsg 151 明确返回 AccessDenied (eresult=15)，账号未拥有 Depot {} 授权", depotId);
+                } else {
+                    LOG_DEBUG("SteamCM", "统一 RPC eMsg 151 返回非成功结果 (eresult={})，账号未拥有 Depot {} 授权", rpcResult, depotId);
                     if (outAccessDenied) *outAccessDenied = true;
                     return ""; // Short-circuit: definitively not owned, never do redundant Track 2 fallback
                 }
@@ -774,7 +779,7 @@ std::string SteamCmClient::FetchManifestRequestCode(
             std::vector<uint8_t> respBody;
             int32_t legacyResult = 0;
             if (ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientServiceMethodResponse), respBody, 4000, &legacyResult)) {
-                if (legacyResult == 15) {
+                if (legacyResult != 1) {
                     if (outAccessDenied) *outAccessDenied = true;
                     return "";
                 }
@@ -808,13 +813,22 @@ std::string SteamCmClient::FetchManifestRequestCode(
     return "";
 }
 
-std::vector<std::string> SteamCmClient::GetCdnServers(uint32_t cellId) {
-    static std::vector<std::string> s_cachedServers;
-    static std::mutex s_mutex;
-    std::lock_guard lock(s_mutex);
+void SteamCmClient::PromoteWorkingCdnServer(std::string_view server) {
+    if (server.empty()) return;
+    std::lock_guard lock(s_cdnMutex);
+    auto it = std::find(s_cachedCdnServers.begin(), s_cachedCdnServers.end(), server);
+    if (it != s_cachedCdnServers.end() && it != s_cachedCdnServers.begin()) {
+        std::string s = std::move(*it);
+        s_cachedCdnServers.erase(it);
+        s_cachedCdnServers.insert(s_cachedCdnServers.begin(), std::move(s));
+    }
+}
 
-    if (!s_cachedServers.empty()) {
-        return s_cachedServers;
+std::vector<std::string> SteamCmClient::GetCdnServers(uint32_t cellId) {
+    std::lock_guard lock(s_cdnMutex);
+
+    if (!s_cachedCdnServers.empty()) {
+        return s_cachedCdnServers;
     }
 
     WinHttpTransport http;
@@ -833,17 +847,17 @@ std::vector<std::string> SteamCmClient::GetCdnServers(uint32_t cellId) {
             if (q2 == std::string::npos) break;
             std::string host = resp.body.substr(q1 + 1, q2 - q1 - 1);
             if (host.ends_with(".steamcontent.com") || host.ends_with(".steampowered.com")) {
-                if (std::find(s_cachedServers.begin(), s_cachedServers.end(), host) == s_cachedServers.end()) {
-                    s_cachedServers.push_back(std::move(host));
-                    if (s_cachedServers.size() >= 10) break;
+                if (std::find(s_cachedCdnServers.begin(), s_cachedCdnServers.end(), host) == s_cachedCdnServers.end()) {
+                    s_cachedCdnServers.push_back(std::move(host));
+                    if (s_cachedCdnServers.size() >= 10) break;
                 }
             }
             pos = q2 + 1;
         }
     }
 
-    if (s_cachedServers.empty()) {
-        s_cachedServers = {
+    if (s_cachedCdnServers.empty()) {
+        s_cachedCdnServers = {
             "valve.steamcontent.com",
             "cdn.steamcontent.com",
             "content1.steampowered.com",
@@ -853,39 +867,28 @@ std::vector<std::string> SteamCmClient::GetCdnServers(uint32_t cellId) {
         };
     }
 
-    return s_cachedServers;
+    return s_cachedCdnServers;
 }
 
-std::optional<std::string> SteamCmClient::DownloadManifestOnline(
-    uint32_t appId, uint32_t depotId, const std::string& manifestId, const std::string& destDir,
-    bool* outAccessDenied, WinHttpTransport* sharedHttp) {
+std::optional<std::string> SteamCmClient::DownloadManifestPayload(
+    uint32_t appId, uint32_t depotId, const std::string& manifestId, const std::string& reqCode,
+    const std::string& destDir, const std::vector<std::string>& cdnServers, WinHttpTransport* httpPtr) {
 
-    if (outAccessDenied) *outAccessDenied = false;
-    if (appId == 0 || depotId == 0 || !IsValidManifestId(manifestId)) {
+    if (appId == 0 || depotId == 0 || !IsValidManifestId(manifestId) || reqCode.empty() || reqCode == "0") {
         return std::nullopt;
     }
 
     std::string fileName = std::format("{}_{}.manifest", depotId, manifestId);
     std::filesystem::path localPath = std::filesystem::path(destDir) / fileName;
 
-    // Fast check if already exists in destination and non-empty
     std::error_code checkEc;
     if (std::filesystem::is_regular_file(localPath, checkEc) && std::filesystem::file_size(localPath, checkEc) > 0) {
         LOG_INFO("SteamCM", "清单文件已存在于目标目录，直接秒级复用: {}", localPath.string());
         return localPath.string();
     }
 
-    std::string reqCode = FetchManifestRequestCode(appId, depotId, manifestId, outAccessDenied);
-    if (reqCode.empty() || reqCode == "0") {
-        if (!outAccessDenied || !*outAccessDenied) {
-            LOG_WARN("SteamCM", "未能获得 manifest_request_code (Depot={}, Manifest={})", depotId, manifestId);
-        }
-        return std::nullopt;
-    }
-
-    auto cdnServers = GetCdnServers(m_cellId);
     WinHttpTransport localHttp;
-    WinHttpTransport& http = sharedHttp ? *sharedHttp : localHttp;
+    WinHttpTransport& http = httpPtr ? *httpPtr : localHttp;
     HttpResponse cdnResp;
 
     for (const auto& server : cdnServers) {
@@ -897,6 +900,7 @@ std::optional<std::string> SteamCmClient::DownloadManifestOnline(
         cdnResp = http.Get(manifestUrl);
         if (cdnResp.IsSuccess() && !cdnResp.body.empty()) {
             LOG_INFO("SteamCM", "成功从 Steam CDN ({}) 获取清单数据 ({} 字节)", server, cdnResp.body.size());
+            PromoteWorkingCdnServer(server);
             break;
         }
 
@@ -908,12 +912,14 @@ std::optional<std::string> SteamCmClient::DownloadManifestOnline(
         cdnResp = http.Get(httpManifestUrl);
         if (cdnResp.IsSuccess() && !cdnResp.body.empty()) {
             LOG_INFO("SteamCM", "成功从 Steam CDN HTTP ({}) 获取清单数据 ({} 字节)", server, cdnResp.body.size());
+            PromoteWorkingCdnServer(server);
             break;
         }
     }
 
     if (!cdnResp.IsSuccess() || cdnResp.body.empty()) {
-        LOG_WARN("SteamCM", "从 Steam CDN 下载清单失败 (HTTP {}): {}", cdnResp.statusCode, cdnResp.errorMessage);
+        LOG_WARN("SteamCM", "从 Steam CDN 下载清单失败 (Depot={}, Manifest={}): HTTP {} {}",
+                 depotId, manifestId, cdnResp.statusCode, cdnResp.errorMessage);
         return std::nullopt;
     }
 
@@ -970,6 +976,36 @@ std::optional<std::string> SteamCmClient::DownloadManifestOnline(
 
     LOG_INFO("SteamCM", "成功直接在线下载并保存清单文件: {} ({} 字节)", fileName, payload.size());
     return localPath.string();
+}
+
+std::optional<std::string> SteamCmClient::DownloadManifestOnline(
+    uint32_t appId, uint32_t depotId, const std::string& manifestId, const std::string& destDir,
+    bool* outAccessDenied, WinHttpTransport* sharedHttp) {
+
+    if (outAccessDenied) *outAccessDenied = false;
+    if (appId == 0 || depotId == 0 || !IsValidManifestId(manifestId)) {
+        return std::nullopt;
+    }
+
+    std::string fileName = std::format("{}_{}.manifest", depotId, manifestId);
+    std::filesystem::path localPath = std::filesystem::path(destDir) / fileName;
+
+    std::error_code checkEc;
+    if (std::filesystem::is_regular_file(localPath, checkEc) && std::filesystem::file_size(localPath, checkEc) > 0) {
+        LOG_INFO("SteamCM", "清单文件已存在于目标目录，直接秒级复用: {}", localPath.string());
+        return localPath.string();
+    }
+
+    std::string reqCode = FetchManifestRequestCode(appId, depotId, manifestId, outAccessDenied);
+    if (reqCode.empty() || reqCode == "0") {
+        if (!outAccessDenied || !*outAccessDenied) {
+            LOG_WARN("SteamCM", "未能获得 manifest_request_code (Depot={}, Manifest={})", depotId, manifestId);
+        }
+        return std::nullopt;
+    }
+
+    auto cdnServers = GetCdnServers(m_cellId);
+    return DownloadManifestPayload(appId, depotId, manifestId, reqCode, destDir, cdnServers, sharedHttp);
 }
 
 ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
@@ -1049,13 +1085,23 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
 
     std::vector<DepotKeyInfo> depotKeys;
     std::unordered_set<uint32_t> unauthorizedDepots;
+    std::unordered_set<uint32_t> knownDlcSet;
+    const std::string outDir = std::to_string(appId);
+    size_t downloadedManifests = 0;
+
+    struct ManifestTask {
+        uint32_t depotId{0};
+        std::string manifestId;
+        std::string reqCode;
+    };
+    std::vector<ManifestTask> downloadTasks;
+    std::future<std::vector<std::pair<uint32_t, std::string>>> manifestFuture;
 
     if (appInfoData) {
         LOG_INFO("SteamCM", "获得官方 AppInfo 数据 (共 {} 个 Depot, {} 个 DLC)",
                  appInfoData->depots.size(), appInfoData->dlcAppIds.size());
 
         // 3.1 识别所有 DLC（包含无独立 Depot 的 DLC，例如季票、豪华版升级包、皮肤包、原声音乐等）
-        std::unordered_set<uint32_t> knownDlcSet;
         for (uint32_t dlcId : appInfoData->dlcAppIds) {
             if (dlcId != appId && !knownDlcSet.contains(dlcId)) {
                 knownDlcSet.insert(dlcId);
@@ -1092,29 +1138,65 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
             }
         }
 
-        // 3.3 优先拉取官方清单文件 (独立流: 仅需 DepotID 与 Manifest GID，完全不依赖 Depot Key)
-        const std::string outDir = std::to_string(appId);
+        // 3.3 优先拉取官方清单文件 (两阶段流水线: CM 请求码轻量收集 + 异步多路并发 CDN 下载，与后续 CM 查询完全重叠)
         LOG_INFO("SteamCM", "正在纯云端拉取官方清单文件 (共 {} 个待处理 Depot)...", depotKeys.size());
         if (!TuiEngine::IsActive()) {
             std::cout << "  -> 正在纯云端拉取官方清单文件 (.manifest)...\n";
         }
-        size_t downloadedManifests = 0;
-        WinHttpTransport sharedHttp;
 
         for (auto& dk : depotKeys) {
             if (IsValidManifestId(dk.manifestId)) {
-                bool accessDenied = false;
-                auto downloaded = DownloadManifestOnline(appId, dk.depotId, dk.manifestId, outDir, &accessDenied, &sharedHttp);
-                if (downloaded) {
-                    dk.manifestFilePath = *downloaded;
+                // 本地磁盘快速检查：若已存在则直接秒级复用，完全跳过网络查询
+                std::string fileName = std::format("{}_{}.manifest", dk.depotId, dk.manifestId);
+                std::filesystem::path localPath = std::filesystem::path(outDir) / fileName;
+                std::error_code checkEc;
+                if (std::filesystem::is_regular_file(localPath, checkEc) && std::filesystem::file_size(localPath, checkEc) > 0) {
+                    LOG_INFO("SteamCM", "清单文件已存在于目标目录，直接秒级复用: {}", localPath.string());
+                    dk.manifestFilePath = localPath.string();
                     ++downloadedManifests;
+                    continue;
+                }
+
+                bool accessDenied = false;
+                std::string reqCode = FetchManifestRequestCode(appId, dk.depotId, dk.manifestId, &accessDenied);
+                if (!reqCode.empty() && reqCode != "0") {
+                    downloadTasks.push_back({dk.depotId, dk.manifestId, std::move(reqCode)});
                 } else if (accessDenied) {
                     unauthorizedDepots.insert(dk.depotId);
                 }
             }
         }
-        if (downloadedManifests > 0 && !TuiEngine::IsActive()) {
-            std::cout << "     [OK] 成功拉取 " << downloadedManifests << " 个官方清单文件\n";
+
+        if (!downloadTasks.empty()) {
+            auto cdnServers = GetCdnServers(m_cellId);
+            manifestFuture = std::async(std::launch::async, [tasks = downloadTasks, appId, outDir, cdnServers]() {
+                std::vector<std::pair<uint32_t, std::string>> results(tasks.size());
+                std::atomic<size_t> nextIndex{0};
+                const size_t numWorkers = std::min<size_t>(tasks.size(), 4);
+                std::vector<std::thread> workers;
+                workers.reserve(numWorkers);
+
+                for (size_t w = 0; w < numWorkers; ++w) {
+                    workers.emplace_back([&]() {
+                        WinHttpTransport http;
+                        while (true) {
+                            size_t idx = nextIndex.fetch_add(1, std::memory_order_relaxed);
+                            if (idx >= tasks.size()) break;
+                            const auto& t = tasks[idx];
+                            auto downloaded = DownloadManifestPayload(
+                                appId, t.depotId, t.manifestId, t.reqCode, outDir, cdnServers, &http);
+                            if (downloaded) {
+                                results[idx] = {t.depotId, std::move(*downloaded)};
+                            }
+                        }
+                    });
+                }
+
+                for (auto& worker : workers) {
+                    if (worker.joinable()) worker.join();
+                }
+                return results;
+            });
         }
 
         // 3.4 纯官方云端批量解析所有 DLC 名称 (Steam CM PICS 公开元数据查询 + Store WebAPI 补充兜底)
@@ -1153,10 +1235,17 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
     depotsNeedingKeys.insert(appId);
     for (const auto& dk : depotKeys) {
         if (dk.hexKey.empty() && !unauthorizedDepots.contains(dk.depotId)) {
+            // 严格剔除无独立 Depot 的纯逻辑 DLC 容器 (dlcId == depotId 或属于已知 DLC AppID 且无清单)
+            if (dk.manifestId.empty() && (dk.depotId == dk.dlcId || knownDlcSet.contains(dk.depotId))) {
+                continue;
+            }
+            // 严格剔除无任何有效清单的非 base 游戏条目 (未发布/已弃用/仅存在于私有分支的 Depot)
+            if (dk.manifestId.empty() && dk.depotId != appId) {
+                continue;
+            }
             depotsNeedingKeys.insert(dk.depotId);
         }
     }
-    // 严格剔除纯逻辑 DLC，避免触发 CM 连续拒绝导致风控断线
 
     LOG_DEBUG("SteamCM", "正在向 Steam CM 查询 Depot 解密密钥 (AppID={}, 共 {} 个真实 Depot)...", appId, depotsNeedingKeys.size());
     if (!TuiEngine::IsActive()) {
@@ -1189,6 +1278,26 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
                          [&](const DepotKeyInfo& k) { return k.depotId == cmKey.depotId; })) {
             depotKeys.push_back(cmKey);
         }
+    }
+
+    // 5. 等待并发 CDN 清单拉取任务收尾并合并路径结果
+    if (manifestFuture.valid()) {
+        auto asyncResults = manifestFuture.get();
+        for (const auto& [depotId, path] : asyncResults) {
+            if (!path.empty()) {
+                for (auto& dk : depotKeys) {
+                    if (dk.depotId == depotId) {
+                        dk.manifestFilePath = path;
+                        ++downloadedManifests;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (downloadedManifests > 0 && !TuiEngine::IsActive()) {
+        std::cout << "     [OK] 成功拉取 " << downloadedManifests << " 个官方清单文件\n";
     }
 
     // 剔除无有效密钥、无清单文件且无有效清单ID的空项

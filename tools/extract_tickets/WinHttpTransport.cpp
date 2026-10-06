@@ -145,10 +145,33 @@ WinHttpTransport::WinHttpTransport() {
 }
 
 WinHttpTransport::~WinHttpTransport() {
+    InvalidateConnection();
     if (m_hSession) {
         WinHttpCloseHandle(m_hSession);
         m_hSession = nullptr;
     }
+}
+
+HINTERNET WinHttpTransport::GetOrCreateConnection(const std::wstring& host, INTERNET_PORT port) {
+    if (m_hCachedConnect && m_cachedConnectHost == host && m_cachedConnectPort == port) {
+        return m_hCachedConnect;
+    }
+    InvalidateConnection();
+    m_hCachedConnect = WinHttpConnect(m_hSession, host.c_str(), port, 0);
+    if (m_hCachedConnect) {
+        m_cachedConnectHost = host;
+        m_cachedConnectPort = port;
+    }
+    return m_hCachedConnect;
+}
+
+void WinHttpTransport::InvalidateConnection() {
+    if (m_hCachedConnect) {
+        WinHttpCloseHandle(m_hCachedConnect);
+        m_hCachedConnect = nullptr;
+    }
+    m_cachedConnectHost.clear();
+    m_cachedConnectPort = 0;
 }
 
 HttpResponse WinHttpTransport::Get(
@@ -167,7 +190,7 @@ HttpResponse WinHttpTransport::Get(
         return resp;
     }
 
-    ScopedHInternet hConnect{WinHttpConnect(m_hSession, parsed.host.c_str(), parsed.port, 0)};
+    HINTERNET hConnect = GetOrCreateConnection(parsed.host, parsed.port);
     if (!hConnect) {
         resp.errorMessage = std::format("无法连接主机 {} (GetLastError={})", WideToUtf8(parsed.host), GetLastError());
         LOG_WARN("WinHttp", "{}", resp.errorMessage);
@@ -175,36 +198,50 @@ HttpResponse WinHttpTransport::Get(
     }
 
     DWORD flags = parsed.isHttps ? WINHTTP_FLAG_SECURE : 0;
-    ScopedHInternet hRequest{WinHttpOpenRequest(
-        hConnect,
-        L"GET",
-        parsed.path.c_str(),
-        nullptr,
-        WINHTTP_NO_REFERER,
-        WINHTTP_DEFAULT_ACCEPT_TYPES,
-        flags)};
+    DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+                     SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                     SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+                     SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
 
-    if (!hRequest) {
-        resp.errorMessage = std::format("创建 HTTP 请求失败 (GetLastError={})", GetLastError());
-        LOG_WARN("WinHttp", "{}", resp.errorMessage);
-        return resp;
-    }
+    auto executeRequest = [&](HINTERNET conn) -> ScopedHInternet {
+        ScopedHInternet req{WinHttpOpenRequest(
+            conn,
+            L"GET",
+            parsed.path.c_str(),
+            nullptr,
+            WINHTTP_NO_REFERER,
+            WINHTTP_DEFAULT_ACCEPT_TYPES,
+            flags)};
+        if (!req) return req;
 
-    if (parsed.isHttps) {
-        DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
-                         SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
-                         SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
-                         SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
-        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &secFlags, sizeof(secFlags));
-    }
+        if (parsed.isHttps) {
+            WinHttpSetOption(req, WINHTTP_OPTION_SECURITY_FLAGS, &secFlags, sizeof(secFlags));
+        }
 
-    for (const auto& hdr : extraHeaders) {
-        std::wstring wHdr = Utf8ToWide(hdr);
-        WinHttpAddRequestHeaders(hRequest, wHdr.c_str(), static_cast<DWORD>(wHdr.size()), WINHTTP_ADDREQ_FLAG_ADD);
-    }
+        for (const auto& hdr : extraHeaders) {
+            std::wstring wHdr = Utf8ToWide(hdr);
+            WinHttpAddRequestHeaders(req, wHdr.c_str(), static_cast<DWORD>(wHdr.size()), WINHTTP_ADDREQ_FLAG_ADD);
+        }
+
+        if (!WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+            req.Reset();
+        }
+        return req;
+    };
 
     auto startT = std::chrono::steady_clock::now();
-    if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+    ScopedHInternet hRequest = executeRequest(hConnect);
+
+    // If request failed on a cached connection (e.g. server closed idle keep-alive socket), retry once on fresh connection
+    if (!hRequest) {
+        InvalidateConnection();
+        hConnect = GetOrCreateConnection(parsed.host, parsed.port);
+        if (hConnect) {
+            hRequest = executeRequest(hConnect);
+        }
+    }
+
+    if (!hRequest) {
         resp.errorMessage = std::format("发送 GET 请求失败 (GetLastError={})", GetLastError());
         LOG_WARN("WinHttp", "{}", resp.errorMessage);
         return resp;
@@ -227,7 +264,20 @@ HttpResponse WinHttpTransport::Get(
         WINHTTP_NO_HEADER_INDEX);
     resp.statusCode = static_cast<int>(statusCode);
 
-    std::vector<char> buffer(65536);
+    // Fast memory pre-allocation if server returns Content-Length
+    DWORD contentLength = 0;
+    DWORD clSize = sizeof(contentLength);
+    if (WinHttpQueryHeaders(
+            hRequest,
+            WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+            WINHTTP_HEADER_NAME_BY_INDEX,
+            &contentLength,
+            &clSize,
+            WINHTTP_NO_HEADER_INDEX) && contentLength > 0) {
+        resp.body.reserve(contentLength);
+    }
+
+    std::vector<char> buffer(131072); // 128 KB buffer for high-throughput streaming
     while (true) {
         DWORD bytesRead = 0;
         if (!WinHttpReadData(hRequest, buffer.data(), static_cast<DWORD>(buffer.size()), &bytesRead) || bytesRead == 0) {
@@ -260,7 +310,7 @@ HttpResponse WinHttpTransport::Post(
         return resp;
     }
 
-    ScopedHInternet hConnect{WinHttpConnect(m_hSession, parsed.host.c_str(), parsed.port, 0)};
+    HINTERNET hConnect = GetOrCreateConnection(parsed.host, parsed.port);
     if (!hConnect) {
         resp.errorMessage = std::format("无法连接主机 {} (GetLastError={})", WideToUtf8(parsed.host), GetLastError());
         LOG_WARN("WinHttp", "{}", resp.errorMessage);
@@ -268,47 +318,59 @@ HttpResponse WinHttpTransport::Post(
     }
 
     DWORD flags = parsed.isHttps ? WINHTTP_FLAG_SECURE : 0;
-    ScopedHInternet hRequest{WinHttpOpenRequest(
-        hConnect,
-        L"POST",
-        parsed.path.c_str(),
-        nullptr,
-        WINHTTP_NO_REFERER,
-        WINHTTP_DEFAULT_ACCEPT_TYPES,
-        flags)};
-
-    if (!hRequest) {
-        resp.errorMessage = std::format("创建 POST 请求失败 (GetLastError={})", GetLastError());
-        LOG_WARN("WinHttp", "{}", resp.errorMessage);
-        return resp;
-    }
-
-    if (parsed.isHttps) {
-        DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
-                         SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
-                         SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
-                         SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
-        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &secFlags, sizeof(secFlags));
-    }
-
-    // Add Content-Type header
-    if (!contentType.empty()) {
-        std::string ct = "Content-Type: " + std::string{contentType};
-        std::wstring wCt = Utf8ToWide(ct);
-        WinHttpAddRequestHeaders(hRequest, wCt.c_str(), static_cast<DWORD>(wCt.size()), WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
-    }
-
-    for (const auto& hdr : extraHeaders) {
-        std::wstring wHdr = Utf8ToWide(hdr);
-        WinHttpAddRequestHeaders(hRequest, wHdr.c_str(), static_cast<DWORD>(wHdr.size()), WINHTTP_ADDREQ_FLAG_ADD);
-    }
+    DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+                     SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                     SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+                     SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
 
     DWORD postLen = static_cast<DWORD>(postData.size());
     void* pData = postLen > 0 ? const_cast<char*>(postData.data()) : WINHTTP_NO_REQUEST_DATA;
 
+    auto executeRequest = [&](HINTERNET conn) -> ScopedHInternet {
+        ScopedHInternet req{WinHttpOpenRequest(
+            conn,
+            L"POST",
+            parsed.path.c_str(),
+            nullptr,
+            WINHTTP_NO_REFERER,
+            WINHTTP_DEFAULT_ACCEPT_TYPES,
+            flags)};
+        if (!req) return req;
+
+        if (parsed.isHttps) {
+            WinHttpSetOption(req, WINHTTP_OPTION_SECURITY_FLAGS, &secFlags, sizeof(secFlags));
+        }
+
+        if (!contentType.empty()) {
+            std::string ct = "Content-Type: " + std::string{contentType};
+            std::wstring wCt = Utf8ToWide(ct);
+            WinHttpAddRequestHeaders(req, wCt.c_str(), static_cast<DWORD>(wCt.size()), WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
+        }
+
+        for (const auto& hdr : extraHeaders) {
+            std::wstring wHdr = Utf8ToWide(hdr);
+            WinHttpAddRequestHeaders(req, wHdr.c_str(), static_cast<DWORD>(wHdr.size()), WINHTTP_ADDREQ_FLAG_ADD);
+        }
+
+        if (!WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, pData, postLen, postLen, 0)) {
+            req.Reset();
+        }
+        return req;
+    };
+
     auto startT = std::chrono::steady_clock::now();
-    if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, pData, postLen, postLen, 0)) {
-        resp.errorMessage = std::format("发送 POST 请求失败 (GetLastError={})", GetLastError());
+    ScopedHInternet hRequest = executeRequest(hConnect);
+
+    if (!hRequest) {
+        InvalidateConnection();
+        hConnect = GetOrCreateConnection(parsed.host, parsed.port);
+        if (hConnect) {
+            hRequest = executeRequest(hConnect);
+        }
+    }
+
+    if (!hRequest) {
+        resp.errorMessage = std::format("创建或发送 POST 请求失败 (GetLastError={})", GetLastError());
         LOG_WARN("WinHttp", "{}", resp.errorMessage);
         return resp;
     }
@@ -330,7 +392,19 @@ HttpResponse WinHttpTransport::Post(
         WINHTTP_NO_HEADER_INDEX);
     resp.statusCode = static_cast<int>(statusCode);
 
-    std::vector<char> buffer(65536);
+    DWORD contentLength = 0;
+    DWORD clSize = sizeof(contentLength);
+    if (WinHttpQueryHeaders(
+            hRequest,
+            WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+            WINHTTP_HEADER_NAME_BY_INDEX,
+            &contentLength,
+            &clSize,
+            WINHTTP_NO_HEADER_INDEX) && contentLength > 0) {
+        resp.body.reserve(contentLength);
+    }
+
+    std::vector<char> buffer(131072);
     while (true) {
         DWORD bytesRead = 0;
         if (!WinHttpReadData(hRequest, buffer.data(), static_cast<DWORD>(buffer.size()), &bytesRead) || bytesRead == 0) {

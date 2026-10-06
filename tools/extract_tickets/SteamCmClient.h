@@ -68,6 +68,14 @@ public:
         uint32_t appId, uint32_t depotId, const std::string& manifestId, const std::string& destDir,
         bool* outAccessDenied = nullptr, WinHttpTransport* sharedHttp = nullptr);
 
+    // Downloads and decompresses manifest binary directly from Steam CDN via an already resolved reqCode
+    [[nodiscard]] static std::optional<std::string> DownloadManifestPayload(
+        uint32_t appId, uint32_t depotId, const std::string& manifestId, const std::string& reqCode,
+        const std::string& destDir, const std::vector<std::string>& cdnServers, WinHttpTransport* http = nullptr);
+
+    // Promotes a validated fast CDN server to the head of the cached server list
+    static void PromoteWorkingCdnServer(std::string_view server);
+
     // High-level extraction pipeline for a single target AppID
     [[nodiscard]] ExtractedAppCredentials ExtractFullCredentials(uint32_t appId);
 
