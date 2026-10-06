@@ -226,9 +226,6 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
     for (const auto& dir : watchDirs)
         LuaConfig::ParseDirectory(dir);
 
-    LuaFileWatcher::Start(watchDirs);
-    ConfigFileWatcher::Start(ConfigPath, LuaDir);
-
     // Match the proven pre-Diversion startup ordering for library/UI hooks:
     // Lua is fully loaded before SteamUI can evaluate ownership/overview data.
     HookManager::InstallUIHooks();
@@ -259,6 +256,12 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
     CloudRedirectHost::Initialize(SteamInstallPath);
 
     g_HooksInstalled.store(true);
+
+    // Start watchers strictly after all hooks and subsystems are fully ready,
+    // ensuring no dynamic file changes trigger notifications before callbacks/hooks exist.
+    LuaFileWatcher::Start(watchDirs);
+    ConfigFileWatcher::Start(ConfigPath, LuaDir);
+
     LOG_INFO("OpenSteamTool init complete ({})",
              g_IsDiversionActive.load() ? "Diversion active" : "Diversion bypassed, using original steamclient64");
     return 0;
@@ -292,9 +295,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, PVOID pvReserved)
         if (pvReserved == nullptr) {
             ConfigFileWatcher::Stop();
             LuaFileWatcher::Stop();
+            CloudRedirectHost::Shutdown();
             HookManager::UninstallUIHooks();
             HookManager::UninstallClientHooks();
-            CloudRedirectHost::Shutdown();
         } else {
             // Process termination (ExitProcess): The OS has already terminated all secondary
             // threads. Never join or wait on mutexes held by terminated threads under the loader
