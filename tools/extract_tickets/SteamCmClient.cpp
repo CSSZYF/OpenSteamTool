@@ -1,5 +1,6 @@
 #include "SteamCmClient.h"
 #include "AppInfoParser.h"
+#include "I18n.h"
 #include "JsonHelper.h"
 #include "Log.h"
 #include "TuiEngine.h"
@@ -337,7 +338,7 @@ bool SteamCmClient::ConnectAndLogon(uint64_t steamId, std::string_view refreshTo
         ProtoWriter logonBody;
         logonBody.WriteUInt32(1, 65580);                          // protocol_version
         logonBody.WriteUInt32(3, 0);                              // cell_id
-        logonBody.WriteString(6, "schinese");                     // client_language
+        logonBody.WriteString(6, I18n::GetSteamLanguageCode());   // client_language
         logonBody.WriteUInt32(7, 16);                             // client_os_type (Windows 10/11)
         logonBody.WriteBool(8, true);                             // should_remember_password
         if (m_steamId != 0) {

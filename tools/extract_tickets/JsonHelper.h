@@ -11,6 +11,7 @@ namespace OST::ExtractTickets {
 struct OwnedGameInfo {
     uint32_t appId{0};
     std::string name;
+    bool isShared{false};
 };
 
 struct AllowedConfirmation {

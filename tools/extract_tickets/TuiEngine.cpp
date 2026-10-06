@@ -1,5 +1,6 @@
 #include "TuiEngine.h"
 #include "Crypto.h"
+#include "I18n.h"
 #include "Utils.h"
 
 #include <conio.h>
@@ -349,12 +350,14 @@ bool TuiEngine::ShowConfirmModal(std::string_view title,
 
     auto renderButtons = [&]() {
         MoveCursor(top + modalH - 2, left + 4);
+        std::string_view btnYes = TR(MsgKey::BtnYes);
+        std::string_view btnNo = TR(MsgKey::BtnNo);
         if (selectedYes) {
-            std::cout << "\x1b[1;97;42m  [ Y: 确定 ]  \x1b[0m    \x1b[90m  [ N: 取消 ]  \x1b[0m";
+            std::cout << "\x1b[1;97;42m" << btnYes << "\x1b[0m    \x1b[90m" << btnNo << "\x1b[0m";
         } else {
-            std::cout << "\x1b[90m  [ Y: 确定 ]  \x1b[0m    \x1b[1;97;41m  [ N: 取消 ]  \x1b[0m";
+            std::cout << "\x1b[90m" << btnYes << "\x1b[0m    \x1b[1;97;41m" << btnNo << "\x1b[0m";
         }
-        size_t buttonsW = 32;
+        size_t buttonsW = GetDisplayWidth(btnYes) + GetDisplayWidth(btnNo) + 4;
         if (static_cast<size_t>(modalW - 8) > buttonsW) {
             std::cout << std::string(static_cast<size_t>(modalW - 8) - buttonsW, ' ');
         }
@@ -434,8 +437,9 @@ bool TuiEngine::ShowMessageModal(std::string_view title,
     }
 
     MoveCursor(top + modalH - 2, left + 4);
-    std::cout << "\x1b[1;97;44m  [ 按 Enter 或 ESC 关闭 ]  \x1b[0m";
-    size_t btnW = 28;
+    std::string_view btnClose = TR(MsgKey::BtnClose);
+    std::cout << "\x1b[1;97;44m" << btnClose << "\x1b[0m";
+    size_t btnW = GetDisplayWidth(btnClose);
     if (static_cast<size_t>(modalW - 8) > btnW) {
         std::cout << std::string(static_cast<size_t>(modalW - 8) - btnW, ' ');
     }
@@ -498,7 +502,7 @@ std::optional<std::string> TuiEngine::PromptInputModal(std::string_view title,
     std::cout << "\x1b[1;37m" << TruncateToWidth(prompt, modalW - 8) << "\x1b[0m";
 
     MoveCursor(top + modalH - 2, left + 4);
-    std::cout << "\x1b[90m[ Enter: 提交  ESC: 取消 ]\x1b[0m";
+    std::cout << "\x1b[90m" << TR(MsgKey::HintInputEnterEsc) << "\x1b[0m";
 
     std::string value{defaultValue};
     const int inputTop = top + 4;

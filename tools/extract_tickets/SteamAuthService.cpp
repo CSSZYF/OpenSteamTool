@@ -1,5 +1,6 @@
 #include "SteamAuthService.h"
 #include "AppInfoParser.h"
+#include "I18n.h"
 #include "Log.h"
 #include "TuiEngine.h"
 #include "Utils.h"
@@ -157,7 +158,7 @@ SteamLoginResult SteamAuthService::PollAuthSession(
                 if (ch == 27) { // ESC key
                     TuiEngine::FlushInputBuffer();
                     result.cancelled = true;
-                    result.errorMessage = "用户取消授权轮询";
+                    result.errorMessage = std::string(TR(MsgKey::ErrUserCancelledPoll));
                     LOG_INFO("SteamAuth", "用户按下 ESC 取消认证轮询");
                     return result;
                 }
@@ -183,7 +184,7 @@ SteamLoginResult SteamAuthService::PollAuthSession(
         }
     }
 
-    result.errorMessage = "认证轮询超时或用户取消授权";
+    result.errorMessage = std::string(TR(MsgKey::ErrAuthTimeoutOrCancelled));
     LOG_WARN("SteamAuth", "{}", result.errorMessage);
     return result;
 }
@@ -305,7 +306,7 @@ std::vector<OwnedGameInfo> SteamAuthService::FetchOwnedGames(
                                 sg.name = "App " + std::to_string(sg.appId);
                             }
                         }
-                        sg.name = "[共享] " + sg.name;
+                        sg.isShared = true;
                         games.push_back(std::move(sg));
                     }
                 }
@@ -327,14 +328,14 @@ SteamLoginResult SteamAuthService::LoginWithCredentials(
 
     auto rsaKey = GetPasswordRsaKey(accountName);
     if (!rsaKey) {
-        failResult.errorMessage = "无法从 Steam 服务器获取安全 RSA 公钥";
+        failResult.errorMessage = std::string(TR(MsgKey::ErrRsaKeyFailed));
         LOG_WARN("SteamAuth", "{}", failResult.errorMessage);
         return failResult;
     }
 
     auto session = BeginAuthSession(accountName, password, *rsaKey);
     if (!session) {
-        failResult.errorMessage = "发起认证会话失败，请检查账号密码是否正确";
+        failResult.errorMessage = std::string(TR(MsgKey::ErrAuthSessionFailed));
         LOG_WARN("SteamAuth", "{}", failResult.errorMessage);
         return failResult;
     }
@@ -344,10 +345,10 @@ SteamLoginResult SteamAuthService::LoginWithCredentials(
                  conf.type == 2 ? MaskEmail(conf.associatedMessage) : conf.associatedMessage);
         if (conf.type == 3) { // k_EAuthSessionGuardType_DeviceCode (Steam Mobile Authenticator TOTP)
             TuiEngine::ClearScreen();
-            auto codeOpt = TuiEngine::PromptInputModal("Steam Guard 手机令牌", "账号已启用手机令牌，请输入手机 App 上的 5 位动态验证码 (TOTP):");
+            auto codeOpt = TuiEngine::PromptInputModal(TR(MsgKey::GuardMobileTitle), TR(MsgKey::GuardMobilePrompt));
             if (!codeOpt) {
                 failResult.cancelled = true;
-                failResult.errorMessage = "用户取消二次验证输入";
+                failResult.errorMessage = std::string(TR(MsgKey::ErrUserCancelledInput));
                 LOG_INFO("SteamAuth", "用户在 2FA 手机令牌界面按 ESC 取消登录");
                 return failResult;
             }
@@ -358,12 +359,12 @@ SteamLoginResult SteamAuthService::LoginWithCredentials(
         } else if (conf.type == 2) { // k_EAuthSessionGuardType_EmailCode (Steam Guard Email Code)
             TuiEngine::ClearScreen();
             std::string prompt = conf.associatedMessage.empty()
-                ? "验证码已发送至您的注册邮箱，请输入邮件中的验证码:"
-                : std::format("验证码已发送至邮箱 ({})，请输入邮件中的验证码:", MaskEmail(conf.associatedMessage));
-            auto codeOpt = TuiEngine::PromptInputModal("Steam Guard 邮箱验证码", prompt);
+                ? std::string(TR(MsgKey::GuardEmailTitle))
+                : TR_FMT(MsgKey::GuardEmailPrompt, MaskEmail(conf.associatedMessage));
+            auto codeOpt = TuiEngine::PromptInputModal(TR(MsgKey::GuardEmailTitle), prompt);
             if (!codeOpt) {
                 failResult.cancelled = true;
-                failResult.errorMessage = "用户取消二次验证输入";
+                failResult.errorMessage = std::string(TR(MsgKey::ErrUserCancelledInput));
                 LOG_INFO("SteamAuth", "用户在邮箱验证码界面按 ESC 取消登录");
                 return failResult;
             }
@@ -373,10 +374,10 @@ SteamLoginResult SteamAuthService::LoginWithCredentials(
             break;
         } else if (conf.type == 4) { // k_EAuthSessionGuardType_DeviceConfirmation (Steam App 1-tap)
             TuiEngine::ClearScreen();
-            bool proceed = TuiEngine::ShowMessageModal("Steam 手机确认", "请在手机 Steam App 上点击【确认登录】", "确认通过后按 Enter 键继续，按 ESC 取消...");
+            bool proceed = TuiEngine::ShowMessageModal(TR(MsgKey::GuardDeviceTitle), TR(MsgKey::GuardDevicePrompt), TR(MsgKey::GuardDeviceDetail));
             if (!proceed) {
                 failResult.cancelled = true;
-                failResult.errorMessage = "用户取消手机确认";
+                failResult.errorMessage = std::string(TR(MsgKey::ErrUserCancelledDevice));
                 LOG_INFO("SteamAuth", "用户在手机确认提示界面按 ESC 取消登录");
                 return failResult;
             }
@@ -404,12 +405,12 @@ SteamLoginResult SteamAuthService::LoginWithCredentials(
 }
 
 SteamLoginResult SteamAuthService::InteractiveLogin(std::string_view accountName) {
-    SecureString password = ReadPasswordFromConsole("请输入 Steam 登录密码: ");
+    SecureString password = ReadPasswordFromConsole("Password: ");
     if (password.Empty()) {
         SteamLoginResult fail;
         fail.accountName = accountName;
         fail.cancelled = true;
-        fail.errorMessage = "用户取消输入密码";
+        fail.errorMessage = std::string(TR(MsgKey::ErrUserCancelledPwd));
         return fail;
     }
     return LoginWithCredentials(accountName, password);
