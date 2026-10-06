@@ -93,7 +93,7 @@ std::optional<SteamAuthSession> SteamAuthService::BeginAuthSession(
     auto steamIdOpt = JsonHelper::GetUInt64(resp.body, "steamid");
 
     if (!clientIdOpt || !requestIdOpt) {
-        LOG_ERROR("SteamAuth", "认证响应缺少 client_id 或 request_id: {}", resp.body);
+        LOG_ERROR("SteamAuth", "认证响应缺少 client_id 或 request_id (HTTP {})", resp.statusCode);
         return std::nullopt;
     }
 
@@ -204,7 +204,7 @@ std::optional<std::string> SteamAuthService::RefreshAccessToken(
         return std::nullopt;
     }
 
-    LOG_DEBUG("SteamAuth", "GenerateAccessTokenForApp 响应 (HTTP {}): {}", resp.statusCode, resp.body);
+    LOG_DEBUG("SteamAuth", "GenerateAccessTokenForApp 响应成功 (HTTP {})", resp.statusCode);
 
     auto accessOpt = JsonHelper::GetString(resp.body, "access_token");
     if (accessOpt && !accessOpt->empty()) {
@@ -212,7 +212,7 @@ std::optional<std::string> SteamAuthService::RefreshAccessToken(
         return accessOpt;
     }
 
-    LOG_WARN("SteamAuth", "响应体中未包含 access_token: {}", resp.body);
+    LOG_WARN("SteamAuth", "响应体中未包含 access_token (HTTP {})", resp.statusCode);
     return std::nullopt;
 }
 
@@ -340,7 +340,8 @@ SteamLoginResult SteamAuthService::LoginWithCredentials(
     }
 
     for (const auto& conf : session->allowedConfirmations) {
-        LOG_INFO("SteamAuth", "检测到需要二次验证: type={}, message={}", conf.type, conf.associatedMessage);
+        LOG_INFO("SteamAuth", "检测到需要二次验证: type={}, message={}", conf.type,
+                 conf.type == 2 ? MaskEmail(conf.associatedMessage) : conf.associatedMessage);
         if (conf.type == 3) { // k_EAuthSessionGuardType_DeviceCode (Steam Mobile Authenticator TOTP)
             TuiEngine::ClearScreen();
             auto codeOpt = TuiEngine::PromptInputModal("Steam Guard 手机令牌", "账号已启用手机令牌，请输入手机 App 上的 5 位动态验证码 (TOTP):");
@@ -358,7 +359,7 @@ SteamLoginResult SteamAuthService::LoginWithCredentials(
             TuiEngine::ClearScreen();
             std::string prompt = conf.associatedMessage.empty()
                 ? "验证码已发送至您的注册邮箱，请输入邮件中的验证码:"
-                : std::format("验证码已发送至邮箱 ({})，请输入邮件中的验证码:", conf.associatedMessage);
+                : std::format("验证码已发送至邮箱 ({})，请输入邮件中的验证码:", MaskEmail(conf.associatedMessage));
             auto codeOpt = TuiEngine::PromptInputModal("Steam Guard 邮箱验证码", prompt);
             if (!codeOpt) {
                 failResult.cancelled = true;

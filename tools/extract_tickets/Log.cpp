@@ -1,6 +1,8 @@
 #include "Log.h"
 #include "TuiEngine.h"
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <fstream>
 #include <iomanip>
@@ -42,6 +44,42 @@ namespace {
             case LogLevel::Error: return "ERROR";
             default:              return "UNKNOWN";
         }
+    }
+
+    std::string RedactMessage(std::string_view msg) {
+        if (msg.empty()) return {};
+        std::string result{msg};
+
+        // 1. JWT tokens: scan for "eyJ"
+        size_t pos = 0;
+        while ((pos = result.find("eyJ", pos)) != std::string::npos) {
+            if (pos > 0 && (std::isalnum(static_cast<unsigned char>(result[pos - 1])) || result[pos - 1] == '_' || result[pos - 1] == '-')) {
+                pos += 3;
+                continue;
+            }
+            size_t endPos = pos + 3;
+            while (endPos < result.size() &&
+                   (std::isalnum(static_cast<unsigned char>(result[endPos])) ||
+                    result[endPos] == '_' || result[endPos] == '-' || result[endPos] == '.')) {
+                ++endPos;
+            }
+            size_t len = endPos - pos;
+            if (len >= 30) {
+                std::string masked = MaskToken(std::string_view(result.data() + pos, len));
+                result.replace(pos, len, masked);
+                pos += masked.size();
+            } else {
+                pos += 3;
+            }
+        }
+
+        // 2. Windows User Path redaction
+        if (result.find("Users\\") != std::string::npos || result.find("Users/") != std::string::npos ||
+            result.find("users\\") != std::string::npos || result.find("users/") != std::string::npos) {
+            result = MaskPath(result);
+        }
+
+        return result;
     }
 } // namespace
 
@@ -122,6 +160,91 @@ std::string MaskGroupId(uint64_t groupId) {
     return MaskGroupId(std::to_string(groupId));
 }
 
+std::string MaskEmail(std::string_view email) {
+    if (email.empty()) return "***";
+    size_t atPos = email.find('@');
+    if (atPos == std::string_view::npos) {
+        return MaskAccount(email);
+    }
+    std::string_view local = email.substr(0, atPos);
+    std::string_view domain = email.substr(atPos); // includes '@'
+    if (local.size() <= 1) {
+        return "*" + std::string{domain};
+    }
+    if (local.size() <= 3) {
+        return std::string{local.substr(0, 1)} + "*@" + std::string{email.substr(atPos + 1)};
+    }
+    return std::string{local.substr(0, 2)} + "***" + std::string{local.substr(local.size() - 1)} + std::string{domain};
+}
+
+std::string MaskPicsToken(uint64_t picsToken) {
+    if (picsToken == 0) return "0";
+    std::string s = std::to_string(picsToken);
+    if (s.size() >= 8) {
+        return s.substr(0, 4) + "****" + s.substr(s.size() - 4);
+    }
+    return "***";
+}
+
+std::string MaskPath(std::string_view path) {
+    if (path.empty()) return {};
+    std::string s{path};
+    std::string lowerS = s;
+    for (char& c : lowerS) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+    size_t pos = 0;
+    while ((pos = lowerS.find("users", pos)) != std::string::npos) {
+        size_t slashPos = pos + 5;
+        if (slashPos < s.size() && (s[slashPos] == '\\' || s[slashPos] == '/')) {
+            size_t userStart = slashPos + 1;
+            size_t nextSlash = s.find_first_of("\\/", userStart);
+            if (nextSlash != std::string::npos && nextSlash > userStart) {
+                std::string_view userPart(s.data() + userStart, nextSlash - userStart);
+                std::string maskedUser = MaskAccount(userPart);
+                s.replace(userStart, nextSlash - userStart, maskedUser);
+                lowerS.replace(userStart, nextSlash - userStart, maskedUser);
+                pos = userStart + maskedUser.size();
+                continue;
+            } else if (nextSlash == std::string::npos && userStart < s.size()) {
+                std::string_view userPart(s.data() + userStart, s.size() - userStart);
+                std::string maskedUser = MaskAccount(userPart);
+                s.replace(userStart, s.size() - userStart, maskedUser);
+                break;
+            }
+        }
+        pos += 5;
+    }
+    return s;
+}
+
+std::string MaskUrl(std::string_view url) {
+    if (url.empty()) return {};
+    std::string s{url};
+    constexpr std::string_view sensitiveKeys[] = {
+        "access_token=", "refresh_token=", "password=", "auth_token="
+    };
+
+    for (const auto& key : sensitiveKeys) {
+        size_t pos = 0;
+        while ((pos = s.find(key, pos)) != std::string::npos) {
+            size_t valStart = pos + key.size();
+            size_t valEnd = s.find_first_of("&# \r\n", valStart);
+            if (valEnd == std::string::npos) {
+                valEnd = s.size();
+            }
+            if (valEnd > valStart) {
+                std::string_view val(s.data() + valStart, valEnd - valStart);
+                std::string masked = MaskToken(val);
+                s.replace(valStart, valEnd - valStart, masked);
+                pos = valStart + masked.size();
+            } else {
+                pos = valStart;
+            }
+        }
+    }
+    return s;
+}
+
 void InitLogging(const std::string& logFileName) {
     std::lock_guard<std::mutex> lock(g_logMutex);
     if (!g_loggingInitialized) {
@@ -153,11 +276,13 @@ void LogMessage(LogLevel level, std::string_view tag, std::string_view message) 
         g_loggingInitialized = true;
     }
 
+    const std::string safeMsg = RedactMessage(message);
+
     const std::string line = std::format("[{}] [{:<5}] [{}] {}",
                                          GetTimestampString(),
                                          LogLevelToString(level),
                                          tag,
-                                         message);
+                                         safeMsg);
 
     if (g_logFile.is_open()) {
         g_logFile << line << "\n";
@@ -167,9 +292,9 @@ void LogMessage(LogLevel level, std::string_view tag, std::string_view message) 
     // Only output to console if TUI is NOT active
     if (!TuiEngine::IsActive()) {
         if (level == LogLevel::Warn) {
-            std::cerr << "[WARN] " << message << "\n";
+            std::cerr << "[WARN] " << safeMsg << "\n";
         } else if (level == LogLevel::Error) {
-            std::cerr << "[ERROR] " << message << "\n";
+            std::cerr << "[ERROR] " << safeMsg << "\n";
         }
     }
 }

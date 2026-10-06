@@ -20,6 +20,10 @@ namespace OST::ExtractTickets {
 [[nodiscard]] std::string MaskKeyHex(std::string_view hexKey);
 [[nodiscard]] std::string MaskGroupId(std::string_view groupId);
 [[nodiscard]] std::string MaskGroupId(uint64_t groupId);
+[[nodiscard]] std::string MaskEmail(std::string_view email);
+[[nodiscard]] std::string MaskPicsToken(uint64_t picsToken);
+[[nodiscard]] std::string MaskPath(std::string_view path);
+[[nodiscard]] std::string MaskUrl(std::string_view url);
 
 // ============================================================================
 // Diagnostics Logging System

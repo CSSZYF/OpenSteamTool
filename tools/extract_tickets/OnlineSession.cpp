@@ -753,10 +753,10 @@ int OnlineSession::RunSilent(uint32_t appId, const std::string& accountName) {
             }
         }
         if (candidates.empty()) {
-            std::cerr << std::format("[ERROR] 未找到指定的已保存账号: '{}'\n", accountName);
+            std::cerr << std::format("[ERROR] 未找到指定的已保存账号: '{}'\n", MaskAccount(accountName));
             std::cerr << "[提示] 当前已保存的账号列表:\n";
             for (const auto& acc : accounts) {
-                std::cerr << "  - " << acc.accountName << "\n";
+                std::cerr << "  - " << MaskAccount(acc.accountName) << "\n";
             }
             return 1;
         }
@@ -779,10 +779,10 @@ int OnlineSession::RunSilent(uint32_t appId, const std::string& accountName) {
         const auto* curAcc = candidates[i];
         if (candidates.size() > 1 && accountName.empty()) {
             std::cout << std::format("[INFO] 正在尝试账号 [{}] ({}/{})...\n",
-                                     curAcc->accountName, i + 1, candidates.size());
+                                     MaskAccount(curAcc->accountName), i + 1, candidates.size());
         } else {
             std::cout << std::format("[INFO] 正在使用账号 [{}] 进行云端凭据提取 (目标 AppID: {})...\n",
-                                     curAcc->accountName, appId);
+                                     MaskAccount(curAcc->accountName), appId);
         }
 
         std::string activeToken = curAcc->accessToken;
@@ -824,14 +824,14 @@ int OnlineSession::RunSilent(uint32_t appId, const std::string& accountName) {
 
             if (i + 1 < candidates.size()) {
                 std::cout << std::format("[INFO] 账号 [{}] 未检测到 AppID {} 的正版授权 (无所有权票据及密钥)，自动切换下一账号尝试...\n",
-                                         curAcc->accountName, appId);
+                                         MaskAccount(curAcc->accountName), appId);
                 cmClient.Disconnect();
             }
             continue;
         }
 
         if (accountName.empty() && i + 1 < candidates.size()) {
-            std::cout << std::format("[WARN] 账号 [{}] 登录失败，自动尝试下一个可用账号...\n", curAcc->accountName);
+            std::cout << std::format("[WARN] 账号 [{}] 登录失败，自动尝试下一个可用账号...\n", MaskAccount(curAcc->accountName));
         }
     }
 

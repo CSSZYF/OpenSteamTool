@@ -272,13 +272,13 @@ std::optional<std::string> FindSteamInstallPath() {
 
     if (auto path = QueryRegistryString(HKEY_CURRENT_USER, kSteamKey, "SteamPath")) {
         std::string norm = NormalizeDir(*path);
-        LOG_DEBUG("SteamPath", "Found SteamPath in HKEY_CURRENT_USER: {}", norm);
+        LOG_DEBUG("SteamPath", "Found SteamPath in HKEY_CURRENT_USER: {}", MaskPath(norm));
         return norm;
     }
 
     if (auto path = QueryRegistryString(HKEY_LOCAL_MACHINE, kSteamKey, "InstallPath")) {
         std::string norm = NormalizeDir(*path);
-        LOG_DEBUG("SteamPath", "Found InstallPath in HKEY_LOCAL_MACHINE: {}", norm);
+        LOG_DEBUG("SteamPath", "Found InstallPath in HKEY_LOCAL_MACHINE: {}", MaskPath(norm));
         return norm;
     }
 
