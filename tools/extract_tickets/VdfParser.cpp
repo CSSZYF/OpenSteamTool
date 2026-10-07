@@ -67,8 +67,8 @@ bool IsAppInstalledLocally(const std::string& steamPath, uint32_t appId) {
     const auto libraries = FindSteamLibraryFolders(steamPath);
     for (const auto& lib : libraries) {
         const std::filesystem::path manifestPath = std::filesystem::path(lib) / "steamapps" / manifestName;
-        const DWORD attr = GetFileAttributesW(manifestPath.c_str());
-        if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(manifestPath, ec)) {
             return true;
         }
     }

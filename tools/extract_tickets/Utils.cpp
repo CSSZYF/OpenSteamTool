@@ -250,8 +250,8 @@ std::optional<std::string> FindSteamInstallPath() {
         };
         for (const wchar_t* p : defaultPaths) {
             std::filesystem::path checkExe = std::filesystem::path(p) / L"steam.exe";
-            DWORD attr = GetFileAttributesW(checkExe.c_str());
-            if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+            std::error_code ec;
+            if (std::filesystem::is_regular_file(checkExe, ec)) {
                 std::string norm = NormalizeDir(WideToUtf8(p));
                 LOG_DEBUG("SteamPath", "Found Steam install path at default location: {}", norm);
                 return norm;

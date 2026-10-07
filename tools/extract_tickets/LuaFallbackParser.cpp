@@ -247,8 +247,8 @@ std::vector<std::string> GetOstLuaSearchDirectories(const std::string& steamPath
         std::string norm = NormalizeDir(path);
         if (norm.empty()) return;
 
-        DWORD attr = GetFileAttributesW(std::filesystem::path(norm).c_str());
-        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        std::error_code ec;
+        if (std::filesystem::is_directory(std::filesystem::path(norm), ec)) {
             if (std::none_of(dirs.begin(), dirs.end(), [&](const std::string& existing) {
                 return _stricmp(existing.c_str(), norm.c_str()) == 0;
             })) {
@@ -327,17 +327,16 @@ LuaFallbackData ParseLuaFallbackData(const std::string& steamPath, uint32_t targ
     // First, look specifically for <targetAppId>.lua and dedicated <targetAppId>/ folder
     for (const auto& dir : searchDirs) {
         std::string directFile = JoinPath(dir, targetLuaName);
-        DWORD attr = GetFileAttributesW(std::filesystem::path(directFile).c_str());
-        if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(std::filesystem::path(directFile), ec)) {
             matchedFiles.push_back(directFile);
             manifestDirs.push_back(dir);
         }
 
         std::string subDir = JoinPath(dir, std::to_string(targetAppId));
-        DWORD subAttr = GetFileAttributesW(std::filesystem::path(subDir).c_str());
-        if (subAttr != INVALID_FILE_ATTRIBUTES && (subAttr & FILE_ATTRIBUTE_DIRECTORY)) {
+        if (std::filesystem::is_directory(std::filesystem::path(subDir), ec)) {
             std::string subFile = JoinPath(subDir, targetLuaName);
-            if (GetFileAttributesW(std::filesystem::path(subFile).c_str()) != INVALID_FILE_ATTRIBUTES) {
+            if (std::filesystem::is_regular_file(std::filesystem::path(subFile), ec)) {
                 matchedFiles.push_back(subFile);
             }
             manifestDirs.push_back(subDir);
