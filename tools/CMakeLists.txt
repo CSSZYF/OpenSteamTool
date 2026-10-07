@@ -46,6 +46,9 @@ target_link_libraries(extract_tickets PRIVATE
 target_compile_definitions(extract_tickets PRIVATE
     $<$<CONFIG:Debug>:EXTRACT_TICKETS_LOGGING_ENABLED>
 )
+set_target_properties(extract_tickets PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+)
 
 
 if(WIN32)
