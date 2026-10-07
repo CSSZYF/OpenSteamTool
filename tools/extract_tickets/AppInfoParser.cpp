@@ -411,6 +411,276 @@ void ParseVdfRecurse(VdfReader& reader,
     }
 }
 
+enum class TextVdfTokenType {
+    String,
+    OpenBrace,
+    CloseBrace,
+    EndOfFile
+};
+
+struct TextVdfToken {
+    TextVdfTokenType type{TextVdfTokenType::EndOfFile};
+    std::string value;
+};
+
+class TextVdfLexer {
+public:
+    explicit TextVdfLexer(std::string_view text) : m_text(text), m_pos(0), m_len(text.size()) {
+        if (m_len >= 3 &&
+            static_cast<uint8_t>(m_text[0]) == 0xEF &&
+            static_cast<uint8_t>(m_text[1]) == 0xBB &&
+            static_cast<uint8_t>(m_text[2]) == 0xBF) {
+            m_pos = 3;
+        }
+    }
+
+    TextVdfToken Next() {
+        if (m_peeked.has_value()) {
+            TextVdfToken t = std::move(*m_peeked);
+            m_peeked.reset();
+            return t;
+        }
+        return ReadNext();
+    }
+
+    const TextVdfToken& Peek() {
+        if (!m_peeked.has_value()) {
+            m_peeked = ReadNext();
+        }
+        return *m_peeked;
+    }
+
+private:
+    TextVdfToken ReadNext() {
+        while (m_pos < m_len) {
+            char c = m_text[m_pos];
+            if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+                ++m_pos;
+                continue;
+            }
+            if (c == '/' && m_pos + 1 < m_len && m_text[m_pos + 1] == '/') {
+                m_pos += 2;
+                while (m_pos < m_len && m_text[m_pos] != '\n') {
+                    ++m_pos;
+                }
+                continue;
+            }
+            if (c == '{') {
+                ++m_pos;
+                return {TextVdfTokenType::OpenBrace, "{"};
+            }
+            if (c == '}') {
+                ++m_pos;
+                return {TextVdfTokenType::CloseBrace, "}"};
+            }
+            if (c == '"') {
+                ++m_pos;
+                std::string s;
+                while (m_pos < m_len) {
+                    char sc = m_text[m_pos];
+                    if (sc == '\\' && m_pos + 1 < m_len) {
+                        char esc = m_text[m_pos + 1];
+                        if (esc == 'n') s += '\n';
+                        else if (esc == 't') s += '\t';
+                        else s += esc;
+                        m_pos += 2;
+                    } else if (sc == '"') {
+                        ++m_pos;
+                        break;
+                    } else {
+                        s += sc;
+                        ++m_pos;
+                    }
+                }
+                return {TextVdfTokenType::String, std::move(s)};
+            }
+
+            size_t start = m_pos;
+            while (m_pos < m_len) {
+                char bc = m_text[m_pos];
+                if (bc == ' ' || bc == '\t' || bc == '\r' || bc == '\n' ||
+                    bc == '{' || bc == '}' || bc == '"' ||
+                    (bc == '/' && m_pos + 1 < m_len && m_text[m_pos + 1] == '/')) {
+                    break;
+                }
+                ++m_pos;
+            }
+            return {TextVdfTokenType::String, std::string(m_text.substr(start, m_pos - start))};
+        }
+        return {TextVdfTokenType::EndOfFile, ""};
+    }
+
+    std::string_view m_text;
+    size_t m_pos{0};
+    size_t m_len{0};
+    std::optional<TextVdfToken> m_peeked;
+};
+
+void ParseTextVdfRecurse(
+    TextVdfLexer& lexer,
+    std::vector<std::string>& pathStack,
+    uint32_t currentDepotId,
+    ParsedAppInfoData& outData)
+{
+    if (pathStack.size() > 64) {
+        int depth = 1;
+        while (depth > 0) {
+            auto tok = lexer.Next();
+            if (tok.type == TextVdfTokenType::EndOfFile) break;
+            if (tok.type == TextVdfTokenType::OpenBrace) ++depth;
+            else if (tok.type == TextVdfTokenType::CloseBrace) --depth;
+        }
+        return;
+    }
+
+    auto recordManifest = [&](uint32_t depotId, std::string_view gidStr, bool isPublic) {
+        if (depotId == 0 || gidStr.empty() || !IsValidManifestId(gidStr)) return;
+        for (auto& d : outData.depots) {
+            if (d.depotId == depotId) {
+                if (isPublic || d.manifestId.empty()) {
+                    d.manifestId = std::string(gidStr);
+                    LOG_DEBUG("AppInfoParser", "Depot {} 记录清单 GID: {} (分支: {})",
+                              depotId, gidStr, isPublic ? "public" : "other");
+                }
+                return;
+            }
+        }
+        if (isPublic) {
+            outData.depots.push_back({depotId, std::string(gidStr), 0});
+            LOG_DEBUG("AppInfoParser", "Depot {} 记录清单 GID: {} (分支: public)", depotId, gidStr);
+        }
+    };
+
+    auto recordDlcId = [&](uint32_t depotId, uint32_t dlcId) {
+        if (dlcId == 0 || dlcId == outData.appId) return;
+        if (depotId > 0) {
+            for (auto& d : outData.depots) {
+                if (d.depotId == depotId && d.dlcId == 0) {
+                    d.dlcId = dlcId;
+                    break;
+                }
+            }
+        }
+        if (std::ranges::find(outData.dlcAppIds, dlcId) == outData.dlcAppIds.end()) {
+            outData.dlcAppIds.push_back(dlcId);
+            LOG_DEBUG("AppInfoParser", "发现关联 DLC AppID: {}", dlcId);
+        }
+    };
+
+    while (true) {
+        const auto& peek = lexer.Peek();
+        if (peek.type == TextVdfTokenType::CloseBrace || peek.type == TextVdfTokenType::EndOfFile) {
+            if (peek.type == TextVdfTokenType::CloseBrace) {
+                (void)lexer.Next();
+            }
+            return;
+        }
+
+        if (peek.type == TextVdfTokenType::OpenBrace) {
+            (void)lexer.Next();
+            ParseTextVdfRecurse(lexer, pathStack, currentDepotId, outData);
+            continue;
+        }
+
+        TextVdfToken keyToken = lexer.Next();
+        std::string key = std::move(keyToken.value);
+
+        const auto& afterKey = lexer.Peek();
+        if (afterKey.type == TextVdfTokenType::OpenBrace) {
+            (void)lexer.Next();
+
+            uint32_t nextDepotId = currentDepotId;
+            if (!pathStack.empty() && EqualIgnoreCase(pathStack.back(), "depots")) {
+                uint32_t parsedId = 0;
+                auto [ptr, ec] = std::from_chars(key.data(), key.data() + key.size(), parsedId);
+                if (ec == std::errc() && parsedId > 0) {
+                    nextDepotId = parsedId;
+                    if (std::none_of(outData.depots.begin(), outData.depots.end(),
+                                     [&](const AppDepotManifest& d) { return d.depotId == parsedId; })) {
+                        outData.depots.push_back({parsedId, "", 0});
+                        LOG_DEBUG("AppInfoParser", "发现 Depot ID: {}", parsedId);
+                    }
+                }
+            }
+
+            pathStack.push_back(key);
+            ParseTextVdfRecurse(lexer, pathStack, nextDepotId, outData);
+            pathStack.pop_back();
+        } else if (afterKey.type == TextVdfTokenType::String) {
+            TextVdfToken valToken = lexer.Next();
+            const std::string& val = valToken.value;
+
+            // Consume optional conditional tag if present (e.g. [$windows], [!$osx])
+            if (lexer.Peek().type == TextVdfTokenType::String &&
+                !lexer.Peek().value.empty() && lexer.Peek().value.front() == '[') {
+                (void)lexer.Next();
+            }
+
+            const bool isPublicBranch = (!pathStack.empty() && EqualIgnoreCase(pathStack.back(), "public"));
+            const bool isManifestsParent = (!pathStack.empty() && EqualIgnoreCase(pathStack.back(), "manifests"));
+            const bool isPublicKey = EqualIgnoreCase(key, "public");
+            const bool isGidKey = EqualIgnoreCase(key, "gid");
+
+            if (isGidKey || (isManifestsParent && isPublicKey)) {
+                recordManifest(currentDepotId, val, isPublicBranch || isPublicKey);
+            } else if ((EqualIgnoreCase(key, "dlc") || EqualIgnoreCase(key, "listofdlc")) &&
+                       !pathStack.empty() && EqualIgnoreCase(pathStack.back(), "extended")) {
+                size_t start = 0;
+                while (start < val.size()) {
+                    size_t comma = val.find(',', start);
+                    std::string_view token = (comma == std::string::npos) ?
+                        std::string_view(val).substr(start) :
+                        std::string_view(val).substr(start, comma - start);
+                    token = TrimWhitespace(token);
+                    uint32_t dlcId = 0;
+                    auto [ptr, ec] = std::from_chars(token.data(), token.data() + token.size(), dlcId);
+                    if (ec == std::errc() && dlcId > 0) {
+                        recordDlcId(currentDepotId, dlcId);
+                    }
+                    if (comma == std::string::npos) break;
+                    start = comma + 1;
+                }
+            } else if (!pathStack.empty() && EqualIgnoreCase(pathStack.back(), "extended")) {
+                if (EqualIgnoreCase(key, "gamerequiresdenuvo") && (val == "1" || EqualIgnoreCase(val, "true"))) {
+                    outData.requiresDenuvo = true;
+                    LOG_DEBUG("AppInfoParser", "检测到 Denuvo 反篡改保护标记 (gamerequiresdenuvo={})", val);
+                } else if (EqualIgnoreCase(key, "thirdpartydrm") &&
+                           (val.find("denuvo") != std::string_view::npos || val.find("Denuvo") != std::string_view::npos)) {
+                    outData.requiresDenuvo = true;
+                    LOG_DEBUG("AppInfoParser", "检测到第三方 DRM Denuvo 标记: {}", val);
+                }
+            } else if (EqualIgnoreCase(key, "dlcappid") && currentDepotId > 0) {
+                uint32_t dlcId = 0;
+                auto [ptr, ec] = std::from_chars(val.data(), val.data() + val.size(), dlcId);
+                if (ec == std::errc() && dlcId > 0) {
+                    recordDlcId(currentDepotId, dlcId);
+                }
+            } else if (EqualIgnoreCase(key, "name") && !pathStack.empty() && EqualIgnoreCase(pathStack.back(), "common")) {
+                if (outData.name.empty()) {
+                    outData.name = val;
+                    LOG_DEBUG("AppInfoParser", "解析到游戏官方名称: '{}'", outData.name);
+                }
+            } else if (pathStack.size() >= 2 && EqualIgnoreCase(pathStack.back(), "name_localized") &&
+                       EqualIgnoreCase(pathStack[pathStack.size() - 2], "common")) {
+                if (EqualIgnoreCase(key, I18n::GetSteamLanguageCode())) {
+                    outData.localizedName = val;
+                    LOG_DEBUG("AppInfoParser", "解析到匹配语言的官方本地化名称: '{}' ({})", outData.localizedName, key);
+                } else if (I18n::GetCurrentLanguage() == Language::Chinese && EqualIgnoreCase(key, "tchinese") && outData.localizedName.empty()) {
+                    outData.localizedName = val;
+                } else if (I18n::GetCurrentLanguage() == Language::Spanish && EqualIgnoreCase(key, "latam") && outData.localizedName.empty()) {
+                    outData.localizedName = val;
+                }
+            }
+        }
+    }
+}
+
+void ParseTextVdfAppInfo(std::string_view text, ParsedAppInfoData& outData) {
+    TextVdfLexer lexer(text);
+    std::vector<std::string> pathStack;
+    ParseTextVdfRecurse(lexer, pathStack, 0, outData);
+}
+
 } // namespace
 
 std::unordered_map<uint32_t, uint64_t> ParseAppInfoTokens(
@@ -490,10 +760,33 @@ std::optional<ParsedAppInfoData> ParseBinaryVdfAppInfo(
     ParsedAppInfoData out;
     out.appId = appId;
 
-    VdfReader reader{buffer.data(), buffer.data() + buffer.size(), nullptr};
-    std::vector<std::string_view> pathStack;
-    uint32_t curDepot = 0;
-    ParseVdfRecurse(reader, pathStack, out, curDepot);
+    // Detect format: Text KeyValues vs Binary VDF
+    size_t scanStart = 0;
+    if (buffer.size() >= 3 && buffer[0] == 0xEF && buffer[1] == 0xBB && buffer[2] == 0xBF) {
+        scanStart = 3;
+    }
+
+    bool isText = false;
+    for (size_t i = scanStart; i < buffer.size(); ++i) {
+        uint8_t b = buffer[i];
+        if (b == ' ' || b == '\t' || b == '\r' || b == '\n') continue;
+        if (b == '"' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '{') {
+            isText = true;
+        }
+        break;
+    }
+
+    if (isText) {
+        LOG_DEBUG("AppInfoParser", "检测到 PICS 响应为文本 VDF (KeyValues) 格式，启动文本解析引擎...");
+        std::string_view text(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+        ParseTextVdfAppInfo(text, out);
+    } else {
+        LOG_DEBUG("AppInfoParser", "检测到 PICS 响应为二进制 VDF 格式，启动二进制解析引擎...");
+        VdfReader reader{buffer.data(), buffer.data() + buffer.size(), nullptr};
+        std::vector<std::string_view> pathStack;
+        uint32_t curDepot = 0;
+        ParseVdfRecurse(reader, pathStack, out, curDepot);
+    }
 
     if (!out.localizedName.empty()) {
         out.name = std::move(out.localizedName);
