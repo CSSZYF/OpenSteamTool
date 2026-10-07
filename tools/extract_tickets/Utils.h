@@ -21,13 +21,11 @@ namespace OST::ExtractTickets {
 [[nodiscard]] bool IsValidManifestId(std::string_view value) noexcept;
 [[nodiscard]] bool IsHex64(std::string_view value) noexcept;
 [[nodiscard]] std::optional<uint32_t> ParseAppId(std::string_view value) noexcept;
-[[nodiscard]] std::optional<uint32_t> ReadAppIdFromConsole();
 [[nodiscard]] std::string SanitizeComment(std::string_view text);
 [[nodiscard]] std::vector<std::string> TokenizeQuoted(std::string_view line);
 
 // Hex formatting
 [[nodiscard]] std::string ToHexString(std::span<const uint8_t> data);
-void PrintHex(const char* label, std::span<const uint8_t> data);
 
 // File I/O
 bool WriteBinaryFile(const std::filesystem::path& path, std::span<const uint8_t> data);

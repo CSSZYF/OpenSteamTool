@@ -85,7 +85,6 @@ public:
 
     static bool IsActive() noexcept;
     static void SetActive(bool active) noexcept;
-    static void EraseToEndOfLine();
 
     // Input reading
     static KeyEvent ReadKey();

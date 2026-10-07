@@ -23,15 +23,6 @@ namespace {
     std::vector<std::string> s_cachedCdnServers;
     std::mutex s_cdnMutex;
 
-    std::string BytesToHex(std::span<const uint8_t> bytes) {
-        std::string hex;
-        hex.reserve(bytes.size() * 2);
-        for (uint8_t b : bytes) {
-            hex += std::format("{:02x}", b);
-        }
-        return hex;
-    }
-
     std::string FetchAppNameFromStore(uint32_t appId, WinHttpTransport* httpPtr = nullptr) {
         WinHttpTransport localHttp;
         WinHttpTransport& http = httpPtr ? *httpPtr : localHttp;
@@ -568,7 +559,7 @@ std::vector<DepotKeyInfo> SteamCmClient::RequestDepotKeys(uint32_t appId, const 
         if (eresult == 1 && !keyBytes.empty()) {
             DepotKeyInfo info;
             info.depotId = depotId;
-            info.hexKey = BytesToHex(keyBytes);
+            info.hexKey = ToHexString(keyBytes);
             LOG_INFO("SteamCM", "获取到 Depot {} 解密密钥: {}", depotId, MaskKeyHex(info.hexKey));
             keys.push_back(std::move(info));
         } else {

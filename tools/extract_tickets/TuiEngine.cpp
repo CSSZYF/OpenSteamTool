@@ -96,10 +96,6 @@ void TuiEngine::RepositionCursor() {
     std::cout.flush();
 }
 
-void TuiEngine::EraseToEndOfLine() {
-    std::cout << "\x1b[K";
-}
-
 void TuiEngine::GetScreenSize(int& outWidth, int& outHeight) {
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     CONSOLE_SCREEN_BUFFER_INFO csbi;

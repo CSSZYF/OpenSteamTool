@@ -30,12 +30,6 @@ public:
     // Extracts 32-bit unsigned integer value
     [[nodiscard]] static std::optional<uint32_t> GetUInt32(std::string_view json, std::string_view key);
 
-    // Extracts boolean value: "key": true / false
-    [[nodiscard]] static std::optional<bool> GetBool(std::string_view json, std::string_view key);
-
-    // Extracts confirmation_types from "allowed_confirmations": [ { "confirmation_type": 2 }, ... ]
-    [[nodiscard]] static std::vector<int> GetConfirmationTypes(std::string_view json);
-
     // Extracts full AllowedConfirmation list from "allowed_confirmations"
     [[nodiscard]] static std::vector<AllowedConfirmation> GetConfirmations(std::string_view json);
 

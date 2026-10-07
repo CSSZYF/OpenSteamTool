@@ -11,8 +11,6 @@
 
 namespace OST::ExtractTickets {
 
-[[nodiscard]] std::string TicketLine(const char* name, const std::optional<std::vector<uint8_t>>& ticket);
-
 bool WriteOutputs(uint32_t appId,
                   const std::optional<std::vector<uint8_t>>& ownership,
                   const std::optional<std::vector<uint8_t>>& encrypted,

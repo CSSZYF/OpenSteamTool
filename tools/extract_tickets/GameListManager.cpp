@@ -40,41 +40,6 @@ size_t GameListManager::TotalPages() const noexcept {
     return (m_games.size() + m_pageSize - 1) / m_pageSize;
 }
 
-void GameListManager::PrintCurrentPage() const {
-    const size_t total = m_games.size();
-    const size_t totalP = TotalPages();
-    const size_t startIdx = m_currentPage * m_pageSize;
-    const size_t endIdx = (std::min)(startIdx + m_pageSize, total);
-
-    std::cout << "\n======================================================================\n"
-              << "  当前账号已拥有游戏列表 (共 " << total << " 款) [第 "
-              << (m_currentPage + 1) << " / " << totalP << " 页]\n"
-              << "======================================================================\n"
-              << "序号    AppID       游戏名称 (Game Name)\n"
-              << "----------------------------------------------------------------------\n";
-
-    if (m_games.empty()) {
-        std::cout << "  (当前账号游戏库为空或尚未同步到许可)\n";
-    } else {
-        for (size_t i = startIdx; i < endIdx; ++i) {
-            const auto& game = m_games[i];
-            std::cout << std::left
-                      << "[" << std::setw(4) << (i + 1) << "] "
-                      << std::setw(11) << game.appId << " "
-                      << game.name << "\n";
-        }
-    }
-
-    std::cout << "----------------------------------------------------------------------\n"
-              << "[操作快捷指令] (单键直达 / 纯数字提取)\n"
-              << "  - <纯数字 AppID> : 直接提取指定游戏凭据与 Lua (例如输入 1091500 回车)\n"
-              << "  - a             : 批量提取全部游戏凭据 (需确认 [y/N]，默认回车为 N)\n"
-              << "  - n / b         : 翻页 -> [n] 下一页 (Next) | [b] 上一页 (Back)\n"
-              << "  - l             : 导出完整游戏列表表格 (需确认 [y/N]，默认回车为 N)\n"
-              << "  - q             : 登出当前账号，返回上一层账号选择列表 (Level 2)\n"
-              << "======================================================================\n";
-}
-
 bool GameListManager::NextPage() {
     if (m_currentPage + 1 < TotalPages()) {
         ++m_currentPage;
@@ -86,14 +51,6 @@ bool GameListManager::NextPage() {
 bool GameListManager::PrevPage() {
     if (m_currentPage > 0) {
         --m_currentPage;
-        return true;
-    }
-    return false;
-}
-
-bool GameListManager::JumpToPage(size_t pageNum) {
-    if (pageNum >= 1 && pageNum <= TotalPages()) {
-        m_currentPage = pageNum - 1;
         return true;
     }
     return false;

@@ -410,16 +410,4 @@ SteamLoginResult SteamAuthService::LoginWithCredentials(
     return result;
 }
 
-SteamLoginResult SteamAuthService::InteractiveLogin(std::string_view accountName) {
-    SecureString password = ReadPasswordFromConsole("Password: ");
-    if (password.Empty()) {
-        SteamLoginResult fail;
-        fail.accountName = accountName;
-        fail.cancelled = true;
-        fail.errorMessage = std::string(TR(MsgKey::ErrUserCancelledPwd));
-        return fail;
-    }
-    return LoginWithCredentials(accountName, password);
-}
-
 } // namespace OST::ExtractTickets

@@ -13,10 +13,12 @@
 
 namespace OST::ExtractTickets {
 
+namespace {
 std::string TicketLine(const char* name, const std::optional<std::vector<uint8_t>>& ticket) {
     if (!ticket || ticket->empty()) return std::string{name} + ":null\n";
     return std::format("{}({}bytes):{}\n", name, ticket->size(), ToHexString(*ticket));
 }
+} // namespace
 
 bool WriteOutputs(uint32_t appId,
                   const std::optional<std::vector<uint8_t>>& ownership,

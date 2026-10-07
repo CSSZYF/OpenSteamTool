@@ -137,44 +137,6 @@ std::optional<uint32_t> JsonHelper::GetUInt32(std::string_view json, std::string
     return std::nullopt;
 }
 
-std::optional<bool> JsonHelper::GetBool(std::string_view json, std::string_view key) {
-    size_t valPos = FindKeyPosition(json, key);
-    if (valPos == std::string_view::npos) return std::nullopt;
-
-    std::string_view sv = SkipWhitespace(json.substr(valPos));
-    if (sv.starts_with("true")) return true;
-    if (sv.starts_with("false")) return false;
-    return std::nullopt;
-}
-
-std::vector<int> JsonHelper::GetConfirmationTypes(std::string_view json) {
-    std::vector<int> types;
-    for (const auto& conf : GetConfirmations(json)) {
-        types.push_back(conf.type);
-    }
-    if (types.empty()) {
-        size_t pos = 0;
-        std::string_view target = "\"confirmation_type\"";
-        while ((pos = json.find(target, pos)) != std::string_view::npos) {
-            size_t afterKey = pos + target.size();
-            afterKey = json.find_first_not_of(" \t\r\n", afterKey);
-            if (afterKey != std::string_view::npos && json[afterKey] == ':') {
-                std::string_view sv = SkipWhitespace(json.substr(afterKey + 1));
-                size_t endNum = sv.find_first_of(" \t\r\n,}]");
-                if (endNum != std::string_view::npos) {
-                    int cType = 0;
-                    auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + endNum, cType);
-                    if (ec == std::errc()) {
-                        types.push_back(cType);
-                    }
-                }
-            }
-            pos += target.size();
-        }
-    }
-    return types;
-}
-
 std::vector<AllowedConfirmation> JsonHelper::GetConfirmations(std::string_view json) {
     std::vector<AllowedConfirmation> list;
     size_t targetPos = json.find("\"allowed_confirmations\"");

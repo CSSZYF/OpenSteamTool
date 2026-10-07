@@ -58,13 +58,6 @@ std::optional<uint32_t> ParseAppId(std::string_view value) noexcept {
     return parsed;
 }
 
-std::optional<uint32_t> ReadAppIdFromConsole() {
-    std::cout << "AppID: ";
-    std::string input;
-    if (!std::getline(std::cin, input)) return std::nullopt;
-    return ParseAppId(input);
-}
-
 std::string SanitizeComment(std::string_view text) {
     std::string out(text);
     for (char& c : out) {
@@ -125,38 +118,6 @@ std::string ToHexString(std::span<const uint8_t> data) {
         out += kHex[byte & 0xF];
     }
     return out;
-}
-
-void PrintHex(const char* label, std::span<const uint8_t> data) {
-    if (TuiEngine::IsActive()) return;
-    std::cout << label << " (" << data.size() << " bytes):\n";
-
-    constexpr size_t kBytesPerRow = 16;
-    static constexpr char kHex[] = "0123456789abcdef";
-
-    for (size_t row = 0; row < data.size(); row += kBytesPerRow) {
-        std::string line;
-        for (int shift = 12; shift >= 0; shift -= 4) {
-            line += kHex[(row >> shift) & 0xF];
-        }
-        line += "  ";
-
-        std::string ascii;
-        for (size_t col = 0; col < kBytesPerRow; ++col) {
-            if (row + col < data.size()) {
-                const uint8_t byte = data[row + col];
-                line += kHex[byte >> 4];
-                line += kHex[byte & 0xF];
-                line += ' ';
-                ascii += (byte >= 0x20 && byte < 0x7F) ? static_cast<char>(byte) : '.';
-            } else {
-                line += "   ";
-            }
-            if (col == 7) line += ' ';
-        }
-
-        std::cout << line << " " << ascii << "\n";
-    }
 }
 
 bool WriteBinaryFile(const std::filesystem::path& path, std::span<const uint8_t> data) {

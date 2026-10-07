@@ -534,48 +534,5 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
     return result;
 }
 
-bool ExtractTicketsFromLocalClient(
-    uint32_t appId,
-    std::optional<std::vector<uint8_t>>& outOwnership,
-    std::optional<std::vector<uint8_t>>& outEncrypted) {
-    auto steamPathOpt = FindSteamInstallPath();
-    if (!steamPathOpt || steamPathOpt->empty()) return false;
-
-    SteamSessionGuard guard{nullptr, 0, 0, nullptr};
-    std::string appIdStr = std::to_string(appId);
-    SetEnvironmentVariableA("SteamAppId", appIdStr.c_str());
-    SetEnvironmentVariableA("OST_TOOL_EXTRACTION", "1");
-
-    std::string steamClientPath;
-    HMODULE hClient = LoadSteamClient64(*steamPathOpt, steamClientPath);
-    if (!hClient) {
-        return false;
-    }
-    guard.module = hClient;
-
-    ISteamClient* client = CreateSteamClient(hClient);
-    if (!client) {
-        return false;
-    }
-    guard.client = client;
-
-    HSteamPipe pipe{0};
-    HSteamUser user{0};
-    bool ok = false;
-    if (OpenSession(client, pipe, user)) {
-        guard.pipe = pipe;
-        guard.user = user;
-        if (!outOwnership || outOwnership->empty()) {
-            outOwnership = ExtractAppOwnershipTicket(client, pipe, user, appId);
-            if (outOwnership && !outOwnership->empty()) ok = true;
-        }
-        if (!outEncrypted || outEncrypted->empty()) {
-            outEncrypted = ExtractEncryptedAppTicket(client, pipe, user, appId);
-            if (outEncrypted && !outEncrypted->empty()) ok = true;
-        }
-    }
-    return ok;
-}
-
 } // namespace OST::ExtractTickets
 

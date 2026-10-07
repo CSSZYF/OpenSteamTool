@@ -73,9 +73,6 @@ public:
         std::string_view accountName,
         const SecureString& password);
 
-    // High-level interactive login flow (prompts for password and 2FA in console)
-    [[nodiscard]] SteamLoginResult InteractiveLogin(std::string_view accountName);
-
     // Fetches owned games list via official WebAPI
     [[nodiscard]] std::vector<OwnedGameInfo> FetchOwnedGames(
         uint64_t steamId,
