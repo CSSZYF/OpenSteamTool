@@ -9,6 +9,7 @@
 #include <wincrypt.h>
 
 #include <algorithm>
+#include <charconv>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -75,13 +76,19 @@ namespace {
                     std::getline(fallbackStream, acc.refreshToken);
                 }
 
-                try {
-                    acc.steamId = std::stoull(steamIdStr);
-                    acc.lastLoginTime = std::stoll(timeStr);
+                uint64_t sId = 0;
+                const auto [p1, ec1] = std::from_chars(steamIdStr.data(), steamIdStr.data() + steamIdStr.size(), sId);
+                int64_t loginTime = 0;
+                const auto [p2, ec2] = std::from_chars(timeStr.data(), timeStr.data() + timeStr.size(), loginTime);
+
+                if (ec1 == std::errc{} && p1 == steamIdStr.data() + steamIdStr.size() &&
+                    ec2 == std::errc{} && p2 == timeStr.data() + timeStr.size()) {
+                    acc.steamId = sId;
+                    acc.lastLoginTime = loginTime;
                     if (!acc.accountName.empty() && !acc.refreshToken.empty()) {
                         result.push_back(std::move(acc));
                     }
-                } catch (...) {
+                } else {
                     LOG_WARN("TokenStorage", "跳过解析异常的账号条目");
                 }
             }

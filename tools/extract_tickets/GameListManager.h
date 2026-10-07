@@ -3,6 +3,7 @@
 #include "JsonHelper.h"
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -18,7 +19,7 @@ public:
     [[nodiscard]] size_t CurrentPage() const noexcept { return m_currentPage; }
     [[nodiscard]] size_t PageSize() const noexcept { return m_pageSize; }
     [[nodiscard]] const std::vector<OwnedGameInfo>& Games() const noexcept { return m_games; }
-    [[nodiscard]] std::vector<OwnedGameInfo> GetPageItems(size_t pageIndex) const;
+    [[nodiscard]] std::span<const OwnedGameInfo> GetPageItems(size_t pageIndex) const noexcept;
 
     // Navigates to next page (returns false if already on last page)
     bool NextPage();
