@@ -251,9 +251,11 @@ void Apply(const PipeContext& ctx) {
     bool denuvo = false;
     bool isDAuth2 = LuaConfig::IsDAuth2(ctx.appId);
 
+    bool cmdLineQueried = false;
     std::optional<std::string> cmdLine;
     auto GetCmdLine = [&]() -> const std::string* {
-        if (!cmdLine.has_value() && ctx.process.pid != 0) {
+        if (!cmdLineQueried && ctx.process.pid != 0) {
+            cmdLineQueried = true;
             cmdLine = OSTPlatform::Process::GetProcessCommandLine(ctx.process.pid);
         }
         return cmdLine ? &*cmdLine : nullptr;
