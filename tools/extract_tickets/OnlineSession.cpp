@@ -747,7 +747,7 @@ void OnlineSession::RunInSessionExtraction(
     }
 }
 
-int OnlineSession::RunSilent(uint32_t appId, const std::string& accountName) {
+int OnlineSession::RunSilent(uint32_t appId, const std::string& accountName, bool forceEticket) {
     if (appId == 0) {
         std::cerr << TR(MsgKey::InvalidAppId) << "\n";
         return 1;
@@ -814,7 +814,7 @@ int OnlineSession::RunSilent(uint32_t appId, const std::string& accountName) {
 
         if (logonOk) {
             std::cout << TR(MsgKey::CliExtractLoginSuccess) << "\n";
-            auto curCreds = cmClient.ExtractFullCredentials(appId);
+            auto curCreds = cmClient.ExtractFullCredentials(appId, forceEticket);
 
             const bool hasTicket = curCreds.appOwnershipTicket.has_value() || curCreds.encryptedAppTicket.has_value();
             const bool hasKeys = std::any_of(curCreds.depotKeys.begin(), curCreds.depotKeys.end(),

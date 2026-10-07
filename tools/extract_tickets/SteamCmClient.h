@@ -77,7 +77,7 @@ public:
     static void PromoteWorkingCdnServer(std::string_view server);
 
     // High-level extraction pipeline for a single target AppID
-    [[nodiscard]] ExtractedAppCredentials ExtractFullCredentials(uint32_t appId);
+    [[nodiscard]] ExtractedAppCredentials ExtractFullCredentials(uint32_t appId, bool forceEticket = false);
 
     void SetAccessToken(std::string_view token) { m_accessToken = token; }
     [[nodiscard]] bool IsConnected() const noexcept { return m_ws.IsConnected() && m_isLoggedOn; }

@@ -290,7 +290,7 @@ int Run(int argc, char** argv) {
 
     if (onlineMode) {
         if (cliAppId) {
-            return OnlineSession::RunSilent(*cliAppId, cliAccount);
+            return OnlineSession::RunSilent(*cliAppId, cliAccount, forceEticket);
         }
         TuiSessionGuard tuiGuard(_isatty(_fileno(stdin)) != 0);
         return OnlineSession::RunInteractive();

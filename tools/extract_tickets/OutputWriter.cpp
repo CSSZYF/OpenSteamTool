@@ -90,32 +90,32 @@ bool WriteOutputs(uint32_t appId,
     // Build tickets.txt summary
     std::string text;
     text.reserve(2048);
-    text += "appid:" + std::to_string(appId) + "\n";
+    std::format_to(std::back_inserter(text), "appid:{}\n", appId);
     for (const auto& dlc : dlcs) {
-        text += "dlc(" + std::to_string(dlc.dlcId) + ")";
         if (!dlc.name.empty()) {
-            text += ":" + SanitizeComment(dlc.name);
+            std::format_to(std::back_inserter(text), "dlc({}):{}\n", dlc.dlcId, SanitizeComment(dlc.name));
+        } else {
+            std::format_to(std::back_inserter(text), "dlc({})\n", dlc.dlcId);
         }
-        text += "\n";
     }
     for (const auto& dk : depotKeys) {
         if (!dk.hexKey.empty()) {
-            text += "depotkey(" + std::to_string(dk.depotId) + "):" + dk.hexKey + "\n";
+            std::format_to(std::back_inserter(text), "depotkey({}):{}\n", dk.depotId, dk.hexKey);
         }
     }
     for (const auto& dk : depotKeys) {
         if (IsValidManifestId(dk.manifestId)) {
-            text += "manifest(" + std::to_string(dk.depotId) + "):" + dk.manifestId + "\n";
+            std::format_to(std::back_inserter(text), "manifest({}):{}\n", dk.depotId, dk.manifestId);
         }
     }
     if (baseToken != 0) {
-        text += "token(" + std::to_string(appId) + "):" + std::to_string(baseToken) + "\n";
+        std::format_to(std::back_inserter(text), "token({}):{}\n", appId, baseToken);
     } else {
-        text += "token(" + std::to_string(appId) + "):null\n";
+        std::format_to(std::back_inserter(text), "token({}):null\n", appId);
     }
     for (const auto& [tId, tVal] : relevantTokens) {
         if (tId != appId) {
-            text += "token(" + std::to_string(tId) + "):" + std::to_string(tVal) + "\n";
+            std::format_to(std::back_inserter(text), "token({}):{}\n", tId, tVal);
         }
     }
     text += TicketLine("appticket", ownership);
@@ -236,15 +236,20 @@ bool WriteOutputs(uint32_t appId,
             }
 
             bool isDepotIncomplete = false;
-            if (!associatedDepots.empty()) {
-                for (const auto* dk : associatedDepots) {
-                    const bool manifestPresent = IsValidManifestId(dk->manifestId) && hasManifestOnDisk(dk->depotId, dk->manifestId);
+            bool hasPhysicalDepot = false;
+            for (const auto* dk : associatedDepots) {
+                if (IsValidManifestId(dk->manifestId)) {
+                    hasPhysicalDepot = true;
+                    const bool manifestPresent = hasManifestOnDisk(dk->depotId, dk->manifestId);
                     const bool keyPresent = !dk->hexKey.empty();
                     if (!manifestPresent || !keyPresent) {
                         isDepotIncomplete = true;
                         break;
                     }
                 }
+            }
+            if (!hasPhysicalDepot) {
+                isDepotIncomplete = false; // Pure logical DLC: zero physical files on CDN, always active
             }
 
             const std::string_view prefix = isDepotIncomplete ? "-- " : "";
@@ -253,7 +258,7 @@ bool WriteOutputs(uint32_t appId,
             if (dlcDk && !dlcDk->hexKey.empty()) {
                 luaText += std::format("{}addappid({}, 1, \"{}\")", prefix, dlc.dlcId, dlcDk->hexKey);
             } else {
-                luaText += std::format("{}addappid({})", prefix, dlc.dlcId);
+                luaText += std::format("{}addappid({}, 1)", prefix, dlc.dlcId);
             }
 
             if (!dlc.name.empty()) {

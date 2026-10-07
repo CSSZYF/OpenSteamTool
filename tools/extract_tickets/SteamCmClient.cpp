@@ -556,11 +556,15 @@ std::vector<DepotKeyInfo> SteamCmClient::RequestDepotKeys(uint32_t appId, const 
             }
         }
 
-        if (eresult == 1 && !keyBytes.empty()) {
+        if (eresult == 1) {
             DepotKeyInfo info;
             info.depotId = depotId;
-            info.hexKey = ToHexString(keyBytes);
-            LOG_INFO("SteamCM", "获取到 Depot {} 解密密钥: {}", depotId, MaskKeyHex(info.hexKey));
+            if (!keyBytes.empty()) {
+                info.hexKey = ToHexString(keyBytes);
+                LOG_INFO("SteamCM", "获取到 Depot {} 解密密钥: {}", depotId, MaskKeyHex(info.hexKey));
+            } else {
+                LOG_INFO("SteamCM", "Depot {} 为免密/公共 Depot (eresult=1)", depotId);
+            }
             keys.push_back(std::move(info));
         } else {
             LOG_DEBUG("SteamCM", "Depot {} 无密钥或未授权 (eresult={})", depotId, eresult);
@@ -1033,11 +1037,11 @@ std::optional<std::string> SteamCmClient::DownloadManifestOnline(
     return DownloadManifestPayload(appId, depotId, manifestId, reqCode, destDir, cdnServers, sharedHttp);
 }
 
-ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
+ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bool forceEticket) {
     ExtractedAppCredentials creds;
     creds.appId = appId;
 
-    // 1. AppOwnershipTicket
+    // 1. AppOwnershipTicket (纯净拉取，自主拥有与家庭共享在无会话状态下原生直接下发)
     LOG_DEBUG("SteamCM", "正在向 Steam CM 请求 AppOwnershipTicket (AppID={})...", appId);
     if (!TuiEngine::IsActive()) {
         std::cout << "  -> 正在向 Steam CM 请求 AppOwnershipTicket...\n";
@@ -1048,56 +1052,11 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
         if (!TuiEngine::IsActive()) {
             std::cout << "     [OK] 提取到所有权票据 (" << creds.appOwnershipTicket->size() << " 字节)\n";
         }
-    }
-
-    // 2. EncryptedAppTicket
-    LOG_DEBUG("SteamCM", "正在向 Steam CM 请求 EncryptedAppTicket (AppID={})...", appId);
-    if (!TuiEngine::IsActive()) {
-        std::cout << "  -> 正在向 Steam CM 请求 EncryptedAppTicket...\n";
-    }
-    creds.encryptedAppTicket = RequestEncryptedAppTicket(appId);
-    if (creds.encryptedAppTicket) {
-        LOG_INFO("SteamCM", "提取到加密票据 ({} 字节)", creds.encryptedAppTicket->size());
-        if (!TuiEngine::IsActive()) {
-            std::cout << "     [OK] 提取到加密票据 (" << creds.encryptedAppTicket->size() << " 字节)\n";
-        }
-    }
-
-    // 2.1 针对家庭共享/临时会话激活：若票据缺失，通过 ClientGamesPlayed (eMsg 742) 建立游戏会话重试提取
-    if (!creds.appOwnershipTicket || !creds.encryptedAppTicket) {
-        LOG_INFO("SteamCM", "检测到 AppID {} 票据未就绪，尝试通过 ClientGamesPlayed 激活会话授权...", appId);
-        SetGamePlayed(appId);
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));
-
-        if (!creds.appOwnershipTicket) {
-            creds.appOwnershipTicket = RequestAppOwnershipTicket(appId);
-            if (creds.appOwnershipTicket) {
-                LOG_INFO("SteamCM", "会话激活后成功提取到所有权票据 ({} 字节)", creds.appOwnershipTicket->size());
-                if (!TuiEngine::IsActive()) {
-                    std::cout << "     [OK] 激活会话提取到所有权票据 (" << creds.appOwnershipTicket->size() << " 字节)\n";
-                }
-            }
-        }
-        if (!creds.encryptedAppTicket) {
-            creds.encryptedAppTicket = RequestEncryptedAppTicket(appId);
-            if (creds.encryptedAppTicket) {
-                LOG_INFO("SteamCM", "会话激活后成功提取到加密票据 ({} 字节)", creds.encryptedAppTicket->size());
-                if (!TuiEngine::IsActive()) {
-                    std::cout << "     [OK] 激活会话提取到加密票据 (" << creds.encryptedAppTicket->size() << " 字节)\n";
-                }
-            }
-        }
-        SetGamePlayed(0);
-    }
-
-    if (!creds.appOwnershipTicket) {
+    } else {
         LOG_INFO("SteamCM", "未能获取所有权票据 (账号未直接拥有或属于共享借用；OpenSteamTool 将在运行时自动执行 AppID 7 伪造兜底)");
     }
-    if (!creds.encryptedAppTicket) {
-        LOG_INFO("SteamCM", "未能获取加密票据 (无加密运行时授权需求或未拥有)");
-    }
 
-    // 3. 纯官方云端向 Steam CM PICS 请求完整产品元数据 (包含全部 Depots、清单号与所有 DLC 列表)
+    // 2. 纯官方云端向 Steam CM PICS 请求完整产品元数据 (包含全部 Depots、清单号、所有 DLC 列表与 DRM 标记)
     LOG_DEBUG("SteamCM", "正在向 Steam CM 查询 AppID {} 的 64 位 PICS 访问令牌...", appId);
     uint64_t appToken = 0;
     auto tokMap = RequestAppTokens({ appId });
@@ -1108,10 +1067,46 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
     LOG_DEBUG("SteamCM", "正在向 Steam CM PICS 请求官方产品元数据 (AppID={}, token={})...", appId, MaskPicsToken(appToken));
     auto appInfoData = RequestPicsProductInfo(appId, appToken);
 
+    // 3. EncryptedAppTicket (精准定向直达: 仅在检测到 Denuvo 保护或显式强制时激活游戏会话)
+    const bool isDenuvoApp = appInfoData && appInfoData->requiresDenuvo;
+    const bool needsETicket = isDenuvoApp || forceEticket;
+
+    if (needsETicket) {
+        LOG_INFO("SteamCM", "检测到游戏需要加密票据 (Denuvo={}, 强制={})，建立定向会话授权...", isDenuvoApp, forceEticket);
+        if (!TuiEngine::IsActive()) {
+            std::cout << "  -> 正在建立定向会话以提取加密票据 (Denuvo / 专用 DRM)...\n";
+        }
+        SetGamePlayed(appId);
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        creds.encryptedAppTicket = RequestEncryptedAppTicket(appId);
+        if (creds.encryptedAppTicket) {
+            LOG_INFO("SteamCM", "定向会话提取到加密票据 ({} 字节)", creds.encryptedAppTicket->size());
+            if (!TuiEngine::IsActive()) {
+                std::cout << "     [OK] 激活会话提取到加密票据 (" << creds.encryptedAppTicket->size() << " 字节)\n";
+            }
+        } else {
+            LOG_WARN("SteamCM", "定向会话仍未能获取加密票据 (可能账号无权访问该产品)");
+        }
+
+        // 极端边界兜底：若前置未拿到所有权票据，在会话中顺带重试一次
+        if (!creds.appOwnershipTicket) {
+            creds.appOwnershipTicket = RequestAppOwnershipTicket(appId);
+            if (creds.appOwnershipTicket) {
+                LOG_INFO("SteamCM", "会话激活后成功提取到所有权票据 ({} 字节)", creds.appOwnershipTicket->size());
+                if (!TuiEngine::IsActive()) {
+                    std::cout << "     [OK] 激活会话提取到所有权票据 (" << creds.appOwnershipTicket->size() << " 字节)\n";
+                }
+            }
+        }
+        SetGamePlayed(0);
+    } else {
+        LOG_DEBUG("SteamCM", "普通游戏无需 Denuvo 加密票据 (eticket)，已优雅跳过会话激活");
+    }
+
     std::vector<DepotKeyInfo> depotKeys;
     std::unordered_set<uint32_t> unauthorizedDepots;
     std::unordered_set<uint32_t> unownedDlcIds;
-    bool unownedBaseApp = false;
     std::unordered_set<uint32_t> knownDlcSet;
     const std::string outDir = std::to_string(appId);
     size_t downloadedManifests = 0;
@@ -1128,7 +1123,7 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
         LOG_INFO("SteamCM", "获得官方 AppInfo 数据 (共 {} 个 Depot, {} 个 DLC)",
                  appInfoData->depots.size(), appInfoData->dlcAppIds.size());
 
-        // 3.1 识别所有 DLC（包含无独立 Depot 的 DLC，例如季票、豪华版升级包、皮肤包、原声音乐等）
+        // 4.1 识别所有 DLC（包含无独立 Depot 的逻辑 DLC，例如季票、豪华版升级包、皮肤包、原声音乐等）
         for (uint32_t dlcId : appInfoData->dlcAppIds) {
             if (dlcId != appId && !knownDlcSet.contains(dlcId)) {
                 knownDlcSet.insert(dlcId);
@@ -1138,7 +1133,7 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
             }
         }
 
-        // 3.2 提取官方 Depot 与关联清单 ID (GID)
+        // 4.2 提取官方 Depot 与关联清单 ID (GID)
         for (const auto& dInfo : appInfoData->depots) {
             if (dInfo.dlcId > 0 && dInfo.dlcId != appId && !knownDlcSet.contains(dInfo.dlcId)) {
                 knownDlcSet.insert(dInfo.dlcId);
@@ -1165,21 +1160,79 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
             }
         }
 
-        // 3.3 优先拉取官方清单文件 (两阶段流水线: CM 请求码轻量收集 + 异步多路并发 CDN 下载，与后续 CM 查询完全重叠)
-        LOG_INFO("SteamCM", "正在纯云端拉取官方清单文件 (共 {} 个待处理 Depot)...", depotKeys.size());
+        // 4.3 纯官方云端向 Steam CM 查询真实物理 Depot 解密密钥 (先验授权鉴定，杜绝后续清单盲目撞门)
+        std::vector<uint32_t> queryDepotList;
+        for (const auto& dk : depotKeys) {
+            // 严格剔除无独立 Depot 的纯逻辑 DLC 容器 (dlcId == depotId 或属于已知 DLC AppID 且无清单)
+            if (dk.manifestId.empty() && (dk.depotId == dk.dlcId || knownDlcSet.contains(dk.depotId))) {
+                continue;
+            }
+            // 严格剔除无任何有效清单的非 base 游戏条目 (未发布/已弃用/仅存在于私有分支的 Depot)
+            if (dk.manifestId.empty() && dk.depotId != appId) {
+                continue;
+            }
+            queryDepotList.push_back(dk.depotId);
+        }
+        if (std::find(queryDepotList.begin(), queryDepotList.end(), appId) == queryDepotList.end()) {
+            queryDepotList.push_back(appId);
+        }
+        std::sort(queryDepotList.begin(), queryDepotList.end());
+        queryDepotList.erase(std::unique(queryDepotList.begin(), queryDepotList.end()), queryDepotList.end());
+
+        LOG_DEBUG("SteamCM", "正在向 Steam CM 查询 Depot 解密密钥 (AppID={}, 共 {} 个候选物理 Depot)...", appId, queryDepotList.size());
+        if (!TuiEngine::IsActive()) {
+            std::cout << "  -> 正在向 Steam CM 查询 Depot 解密密钥与授权...\n";
+        }
+
+        std::vector<DepotKeyInfo> cmKeys = RequestDepotKeys(appId, queryDepotList);
+        std::unordered_set<uint32_t> authorizedDepots;
+        std::unordered_map<uint32_t, std::string> cmKeyMap;
+
+        for (const auto& cmKey : cmKeys) {
+            authorizedDepots.insert(cmKey.depotId);
+            if (!cmKey.hexKey.empty()) {
+                cmKeyMap[cmKey.depotId] = cmKey.hexKey;
+            }
+        }
+
+        for (auto& dk : depotKeys) {
+            if (dk.hexKey.empty()) {
+                auto it = cmKeyMap.find(dk.depotId);
+                if (it != cmKeyMap.end()) {
+                    dk.hexKey = it->second;
+                }
+            }
+        }
+
+        for (const auto& cmKey : cmKeys) {
+            if (std::none_of(depotKeys.begin(), depotKeys.end(),
+                             [&](const DepotKeyInfo& k) { return k.depotId == cmKey.depotId; })) {
+                depotKeys.push_back(cmKey);
+            }
+        }
+
+        for (uint32_t depId : queryDepotList) {
+            if (!authorizedDepots.contains(depId)) {
+                unauthorizedDepots.insert(depId);
+                for (const auto& dk : depotKeys) {
+                    if (dk.depotId == depId && dk.dlcId > 0 && dk.dlcId != appId) {
+                        unownedDlcIds.insert(dk.dlcId);
+                    }
+                }
+            }
+        }
+
+        // 4.4 针对已授权物理 Depot 拉取官方清单文件 (免撞门两阶段流水线: CM 请求码收集 + 异步并发 CDN 下载)
+        LOG_INFO("SteamCM", "正在云端拉取官方清单文件 (已授权 Depot: {}/{})...", authorizedDepots.size(), queryDepotList.size());
         if (!TuiEngine::IsActive()) {
             std::cout << "  -> 正在纯云端拉取官方清单文件 (.manifest)...\n";
         }
 
         for (auto& dk : depotKeys) {
             if (IsValidManifestId(dk.manifestId)) {
-                const bool isBaseDepot = (dk.dlcId == 0 || dk.dlcId == appId);
-                if (isBaseDepot && unownedBaseApp) {
-                    unauthorizedDepots.insert(dk.depotId);
-                    continue;
-                }
-                if (!isBaseDepot && unownedDlcIds.contains(dk.dlcId)) {
-                    unauthorizedDepots.insert(dk.depotId);
+                // 彻底杜绝撞门：仅对确认已授权的物理 Depot 请求清单
+                if (!authorizedDepots.contains(dk.depotId)) {
+                    LOG_DEBUG("SteamCM", "Depot {} 未获许可或未授权，优雅跳过清单请求", dk.depotId);
                     continue;
                 }
 
@@ -1198,15 +1251,6 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
                 std::string reqCode = FetchManifestRequestCode(appId, dk.depotId, dk.manifestId, &accessDenied);
                 if (!reqCode.empty() && reqCode != "0") {
                     downloadTasks.push_back({dk.depotId, dk.manifestId, std::move(reqCode)});
-                } else if (accessDenied) {
-                    unauthorizedDepots.insert(dk.depotId);
-                    if (isBaseDepot && !creds.appOwnershipTicket) {
-                        unownedBaseApp = true;
-                        LOG_DEBUG("SteamCM", "基底游戏 Depot {} 访问被拒绝且账号无所有权票据，跳过后续所有基底子 Depot", dk.depotId);
-                    } else if (!isBaseDepot) {
-                        unownedDlcIds.insert(dk.dlcId);
-                        LOG_DEBUG("SteamCM", "Depot {} 访问被拒绝，标记所属 DLC {} 为未拥有，跳过后续所有关联子 Depot", dk.depotId, dk.dlcId);
-                    }
                 }
             }
         }
@@ -1243,7 +1287,7 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
             });
         }
 
-        // 3.4 纯官方云端批量解析所有 DLC 名称 (Steam CM PICS 公开元数据查询 + Store WebAPI 补充兜底)
+        // 4.5 纯官方云端批量解析所有 DLC 名称 (Steam CM PICS 公开元数据查询 + Store WebAPI 补充兜底)
         std::vector<uint32_t> missingDlcNames;
         for (const auto& d : creds.dlcs) {
             if (d.name.empty()) {
@@ -1272,64 +1316,6 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId) {
                     }
                 }
             }
-        }
-    }
-
-    // 4. 纯官方云端向 Steam CM 查询全部真实 Depot 解密密钥 (严格排除无独立 Depot 的纯逻辑 DLC 与已知未授权 Depot，防止触发 CM 风控)
-    std::unordered_set<uint32_t> depotsNeedingKeys;
-    if (!unauthorizedDepots.contains(appId) && !unownedBaseApp) {
-        depotsNeedingKeys.insert(appId);
-    }
-    for (const auto& dk : depotKeys) {
-        if (dk.hexKey.empty() && !unauthorizedDepots.contains(dk.depotId)) {
-            if (dk.dlcId > 0 && unownedDlcIds.contains(dk.dlcId)) {
-                continue;
-            }
-            if ((dk.dlcId == 0 || dk.dlcId == appId) && unownedBaseApp) {
-                continue;
-            }
-            // 严格剔除无独立 Depot 的纯逻辑 DLC 容器 (dlcId == depotId 或属于已知 DLC AppID 且无清单)
-            if (dk.manifestId.empty() && (dk.depotId == dk.dlcId || knownDlcSet.contains(dk.depotId))) {
-                continue;
-            }
-            // 严格剔除无任何有效清单的非 base 游戏条目 (未发布/已弃用/仅存在于私有分支的 Depot)
-            if (dk.manifestId.empty() && dk.depotId != appId) {
-                continue;
-            }
-            depotsNeedingKeys.insert(dk.depotId);
-        }
-    }
-
-    LOG_DEBUG("SteamCM", "正在向 Steam CM 查询 Depot 解密密钥 (AppID={}, 共 {} 个真实 Depot)...", appId, depotsNeedingKeys.size());
-    if (!TuiEngine::IsActive()) {
-        std::cout << "  -> 正在向 Steam CM 查询 Depot 解密密钥...\n";
-    }
-
-    std::vector<uint32_t> queryDepotList(depotsNeedingKeys.begin(), depotsNeedingKeys.end());
-    std::sort(queryDepotList.begin(), queryDepotList.end());
-
-    std::vector<DepotKeyInfo> cmKeys = RequestDepotKeys(appId, queryDepotList);
-
-    std::unordered_map<uint32_t, std::string> cmKeyMap;
-    for (const auto& cmKey : cmKeys) {
-        if (!cmKey.hexKey.empty()) {
-            cmKeyMap[cmKey.depotId] = cmKey.hexKey;
-        }
-    }
-
-    for (auto& dk : depotKeys) {
-        if (dk.hexKey.empty()) {
-            auto it = cmKeyMap.find(dk.depotId);
-            if (it != cmKeyMap.end()) {
-                dk.hexKey = it->second;
-            }
-        }
-    }
-
-    for (const auto& cmKey : cmKeys) {
-        if (std::none_of(depotKeys.begin(), depotKeys.end(),
-                         [&](const DepotKeyInfo& k) { return k.depotId == cmKey.depotId; })) {
-            depotKeys.push_back(cmKey);
         }
     }
 

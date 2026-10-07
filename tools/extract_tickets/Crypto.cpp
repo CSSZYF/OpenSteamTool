@@ -111,7 +111,7 @@ SecureString ReadPasswordFromConsole(const char* prompt) {
         } else if (ch == 3) { // Ctrl+C
             pwd.Clear();
             std::cout << "\n[INFO] 用户中断输入。\n";
-            exit(0);
+            return pwd;
         } else if (ch >= 32 && ch <= 126) { // Printable characters
             pwd.Append(static_cast<char>(ch));
             std::cout << '*';

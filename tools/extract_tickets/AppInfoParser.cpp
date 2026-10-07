@@ -342,6 +342,15 @@ void ParseVdfRecurse(VdfReader& reader,
                     if (comma == std::string_view::npos) break;
                     start = comma + 1;
                 }
+            } else if (!pathStack.empty() && EqualIgnoreCase(pathStack.back(), "extended")) {
+                if (EqualIgnoreCase(key, "gamerequiresdenuvo") && (val == "1" || EqualIgnoreCase(val, "true"))) {
+                    outData.requiresDenuvo = true;
+                    LOG_DEBUG("AppInfoParser", "检测到 Denuvo 反篡改保护标记 (gamerequiresdenuvo={})", val);
+                } else if (EqualIgnoreCase(key, "thirdpartydrm") &&
+                           (val.find("denuvo") != std::string_view::npos || val.find("Denuvo") != std::string_view::npos)) {
+                    outData.requiresDenuvo = true;
+                    LOG_DEBUG("AppInfoParser", "检测到第三方 DRM Denuvo 标记: {}", val);
+                }
             } else if (EqualIgnoreCase(key, "dlcappid") && currentDepotId > 0) {
                 uint32_t dlcId = 0;
                 auto [ptr, ec] = std::from_chars(val.data(), val.data() + val.size(), dlcId);
@@ -370,6 +379,10 @@ void ParseVdfRecurse(VdfReader& reader,
 
             if (EqualIgnoreCase(key, "dlcappid") && currentDepotId > 0 && val > 0) {
                 recordDlcId(static_cast<uint32_t>(val));
+            } else if (!pathStack.empty() && EqualIgnoreCase(pathStack.back(), "extended") &&
+                       EqualIgnoreCase(key, "gamerequiresdenuvo") && val != 0) {
+                outData.requiresDenuvo = true;
+                LOG_DEBUG("AppInfoParser", "检测到 Denuvo 反篡改保护标记 (gamerequiresdenuvo={})", val);
             }
         } else if (type == 0x03) { // Float
             float f = 0.0f;
