@@ -29,6 +29,8 @@ add_executable(extract_tickets
     extract_tickets/GameListManager.cpp
     extract_tickets/OnlineSession.cpp
     extract_tickets/TuiEngine.cpp
+    extract_tickets/I18n.cpp
+    extract_tickets/I18n.h
     extract_tickets/tinflate.c
     extract_tickets/tinfgzip.c
     extract_tickets/crc32.c
@@ -42,6 +44,7 @@ target_link_libraries(extract_tickets PRIVATE
     winhttp
     crypt32
     bcrypt
+    user32
 )
 target_compile_definitions(extract_tickets PRIVATE
     $<$<CONFIG:Debug>:EXTRACT_TICKETS_LOGGING_ENABLED>

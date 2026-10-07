@@ -1,5 +1,6 @@
 #include "SteamSession.h"
 #include "AppInfoParser.h"
+#include "I18n.h"
 #include "Log.h"
 #include "LuaFallbackParser.h"
 #include "RaiiGuards.h"
@@ -18,7 +19,7 @@ namespace OST::ExtractTickets {
 HMODULE LoadSteamClient64(const std::string& steamPath, std::string& loadedPath) {
     if (steamPath.empty()) {
         if (!TuiEngine::IsActive()) {
-            std::cerr << "[WARN] 未在注册表中找到 Steam 安装路径 / Failed to find Steam install path in registry.\n";
+            std::cerr << TR(MsgKey::SessionNoSteamPath) << "\n";
         }
         LOG_WARN("SteamSession", "未在注册表中找到 Steam 安装路径");
         return nullptr;
@@ -35,7 +36,7 @@ HMODULE LoadSteamClient64(const std::string& steamPath, std::string& loadedPath)
     HMODULE module{LoadLibraryExW(std::filesystem::path(loadedPath).c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH)};
     if (!module) {
         if (!TuiEngine::IsActive()) {
-            std::cerr << "[WARN] 加载 steamclient64.dll 失败 / Failed to load " << loadedPath << " (GetLastError=" << GetLastError() << ").\n";
+            std::cerr << TR_FMT(MsgKey::SessionLoadClientFailed, loadedPath, GetLastError()) << "\n";
         }
         LOG_WARN("SteamSession", "加载 steamclient64.dll 失败: {} (GetLastError={})", loadedPath, GetLastError());
         return nullptr;
@@ -49,7 +50,7 @@ ISteamClient* CreateSteamClient(HMODULE module) {
     auto createInterface{reinterpret_cast<CreateInterfaceFn>(GetProcAddress(module, "CreateInterface"))};
     if (!createInterface) {
         if (!TuiEngine::IsActive()) {
-            std::cerr << "[WARN] steamclient64.dll 缺少 CreateInterface 导出 / steamclient64.dll has no CreateInterface export.\n";
+            std::cerr << TR(MsgKey::SessionNoCreateInterface) << "\n";
         }
         LOG_WARN("SteamSession", "steamclient64.dll 缺少 CreateInterface 导出");
         return nullptr;
@@ -114,29 +115,19 @@ std::optional<std::vector<uint8_t>> ExtractAppOwnershipTicket(
 
     if (written > buffer.size()) {
         buffer.resize(written);
-        const uint32_t written2{appTicket->GetAppOwnershipTicketData(
+        written = appTicket->GetAppOwnershipTicketData(
             appId,
             buffer.data(),
             static_cast<uint32_t>(buffer.size()),
             &appIdOffset,
             &steamIdOffset,
             &signatureOffset,
-            &signatureSize)};
-        if (written2 == 0 || written2 > buffer.size()) {
-            if (!TuiEngine::IsActive()) {
-                std::cerr << "[INFO] 未能获取 AppID " << appId << " 的所有权票据 (账号可能未拥有或本地未缓存) / "
-                          << "GetAppOwnershipTicketData returned no ticket for AppID " << appId
-                          << " (account may not own the app or not cached locally).\n";
-            }
-            LOG_INFO("SteamSession", "未能获取 AppID {} 的所有权票据", appId);
-            return std::nullopt;
-        }
-        written = written2;
-    } else if (written == 0) {
+            &signatureSize);
+    }
+
+    if (written == 0 || written > buffer.size()) {
         if (!TuiEngine::IsActive()) {
-            std::cerr << "[INFO] 未能获取 AppID " << appId << " 的所有权票据 (账号可能未拥有或本地未缓存) / "
-                      << "GetAppOwnershipTicketData returned no ticket for AppID " << appId
-                      << " (account may not own the app or not cached locally).\n";
+            std::cerr << TR_FMT(MsgKey::SessionNoOwnershipTicket, appId) << "\n";
         }
         LOG_INFO("SteamSession", "未能获取 AppID {} 的所有权票据", appId);
         return std::nullopt;
@@ -210,12 +201,11 @@ std::optional<std::vector<uint8_t>> ExtractEncryptedAppTicket(
     }
     if (response.m_eResult != k_EResultOK) {
         if (!TuiEngine::IsActive()) {
-            std::cerr << "[INFO] 请求 EncryptedAppTicket 返回状态码 / RequestEncryptedAppTicket returned EResult "
-                      << static_cast<int>(response.m_eResult);
             if (response.m_eResult == k_EResultAccessDenied) {
-                std::cerr << " (AccessDenied: 当前登录账号未拥有该游戏或无权获取其凭据 / Account does not own this app or lacks permission)";
+                std::cerr << TR(MsgKey::SessionEncryptedTicketDenied) << "\n";
+            } else {
+                std::cerr << "[INFO] RequestEncryptedAppTicket EResult: " << static_cast<int>(response.m_eResult) << ".\n";
             }
-            std::cerr << ".\n";
         }
         LOG_INFO("SteamSession", "请求 EncryptedAppTicket 返回状态码 EResult {} (游戏未配置加密票据密钥或未授权，通常单机游戏无需此票据)", static_cast<int>(response.m_eResult));
         return std::nullopt;
@@ -226,7 +216,7 @@ std::optional<std::vector<uint8_t>> ExtractEncryptedAppTicket(
     steamUser->GetEncryptedAppTicket(nullptr, 0, &cbTicket);
     if (cbTicket == 0) {
         if (!TuiEngine::IsActive()) {
-            std::cerr << "[WARN] 加密票据为空 / Encrypted app ticket is empty.\n";
+            std::cerr << TR(MsgKey::SessionEncryptedTicketEmpty) << "\n";
         }
         LOG_WARN("SteamSession", "加密票据为空");
         return std::nullopt;
@@ -235,7 +225,7 @@ std::optional<std::vector<uint8_t>> ExtractEncryptedAppTicket(
     std::vector<uint8_t> buffer(cbTicket);
     if (!steamUser->GetEncryptedAppTicket(buffer.data(), static_cast<int>(buffer.size()), &cbTicket)) {
         if (!TuiEngine::IsActive()) {
-            std::cerr << "[WARN] 获取 EncryptedAppTicket 数据失败 / GetEncryptedAppTicket failed.\n";
+            std::cerr << TR(MsgKey::SessionEncryptedTicketFailed) << "\n";
         }
         LOG_WARN("SteamSession", "获取 EncryptedAppTicket 数据失败");
         return std::nullopt;

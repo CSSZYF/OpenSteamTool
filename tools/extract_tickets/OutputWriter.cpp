@@ -25,14 +25,15 @@ bool WriteOutputs(uint32_t appId,
                   const std::optional<std::vector<uint8_t>>& encrypted,
                   const std::vector<DepotKeyInfo>& depotKeys,
                   const std::vector<DlcInfo>& dlcs,
-                  const std::unordered_map<uint32_t, uint64_t>& appTokens) {
+                  const std::unordered_map<uint32_t, uint64_t>& appTokens,
+                  bool isOnlineMode) {
     const std::string dir{std::to_string(appId)};
     std::filesystem::path dirPath = Utf8Path(dir);
     std::error_code ec;
     std::filesystem::create_directories(dirPath, ec);
     if (ec) {
         if (!TuiEngine::IsActive()) {
-            std::cerr << "Failed to create directory " << dir << " (" << ec.message() << ").\n";
+            std::cerr << TR_FMT(MsgKey::OutCreateDirFailed, dir, ec.message()) << "\n";
         }
         LOG_ERROR("OutputWriter", "创建输出目录失败: {} ({})", dir, ec.message());
         return false;
@@ -125,7 +126,7 @@ bool WriteOutputs(uint32_t appId,
     std::ofstream summary{textPath, std::ios::trunc};
     if (!summary || !(summary << text)) {
         if (!TuiEngine::IsActive()) {
-            std::cerr << "Failed to write " << textPath.string() << ".\n";
+            std::cerr << TR_FMT(MsgKey::OutWriteFileFailed, textPath.string()) << "\n";
         }
         LOG_ERROR("OutputWriter", "写入 tickets.txt 失败: {}", textPath.string());
         return false;
@@ -367,7 +368,7 @@ bool WriteOutputs(uint32_t appId,
     std::ofstream luaFile{luaPath, std::ios::binary | std::ios::trunc};
     if (!luaFile || !(luaFile << luaText)) {
         if (!TuiEngine::IsActive()) {
-            std::cerr << "Failed to write " << luaPath.string() << ".\n";
+            std::cerr << TR_FMT(MsgKey::OutWriteFileFailed, luaPath.string()) << "\n";
         }
         LOG_ERROR("OutputWriter", "写入 Lua 脚本失败: {}", luaPath.string());
         ok = false;
@@ -383,7 +384,7 @@ bool WriteOutputs(uint32_t appId,
         std::cout << ")\n";
 
         if (!dlcs.empty()) {
-            std::cout << "[INFO] 已提取 " << dlcs.size() << " 个拥有的 DLC / Extracted " << dlcs.size() << " owned DLC(s):\n";
+            std::cout << TR_FMT(MsgKey::OutExtractedDlcs, dlcs.size()) << "\n";
             for (const auto& dlc : dlcs) {
                 std::cout << "       DLC " << dlc.dlcId;
                 if (!dlc.name.empty()) {
@@ -392,47 +393,45 @@ bool WriteOutputs(uint32_t appId,
                 std::cout << "\n";
             }
         } else {
-            std::cout << "[INFO] 未检测到该游戏拥有的 DLC / No owned DLCs found for AppID " << appId << ".\n";
+            std::cout << TR_FMT(MsgKey::OutNoDlcs, appId) << "\n";
         }
 
         const size_t keyCount = std::count_if(depotKeys.begin(), depotKeys.end(), [](const DepotKeyInfo& dk) {
             return !dk.hexKey.empty();
         });
         if (keyCount > 0) {
-            std::cout << "[INFO] 已提取 " << keyCount << " 个 Depot 解密密钥 / Extracted " << keyCount << " depot decryption key(s):\n";
+            std::cout << TR_FMT(MsgKey::OutExtractedDepotKeys, keyCount) << "\n";
             for (const auto& dk : depotKeys) {
                 if (!dk.hexKey.empty()) {
                     std::cout << "       Depot " << dk.depotId << ": " << dk.hexKey << "\n";
                 }
             }
         } else {
-            std::cout << "[INFO] 未在 config.vdf 中找到缓存的 Depot 解密密钥 / No cached depot decryption keys found in config.vdf for AppID " << appId << ".\n";
-            std::cout << "[TIP] 若该游戏需要 Depot 密钥，请在 Steam 中启动一次安装/更新以生成缓存，然后重新运行提取工具。\n"
-                      << "      If this game requires depot keys, start installing/updating it once in Steam to cache them, then run extract_tickets again.\n";
+            std::cout << TR_FMT(MsgKey::OutNoDepotKeys, appId) << "\n";
+            std::cout << TR(MsgKey::OutDepotKeysTip) << "\n";
         }
 
         if (!copiedManifests.empty()) {
-            std::cout << "[INFO] 已提取 " << copiedManifests.size() << " 个清单文件 (.manifest) / Extracted " << copiedManifests.size() << " depot manifest file(s) (.manifest):\n";
+            std::cout << TR_FMT(MsgKey::OutExtractedManifests, copiedManifests.size()) << "\n";
             for (const auto& mName : copiedManifests) {
                 std::cout << "       " << mName << "\n";
             }
         } else {
-            std::cout << "[INFO] 未在 depotcache 中找到缓存的清单文件 (.manifest) / No cached .manifest files found in depotcache for AppID " << appId << ".\n";
+            std::cout << TR_FMT(MsgKey::OutNoManifests, appId) << "\n";
         }
 
         if (!relevantTokens.empty()) {
-            std::cout << "[INFO] 已提取 " << relevantTokens.size() << " 个访问令牌 (AccessToken) / Extracted "
-                      << relevantTokens.size() << " access token(s):\n";
+            std::cout << TR_FMT(MsgKey::OutExtractedTokens, relevantTokens.size()) << "\n";
             for (const auto& [tId, tVal] : relevantTokens) {
                 std::cout << "       AppID " << tId << ": " << tVal << "\n";
             }
+        } else if (isOnlineMode) {
+            std::cout << TR(MsgKey::OutPublicProductTokenZero) << "\n";
         } else {
-            std::cout << "[INFO] 未在 appinfo.vdf 中找到非零访问令牌 (该游戏可能无需 Access Token) / "
-                      << "No non-zero access token found in appinfo.vdf for AppID " << appId
-                      << " (this game may not require an access token).\n";
+            std::cout << TR_FMT(MsgKey::OutNoAccessTokenLocal, appId) << "\n";
         }
 
-        std::cout << "[INFO] 配置文件已生成 / Ready-to-use Lua script saved to: " << luaPath.string() << "\n";
+        std::cout << TR_FMT(MsgKey::OutConfigSaved, luaPath.string()) << "\n";
     }
 
     const size_t keyCount = std::count_if(depotKeys.begin(), depotKeys.end(), [](const DepotKeyInfo& dk) {
