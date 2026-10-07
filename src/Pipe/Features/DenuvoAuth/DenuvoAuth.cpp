@@ -28,10 +28,17 @@ namespace {
     // while expiring well before the game engine initializes save directories (preventing save drift).
     constexpr std::chrono::milliseconds kScheme1StartupPulseDuration{300};
 
-    // Ticket micro-pulse (300ms): triggered specifically upon GetAppOwnershipTicketExtendedData,
+    // Ownership ticket micro-pulse (300ms): triggered specifically upon GetAppOwnershipTicketExtendedData,
     // allowing Denuvo's immediate memcmp cross-check (takes ~3ms in logs) to succeed (avoiding Error 54).
     // Automatically expires in 300ms, cleanly restoring authentic SteamID for gameplay and saves.
     constexpr std::chrono::milliseconds kScheme1TicketPulseDuration{300};
+
+    // Encrypted ticket delivery pulse (2500ms): triggered specifically upon GetEncryptedAppTicket,
+    // when ticket bytes are delivered to Denuvo for activation/re-activation.
+    // 2500ms comfortably absorbs Denuvo's ~1.4s internal VM crypto hashing and subsequent
+    // secondary-pipe verification burst (~1.8s total), cleanly completing activation
+    // before game overlay or engine save systems initialize.
+    constexpr std::chrono::milliseconds kScheme1DeliveryPulseDuration{2500};
 
     enum class Stage {
         None,
@@ -117,7 +124,10 @@ namespace {
                 if (!startupArmed) {
                     startupArmed = true;
                     const auto now = std::chrono::steady_clock::now();
-                    scheme1Deadline = now + kScheme1StartupPulseDuration;
+                    const auto startupDeadline = now + kScheme1StartupPulseDuration;
+                    if (startupDeadline > scheme1Deadline) {
+                        scheme1Deadline = startupDeadline;
+                    }
                     LOG_PIPE_INFO("DenuvoAuth: [Scheme 1 - Default] startup micro-pulse armed for pid={} (+{}ms) {}",
                                   pid, kScheme1StartupPulseDuration.count(), this->DebugString());
                 } else {
@@ -127,7 +137,7 @@ namespace {
             }
         }
 
-        void ExtendTicketLease() {
+        void OnOwnershipTicketRequested() {
             if (!denuvo) return;
             const auto now = std::chrono::steady_clock::now();
 
@@ -141,7 +151,7 @@ namespace {
                                   pid, kTicketLeaseDuration.count(), this->DebugString());
                 }
             } else {
-                // Scheme 1 (Default): Arm ticket micro-pulse (+300ms).
+                // Scheme 1 (Default): Arm ownership ticket micro-pulse (+300ms).
                 // Denuvo requests GetAppOwnershipTicketExtendedData and immediately performs
                 // memcmp(Ticket->SteamID, GetSteamID()) cross-check (takes ~3ms in telemetry).
                 // A 300ms micro-pulse provides high tolerance for Denuvo verification across all pipes,
@@ -149,8 +159,38 @@ namespace {
                 const auto newDeadline = now + kScheme1TicketPulseDuration;
                 if (newDeadline > scheme1Deadline) {
                     scheme1Deadline = newDeadline;
-                    LOG_PIPE_INFO("DenuvoAuth: [Scheme 1 - Default] ticket micro-pulse armed for pid={} (+{}ms) {}",
+                    LOG_PIPE_INFO("DenuvoAuth: [Scheme 1 - Default] ownership micro-pulse armed for pid={} (+{}ms) {}",
                                   pid, kScheme1TicketPulseDuration.count(), this->DebugString());
+                }
+            }
+        }
+
+        void OnEncryptedTicketRequested() {
+            if (!denuvo) return;
+            LOG_PIPE_DEBUG("DenuvoAuth: [Async Reservation] encrypted ticket requested (0ms pollution) for pid={} {}",
+                           pid, this->DebugString());
+        }
+
+        void OnEncryptedTicketDelivered() {
+            if (!denuvo) return;
+            const auto now = std::chrono::steady_clock::now();
+
+            if (isDAuth2) {
+                const auto newDeadline = now + kTicketLeaseDuration;
+                if (newDeadline > authDeadline) {
+                    authDeadline = newDeadline;
+                    LOG_PIPE_INFO("DenuvoAuth: [Scheme 2 - dauth2] encrypted ticket delivered lease extended for pid={} (+{}ms) {}",
+                                  pid, kTicketLeaseDuration.count(), this->DebugString());
+                }
+            } else {
+                // Precision Delivery Pulse (2500ms): starts timing exactly when the ticket bytes
+                // are delivered to Denuvo. Accommodates VM crypto computation (~1.4s) and the
+                // secondary-pipe 5-hit verification burst (~1.8s) during initial activation or token refresh.
+                const auto newDeadline = now + kScheme1DeliveryPulseDuration;
+                if (newDeadline > scheme1Deadline) {
+                    scheme1Deadline = newDeadline;
+                    LOG_PIPE_INFO("DenuvoAuth: [Scheme 1 - Default] encrypted ticket delivered -> activation delivery pulse armed for pid={} (+{}ms) {}",
+                                  pid, kScheme1DeliveryPulseDuration.count(), this->DebugString());
                 }
             }
         }
@@ -211,8 +251,18 @@ void Apply(const PipeContext& ctx) {
     bool denuvo = false;
     bool isDAuth2 = LuaConfig::IsDAuth2(ctx.appId);
 
-    if (!isDAuth2 && ctx.process.pid != 0) {
-        if (const auto cmd = OSTPlatform::Process::GetProcessCommandLine(ctx.process.pid)) {
+    bool cmdLineQueried = false;
+    std::optional<std::string> cmdLine;
+    auto GetCmdLine = [&]() -> const std::string* {
+        if (!cmdLineQueried && ctx.process.pid != 0) {
+            cmdLineQueried = true;
+            cmdLine = OSTPlatform::Process::GetProcessCommandLine(ctx.process.pid);
+        }
+        return cmdLine ? &*cmdLine : nullptr;
+    };
+
+    if (!isDAuth2) {
+        if (const auto* cmd = GetCmdLine()) {
             if (HasDAuth2Arg(cmd->c_str())) {
                 isDAuth2 = true;
                 LuaConfig::SetCmdLineDAuth2(ctx.appId, true);
@@ -225,18 +275,16 @@ void Apply(const PipeContext& ctx) {
         bool isNoDenuvo = LuaConfig::IsNoDenuvo(ctx.appId);
         bool isForcedDenuvo = LuaConfig::IsForcedDenuvo(ctx.appId);
 
-        if (ctx.process.pid != 0) {
-            if (const auto cmd = OSTPlatform::Process::GetProcessCommandLine(ctx.process.pid)) {
-                if (!isNoDenuvo && HasNoDenuvoArg(cmd->c_str())) {
-                    isNoDenuvo = true;
-                    LuaConfig::SetCmdLineNoDenuvo(ctx.appId, true);
-                    LOG_PIPE_INFO("DenuvoAuth: detected -nodenuvo in process command line for appid={}", ctx.appId);
-                }
-                if (!isForcedDenuvo && HasForcedDenuvoArg(cmd->c_str())) {
-                    isForcedDenuvo = true;
-                    LuaConfig::SetCmdLineForcedDenuvo(ctx.appId, true);
-                    LOG_PIPE_INFO("DenuvoAuth: detected -forcedenuvo in process command line for appid={}", ctx.appId);
-                }
+        if (const auto* cmd = GetCmdLine()) {
+            if (!isNoDenuvo && HasNoDenuvoArg(cmd->c_str())) {
+                isNoDenuvo = true;
+                LuaConfig::SetCmdLineNoDenuvo(ctx.appId, true);
+                LOG_PIPE_INFO("DenuvoAuth: detected -nodenuvo in process command line for appid={}", ctx.appId);
+            }
+            if (!isForcedDenuvo && HasForcedDenuvoArg(cmd->c_str())) {
+                isForcedDenuvo = true;
+                LuaConfig::SetCmdLineForcedDenuvo(ctx.appId, true);
+                LOG_PIPE_INFO("DenuvoAuth: detected -forcedenuvo in process command line for appid={}", ctx.appId);
             }
         }
 
@@ -287,33 +335,67 @@ void Apply(const PipeContext& ctx) {
     auth.OnHandshake(ctx);
 }
 
-void OnTicketRequested(const CPipeClient* pipe, AppId_t appId) {
-    std::lock_guard lock(g_authMutex);
-    if (pipe) {
-        const PipeKey pipeKey = MakePipeKey(pipe);
-        ProcessAuth* auth = FindAuthForPipe(pipeKey);
-        if (auth) {
-            if (auth->denuvo) {
-                if (auth->authorizedAppId == k_uAppIdInvalid && appId != k_uAppIdInvalid) {
-                    auth->authorizedAppId = appId;
+namespace {
+
+    template <typename Fn>
+    void DispatchAuthForPipe(const CPipeClient* pipe, AppId_t appId, Fn&& fn) {
+        std::lock_guard lock(g_authMutex);
+        if (pipe) {
+            const PipeKey pipeKey = MakePipeKey(pipe);
+            ProcessAuth* auth = FindAuthForPipe(pipeKey);
+            if (auth) {
+                if (auth->denuvo) {
+                    if (auth->authorizedAppId == k_uAppIdInvalid && appId != k_uAppIdInvalid) {
+                        auth->authorizedAppId = appId;
+                    }
+                    fn(*auth);
                 }
-                auth->ExtendTicketLease();
+                return;
             }
-            return;
         }
-    }
+        if (appId == k_uAppIdInvalid) return;
 
-    if (appId == k_uAppIdInvalid) return;
-
-    for (auto& [procKey, auth] : g_processAuth) {
-        if (auth.denuvo && (auth.authorizedAppId == appId || auth.authorizedAppId == k_uAppIdInvalid)) {
-            if (auth.authorizedAppId == k_uAppIdInvalid) {
+        // Fallback: match by AppId when pipe is null or untracked.
+        // Prioritize exact match for appId first to avoid ambiguous cross-dispatch.
+        for (auto& [procKey, auth] : g_processAuth) {
+            if (auth.denuvo && auth.authorizedAppId == appId) {
+                fn(auth);
+                return;
+            }
+        }
+        for (auto& [procKey, auth] : g_processAuth) {
+            if (auth.denuvo && auth.authorizedAppId == k_uAppIdInvalid) {
                 auth.authorizedAppId = appId;
+                fn(auth);
+                return;
             }
-            auth.ExtendTicketLease();
         }
     }
+
+} // namespace
+
+void OnTicketRequested(const CPipeClient* pipe, AppId_t appId) {
+    OnOwnershipTicketRequested(pipe, appId);
 }
+
+void OnOwnershipTicketRequested(const CPipeClient* pipe, AppId_t appId) {
+    DispatchAuthForPipe(pipe, appId, [](ProcessAuth& auth) {
+        auth.OnOwnershipTicketRequested();
+    });
+}
+
+void OnEncryptedTicketRequested(const CPipeClient* pipe, AppId_t appId) {
+    DispatchAuthForPipe(pipe, appId, [](ProcessAuth& auth) {
+        auth.OnEncryptedTicketRequested();
+    });
+}
+
+void OnEncryptedTicketDelivered(const CPipeClient* pipe, AppId_t appId) {
+    DispatchAuthForPipe(pipe, appId, [](ProcessAuth& auth) {
+        auth.OnEncryptedTicketDelivered();
+    });
+}
+
 
 bool IsAuthorizedPipe(const CPipeClient* pipe) {
     if (!pipe) {
