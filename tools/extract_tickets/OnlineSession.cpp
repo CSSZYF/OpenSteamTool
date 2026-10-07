@@ -271,6 +271,7 @@ void OnlineSession::RunAccountSelectionMenu() {
             // 'd' or Delete -> Delete selected account
             if (ev.code == KeyCode::Delete ||
                 (ev.code == KeyCode::Char && (ev.ch == 'd' || ev.ch == 'D'))) {
+                if (TuiEngine::HasInputPending()) continue;
                 if (selected >= 1 && selected <= accounts.size()) {
                     const auto& targetAcc = accounts[selected - 1];
                     TuiEngine::ClearScreen();
@@ -536,6 +537,7 @@ void OnlineSession::RunInSessionExtraction(
 
         // 'l' / 'L' -> Export CSV
         if (ev.code == KeyCode::Char && (ev.ch == 'l' || ev.ch == 'L')) {
+            if (TuiEngine::HasInputPending()) continue;
             TuiEngine::ClearScreen();
             bool confirmed = TuiEngine::ShowConfirmModal(
                 TR(MsgKey::CsvExportTitle).data(),
@@ -558,6 +560,7 @@ void OnlineSession::RunInSessionExtraction(
 
         // 'a' / 'A' -> Batch extract all
         if (ev.code == KeyCode::Char && (ev.ch == 'a' || ev.ch == 'A')) {
+            if (TuiEngine::HasInputPending()) continue;
             TuiEngine::ClearScreen();
             bool confirmed = TuiEngine::ShowConfirmModal(
                 TR(MsgKey::BatchConfirmTitle).data(),
@@ -686,10 +689,9 @@ void OnlineSession::RunInSessionExtraction(
                 TuiEngine::ClearScreen();
                 TuiEngine::DrawBox(eTop, eLeft, eModalW, eModalH, TR(MsgKey::ExtractingOnlineTitle).data());
 
-                std::string line1 = std::string{TR(MsgKey::ExtractingOnlineMsg1)};
                 std::string line2 = TR_FMT(MsgKey::ExtractingOnlineMsg2, gameName, targetAppId);
 
-                TuiEngine::PrintBounded(eTop + 2, eLeft + 4, line1, eInnerW, "\x1b[1;33m");
+                TuiEngine::PrintBounded(eTop + 2, eLeft + 4, TR(MsgKey::ExtractingOnlineMsg1), eInnerW, "\x1b[1;33m");
                 TuiEngine::PrintBounded(eTop + 3, eLeft + 4, line2, eInnerW, "\x1b[36m");
                 std::cout.flush();
 

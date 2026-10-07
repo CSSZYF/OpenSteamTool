@@ -104,8 +104,8 @@ std::string FindDepotManifestFile(const std::vector<std::string>& depotcacheDirs
         std::string expectedName = std::to_string(depotId) + "_" + inOutManifestId + ".manifest";
         for (const auto& dc : depotcacheDirs) {
             std::string fullPath = JoinPath(dc, expectedName);
-            DWORD attr = GetFileAttributesA(fullPath.c_str());
-            if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+            std::error_code ec;
+            if (std::filesystem::is_regular_file(std::filesystem::path(fullPath), ec)) {
                 return fullPath;
             }
         }

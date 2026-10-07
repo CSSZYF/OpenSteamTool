@@ -14,7 +14,19 @@ namespace {
     }
 
     size_t FindKeyPosition(std::string_view json, std::string_view key) {
-        std::string pattern = "\"" + std::string(key) + "\"";
+        char stackBuf[128];
+        std::string heapBuf;
+        std::string_view pattern;
+        if (key.size() + 2 <= sizeof(stackBuf)) {
+            stackBuf[0] = '"';
+            std::memcpy(stackBuf + 1, key.data(), key.size());
+            stackBuf[key.size() + 1] = '"';
+            pattern = std::string_view(stackBuf, key.size() + 2);
+        } else {
+            heapBuf = "\"" + std::string(key) + "\"";
+            pattern = heapBuf;
+        }
+
         size_t pos = 0;
         while ((pos = json.find(pattern, pos)) != std::string_view::npos) {
             size_t afterKey = pos + pattern.size();

@@ -88,6 +88,7 @@ public:
 
     // Input reading
     static KeyEvent ReadKey();
+    [[nodiscard]] static bool HasInputPending() noexcept;
 };
 
 class TuiSessionGuard {

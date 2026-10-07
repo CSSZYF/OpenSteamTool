@@ -264,13 +264,12 @@ std::vector<std::string> GetOstLuaSearchDirectories(const std::string& steamPath
     }
 
     // 2. Executable directory
-    char exeBuf[MAX_PATH]{};
+    wchar_t exeBuf[32768]{};
     std::string exeDir;
-    if (GetModuleFileNameA(nullptr, exeBuf, MAX_PATH) > 0) {
-        std::string exePath{exeBuf};
-        size_t slash = exePath.find_last_of("\\/");
-        if (slash != std::string_view::npos) {
-            exeDir = exePath.substr(0, slash);
+    if (GetModuleFileNameW(nullptr, exeBuf, static_cast<DWORD>(std::size(exeBuf))) > 0) {
+        std::filesystem::path p(exeBuf);
+        exeDir = p.parent_path().string();
+        if (!exeDir.empty()) {
             addDir(JoinPath(exeDir, "config\\lua"));
             addDir(JoinPath(exeDir, "lua"));
             addDir(JoinPath(exeDir, "st_config"));
@@ -279,10 +278,11 @@ std::vector<std::string> GetOstLuaSearchDirectories(const std::string& steamPath
     }
 
     // 3. Current working directory
-    char cwdBuf[MAX_PATH]{};
+    std::error_code cwdEc;
+    std::filesystem::path cwdPath = std::filesystem::current_path(cwdEc);
     std::string cwd;
-    if (GetCurrentDirectoryA(MAX_PATH, cwdBuf) > 0) {
-        cwd = std::string{cwdBuf};
+    if (!cwdEc) {
+        cwd = cwdPath.string();
         addDir(JoinPath(cwd, "config\\lua"));
         addDir(JoinPath(cwd, "lua"));
         addDir(JoinPath(cwd, "st_config"));
@@ -301,7 +301,8 @@ std::vector<std::string> GetOstLuaSearchDirectories(const std::string& steamPath
 
     std::vector<std::string> tomlLuaPaths;
     for (const auto& tomlFile : tomlLocations) {
-        if (GetFileAttributesA(tomlFile.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(std::filesystem::path(tomlFile), ec)) {
             ParseTomlLuaPaths(tomlFile, tomlLuaPaths);
         }
     }

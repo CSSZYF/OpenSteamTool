@@ -31,8 +31,8 @@ HMODULE LoadSteamClient64(const std::string& steamPath, std::string& loadedPath)
     // directory. Add that directory to the search path and load with
     // LOAD_WITH_ALTERED_SEARCH_PATH so those dependencies resolve; otherwise the
     // load fails with ERROR_MOD_NOT_FOUND (126).
-    SetDllDirectoryA(steamDir.c_str());
-    HMODULE module{LoadLibraryExA(loadedPath.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH)};
+    SetDllDirectoryW(std::filesystem::path(steamDir).c_str());
+    HMODULE module{LoadLibraryExW(std::filesystem::path(loadedPath).c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH)};
     if (!module) {
         if (!TuiEngine::IsActive()) {
             std::cerr << "[WARN] 加载 steamclient64.dll 失败 / Failed to load " << loadedPath << " (GetLastError=" << GetLastError() << ").\n";
@@ -359,12 +359,6 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
             d.dlcId = dlcId;
             knownDepotManifests.try_emplace(dlcId, "");
         }
-    }
-
-    outDlcs.clear();
-    outDlcs.reserve(dlcMap.size());
-    for (const auto& [id, info] : dlcMap) {
-        outDlcs.push_back(info);
     }
 
     auto allDepotKeys = !steamPath.empty() ? ParseConfigVdfDepotKeys(steamPath) : std::unordered_map<uint32_t, std::string>{};

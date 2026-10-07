@@ -115,9 +115,9 @@ bool ExtractLocalApp(uint32_t appId, bool forceEticket, bool inTui = false) {
 }
 
 bool RunLocalExtractionWorker(uint32_t appId, bool forceEticket) {
-    wchar_t exePath[MAX_PATH];
-    DWORD len = GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH) {
+    wchar_t exePath[32768]{};
+    DWORD len = GetModuleFileNameW(nullptr, exePath, static_cast<DWORD>(std::size(exePath)));
+    if (len == 0 || len >= std::size(exePath)) {
         return ExtractLocalApp(appId, forceEticket, true);
     }
 
@@ -342,11 +342,13 @@ int Run(int argc, char** argv) {
 
         // Single-key 'o' or 'O' directly jumps to Online Mode (no Enter required!)
         if (ev.code == KeyCode::Char && (ev.ch == 'o' || ev.ch == 'O')) {
-            TuiEngine::ClearScreen();
-            OnlineSession::RunInteractive();
-            inputAppId.clear();
-            layout = DrawLevel1Frame();
-            UpdateLevel1Input(layout, inputAppId);
+            if (inputAppId.empty() && !TuiEngine::HasInputPending()) {
+                TuiEngine::ClearScreen();
+                OnlineSession::RunInteractive();
+                inputAppId.clear();
+                layout = DrawLevel1Frame();
+                UpdateLevel1Input(layout, inputAppId);
+            }
             continue;
         }
 
@@ -362,13 +364,22 @@ int Run(int argc, char** argv) {
 
         // Single-key 'q' or 'Q' directly exits
         if (ev.code == KeyCode::Char && (ev.ch == 'q' || ev.ch == 'Q')) {
-            return 0;
+            if (inputAppId.empty() && !TuiEngine::HasInputPending()) {
+                return 0;
+            }
+            continue;
         }
 
         // Digits 0-9
         if (ev.code == KeyCode::Char && ev.ch >= '0' && ev.ch <= '9') {
             if (inputAppId.size() < 10) {
                 inputAppId.push_back(ev.ch);
+                while (TuiEngine::HasInputPending() && inputAppId.size() < 10) {
+                    KeyEvent nextEv = TuiEngine::ReadKey();
+                    if (nextEv.code == KeyCode::Char && nextEv.ch >= '0' && nextEv.ch <= '9') {
+                        inputAppId.push_back(nextEv.ch);
+                    }
+                }
                 UpdateLevel1Input(layout, inputAppId);
             }
             continue;
