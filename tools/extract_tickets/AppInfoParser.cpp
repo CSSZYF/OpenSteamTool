@@ -671,6 +671,9 @@ void ParseTextVdfRecurse(
                     outData.localizedName = val;
                 }
             }
+        } else {
+            // Defensive consumption of unexpected token following a key
+            (void)lexer.Next();
         }
     }
 }
@@ -751,8 +754,10 @@ std::optional<ParsedAppInfoData> ParseBinaryVdfAppInfo(
     if (buffer.empty()) return std::nullopt;
 
     std::string hexDump;
-    for (size_t i = 0; i < (std::min<size_t>)(32, buffer.size()); ++i) {
-        hexDump += std::format("{:02X} ", buffer[i]);
+    const size_t dumpLen = (std::min<size_t>)(32, buffer.size());
+    hexDump.reserve(dumpLen * 3);
+    for (size_t i = 0; i < dumpLen; ++i) {
+        std::format_to(std::back_inserter(hexDump), "{:02X} ", buffer[i]);
     }
     LOG_DEBUG("AppInfoParser", "开始解析 PICS VDF 数据 (大小: {} 字节, AppID: {}, 前32字节Hex: {})",
               buffer.size(), appId, hexDump);

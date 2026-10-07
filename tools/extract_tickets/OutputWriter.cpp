@@ -241,8 +241,7 @@ bool WriteOutputs(uint32_t appId,
                 if (IsValidManifestId(dk->manifestId)) {
                     hasPhysicalDepot = true;
                     const bool manifestPresent = hasManifestOnDisk(dk->depotId, dk->manifestId);
-                    const bool keyPresent = !dk->hexKey.empty();
-                    if (!manifestPresent || !keyPresent) {
+                    if (!manifestPresent) {
                         isDepotIncomplete = true;
                         break;
                     }
@@ -308,13 +307,10 @@ bool WriteOutputs(uint32_t appId,
                 // DLC itself manifest
                 if (dlcDk && IsValidManifestId(dlcDk->manifestId)) {
                     const bool onDisk = hasManifestOnDisk(dlcDk->depotId, dlcDk->manifestId);
-                    const bool hasKey = !dlcDk->hexKey.empty();
-                    if (onDisk && hasKey) {
+                    if (onDisk) {
                         luaText += std::format("setManifestid({}, \"{}\")", dlcDk->depotId, dlcDk->manifestId);
                     } else {
-                        const std::string reason = !onDisk ? std::string(TR(MsgKey::LuaManifestMissing))
-                                                           : std::string(TR(MsgKey::LuaDlcDepotMissing));
-                        luaText += std::format("-- setManifestid({}, \"{}\") -- {}", dlcDk->depotId, dlcDk->manifestId, reason);
+                        luaText += std::format("-- setManifestid({}, \"{}\") -- {}", dlcDk->depotId, dlcDk->manifestId, TR(MsgKey::LuaManifestMissing));
                     }
                     if (!dlc.name.empty()) {
                         luaText += " -- " + SanitizeComment(dlc.name);
@@ -326,13 +322,10 @@ bool WriteOutputs(uint32_t appId,
                 for (const auto* subDk : subDepots) {
                     if (IsValidManifestId(subDk->manifestId)) {
                         const bool onDisk = hasManifestOnDisk(subDk->depotId, subDk->manifestId);
-                        const bool hasKey = !subDk->hexKey.empty();
-                        if (onDisk && hasKey) {
+                        if (onDisk) {
                             luaText += std::format("setManifestid({}, \"{}\")\n", subDk->depotId, subDk->manifestId);
                         } else {
-                            const std::string reason = !onDisk ? std::string(TR(MsgKey::LuaManifestMissing))
-                                                               : std::string(TR(MsgKey::LuaDlcDepotMissing));
-                            luaText += std::format("-- setManifestid({}, \"{}\") -- {}\n", subDk->depotId, subDk->manifestId, reason);
+                            luaText += std::format("-- setManifestid({}, \"{}\") -- {}\n", subDk->depotId, subDk->manifestId, TR(MsgKey::LuaManifestMissing));
                         }
                     }
                 }
