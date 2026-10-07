@@ -669,8 +669,12 @@ void OnlineSession::RunInSessionExtraction(
             continue;
         }
 
-        // Enter -> Extract target AppID
-        if (ev.code == KeyCode::Enter) {
+        // Enter -> Extract target AppID (normal mode, auto-detect Denuvo)
+        // 'e' / 'E' -> Extract target AppID with forced encrypted ticket (--force-eticket)
+        const bool isEnter = (ev.code == KeyCode::Enter);
+        const bool isForceE = (ev.code == KeyCode::Char && (ev.ch == 'e' || ev.ch == 'E'));
+        if (isEnter || isForceE) {
+            const bool forceEticket = isForceE;
             uint32_t targetAppId = 0;
             std::string gameName;
 
@@ -707,7 +711,7 @@ void OnlineSession::RunInSessionExtraction(
                 TuiEngine::PrintBounded(eTop + 3, eLeft + 4, line2, eInnerW, "\x1b[36m");
                 std::cout.flush();
 
-                auto creds = cmClient.ExtractFullCredentials(targetAppId);
+                auto creds = cmClient.ExtractFullCredentials(targetAppId, forceEticket);
                 bool ok = WriteOutputs(targetAppId, creds.appOwnershipTicket, creds.encryptedAppTicket,
                                        creds.depotKeys, creds.dlcs, creds.appTokens);
                 TuiEngine::ClearScreen();

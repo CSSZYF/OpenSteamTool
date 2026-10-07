@@ -76,6 +76,9 @@ public:
     // Promotes a validated fast CDN server to the head of the cached server list
     static void PromoteWorkingCdnServer(std::string_view server);
 
+    // Queries official Steam Store API for drm_notice and caches the result
+    [[nodiscard]] static bool DetectDenuvoFromStore(uint32_t appId);
+
     // High-level extraction pipeline for a single target AppID
     [[nodiscard]] ExtractedAppCredentials ExtractFullCredentials(uint32_t appId, bool forceEticket = false);
 

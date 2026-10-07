@@ -255,7 +255,7 @@ inline constexpr std::array<std::array<std::string_view, kLanguageCount>, kMsgKe
     /* L1LocalDesc */ { "Connects to local Steam client or cache to generate tickets and Lua scripts.", "直连本地 Steam 客户端或缓存，快速提取游戏凭据并生成 Lua 配置。", "Conecta con el cliente Steam o caché local para generar tickets y scripts Lua." },
     /* L1NoSteamNotice */ { "Local Steam not detected. Press [O] to switch to Online Mode without client!", "未检测到本地 Steam，按 [O] 可切换至【在线模式】免客户端提取！", "Steam local no detectado. ¡Presione [O] para cambiar al Modo En Línea!" },
     /* L1InputPrompt */ { "Target Game AppID:", "目标游戏 AppID：", "AppID del Juego:" },
-    /* L1Footer */ { "[Digits] Input AppID   [Enter] Extract   [O] Online Mode   [ESC] Clear   [Q] Exit", "[数字] 输入 AppID   [Enter] 开始提取   [O] 在线模式   [ESC] 清空   [Q] 退出", "[Dígitos] AppID   [Enter] Extraer   [O] Modo En Línea   [ESC] Borrar   [Q] Salir" },
+    /* L1Footer */ { "[Digits] Input AppID   [Enter] Extract   [E] Force Eticket   [O] Online Mode   [ESC] Clear   [Q] Exit", "[数字] 输入 AppID   [Enter] 开始提取   [E] 强提加密票据   [O] 在线模式   [ESC] 清空   [Q] 退出", "[Dígitos] AppID   [Enter] Extraer   [E] Forzar Eticket   [O] Modo En Línea   [ESC] Borrar   [Q] Salir" },
 
     // TUI Level 2
     /* L2HeaderTagAccounts */ { "{} saved account(s)", "已保存 {} 个账号", "{} cuenta(s) guardada(s)" },
@@ -279,7 +279,7 @@ inline constexpr std::array<std::array<std::string_view, kLanguageCount>, kMsgKe
     /* L3StatusShared */ { "Shared", "共享", "Compartido" },
     /* L3StatusReady */ { "Ready", "就绪", "Listo" },
     /* L3QuickInputPrompt */ { "Quick Extract AppID:", "快速提取 AppID：", "Extracción Rápida AppID:" },
-    /* L3Footer */ { "[Digits] Input AppID   [Enter] Extract   [↑/↓] Select   [←/→] Page   [A] Batch Extract All   [L] Export List   [ESC/Q] Back", "[数字] 输入 AppID   [Enter] 提取当前   [↑/↓] 选择   [←/→] 翻页   [A] 批量提取全部   [L] 导出清单   [ESC/Q] 返回", "[Dígitos] AppID   [Enter] Extraer   [↑/↓] Seleccionar   [←/→] Página   [A] Extraer Todo   [L] Exportar Lista   [ESC/Q] Volver" },
+    /* L3Footer */ { "[Enter] Extract   [E] Force Eticket   [↑/↓] Select   [←/→] Page   [A] Batch All   [L] Export   [ESC/Q] Back", "[Enter] 提取   [E] 强提加密票据   [↑/↓] 选择   [←/→] 翻页   [A] 批量全部   [L] 导出清单   [ESC/Q] 返回", "[Enter] Extraer   [E] Forzar Eticket   [↑/↓] Seleccionar   [←/→] Página   [A] Extraer Todo   [L] Exportar   [ESC/Q] Volver" },
 
     // Modals & General
     /* BtnClose */ { "  [ Press Enter or ESC to Close ]  ", "  [ 按 Enter 或 ESC 关闭 ]  ", "  [ Presione Enter o ESC para Cerrar ]  " },

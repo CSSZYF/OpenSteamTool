@@ -1053,6 +1053,41 @@ std::optional<std::string> SteamCmClient::DownloadManifestOnline(
     return DownloadManifestPayload(appId, depotId, manifestId, reqCode, destDir, cdnServers, sharedHttp);
 }
 
+bool SteamCmClient::DetectDenuvoFromStore(uint32_t appId) {
+    if (appId == 0) return false;
+
+    static std::unordered_map<uint32_t, bool> s_denuvoCache;
+    static std::mutex s_denuvoMutex;
+    {
+        std::lock_guard lock(s_denuvoMutex);
+        if (auto it = s_denuvoCache.find(appId); it != s_denuvoCache.end()) {
+            return it->second;
+        }
+    }
+
+    WinHttpTransport http;
+    HttpResponse resp = http.Get(std::format("https://store.steampowered.com/api/appdetails?appids={}&filters=basic", appId));
+    bool isDenuvo = false;
+    if (resp.IsSuccess()) {
+        auto drmNotice = JsonHelper::GetString(resp.body, "drm_notice");
+        if (drmNotice) {
+            std::string lower = *drmNotice;
+            std::transform(lower.begin(), lower.end(), lower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (lower.find("denuvo") != std::string::npos) {
+                isDenuvo = true;
+                LOG_INFO("SteamCM", "从 Steam Store 官方元数据检测到 Denuvo 保护 (AppID={}, drm_notice='{}')", appId, *drmNotice);
+            }
+        }
+    }
+
+    {
+        std::lock_guard lock(s_denuvoMutex);
+        s_denuvoCache[appId] = isDenuvo;
+    }
+    return isDenuvo;
+}
+
 ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bool forceEticket) {
     ExtractedAppCredentials creds;
     creds.appId = appId;
@@ -1084,7 +1119,10 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bo
     auto appInfoData = RequestPicsProductInfo(appId, appToken);
 
     // 3. EncryptedAppTicket (精准定向直达: 仅在检测到 Denuvo 保护或显式强制时激活游戏会话)
-    const bool isDenuvoApp = appInfoData && appInfoData->requiresDenuvo;
+    bool isDenuvoApp = (appInfoData && appInfoData->requiresDenuvo) || DetectDenuvoFromStore(appId);
+    if (appInfoData) {
+        appInfoData->requiresDenuvo = isDenuvoApp;
+    }
     const bool needsETicket = isDenuvoApp || forceEticket;
 
     if (needsETicket) {
