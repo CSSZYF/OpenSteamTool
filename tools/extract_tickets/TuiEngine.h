@@ -108,6 +108,7 @@ public:
                     m_hasOrigOutMode = true;
                 }
             }
+            m_origOutputCP = GetConsoleOutputCP();
             TuiEngine::SetActive(true);
             TuiEngine::EnableVirtualTerminal();
             TuiEngine::EnterAlternateScreen();
@@ -133,6 +134,9 @@ public:
                     SetConsoleMode(hOut, m_origOutMode);
                 }
             }
+            if (m_origOutputCP != 0) {
+                SetConsoleOutputCP(m_origOutputCP);
+            }
         }
     }
 
@@ -145,6 +149,7 @@ private:
     DWORD m_origInMode{0};
     bool m_hasOrigOutMode{false};
     DWORD m_origOutMode{0};
+    UINT m_origOutputCP{0};
 };
 
 } // namespace OST::ExtractTickets

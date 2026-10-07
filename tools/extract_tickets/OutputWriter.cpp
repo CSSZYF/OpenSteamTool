@@ -226,18 +226,27 @@ bool WriteOutputs(uint32_t appId,
         std::vector<DlcDepotData> dlcDepotList(dlcs.size());
         bool hasDlcManifests = false;
 
-        // Single pass over dlcs and depotKeys to build indexed association table
+        std::unordered_map<uint32_t, const DepotKeyInfo*> primaryDepots;
+        std::unordered_map<uint32_t, std::vector<const DepotKeyInfo*>> subDepotsMap;
+        primaryDepots.reserve(depotKeys.size());
+        for (const auto& dk : depotKeys) {
+            primaryDepots[dk.depotId] = &dk;
+            if (dk.dlcId != 0 && dk.dlcId != dk.depotId) {
+                subDepotsMap[dk.dlcId].push_back(&dk);
+            }
+        }
+
+        // Single pass over dlcs to build indexed association table in strictly O(N + M) time
         for (size_t i = 0; i < dlcs.size(); ++i) {
             auto& data = dlcDepotList[i];
             const uint32_t dlcId = dlcs[i].dlcId;
-            for (const auto& dk : depotKeys) {
-                if (dk.depotId == dlcId) {
-                    data.dlcDk = &dk;
-                    data.associatedDepots.push_back(&dk);
-                } else if (dk.dlcId == dlcId) {
-                    data.subDepots.push_back(&dk);
-                    data.associatedDepots.push_back(&dk);
-                }
+            if (auto it = primaryDepots.find(dlcId); it != primaryDepots.end()) {
+                data.dlcDk = it->second;
+                data.associatedDepots.push_back(it->second);
+            }
+            if (auto it = subDepotsMap.find(dlcId); it != subDepotsMap.end()) {
+                data.subDepots = it->second;
+                data.associatedDepots.insert(data.associatedDepots.end(), it->second.begin(), it->second.end());
             }
             if (!hasDlcManifests) {
                 for (const auto* dk : data.associatedDepots) {
