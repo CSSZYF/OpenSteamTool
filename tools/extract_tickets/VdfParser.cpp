@@ -96,10 +96,6 @@ std::vector<std::string> GetDepotcacheDirs(const std::string& steamPath, const s
     return dirs;
 }
 
-std::vector<std::string> GetDepotcacheDirs(const std::string& steamPath) {
-    return GetDepotcacheDirs(steamPath, FindSteamLibraryFolders(steamPath));
-}
-
 std::string FindDepotManifestFile(const std::vector<std::string>& depotcacheDirs,
                                   uint32_t depotId,
                                   std::string& inOutManifestId) {

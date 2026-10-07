@@ -299,7 +299,7 @@ std::vector<OwnedGameInfo> SteamAuthService::FetchOwnedGames(
                     }
 
                     // 1. High-speed batch PICS resolution via CM Client (50 apps/batch, ~100ms, immune to Store HTTP 429)
-                    if (!stillMissing.empty() && cmClient && cmClient->IsConnected()) {
+                    if (!stillMissing.empty() && cmClient && cmClient->EnsureConnected()) {
                         LOG_INFO("SteamAuth", "正在通过 Steam CM PICS 批量解析 {} 款家庭共享游戏官方名称...", stillMissing.size());
                         auto picsNames = cmClient->RequestPicsAppNames(stillMissing);
                         for (auto& [pAppId, pName] : picsNames) {

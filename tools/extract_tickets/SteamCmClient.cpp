@@ -1121,8 +1121,6 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bo
     }
 
     std::vector<DepotKeyInfo> depotKeys;
-    std::unordered_set<uint32_t> unauthorizedDepots;
-    std::unordered_set<uint32_t> unownedDlcIds;
     std::unordered_set<uint32_t> knownDlcSet;
     const std::string outDir = std::to_string(appId);
     size_t downloadedManifests = 0;
@@ -1224,17 +1222,6 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bo
             if (std::none_of(depotKeys.begin(), depotKeys.end(),
                              [&](const DepotKeyInfo& k) { return k.depotId == cmKey.depotId; })) {
                 depotKeys.push_back(cmKey);
-            }
-        }
-
-        for (uint32_t depId : queryDepotList) {
-            if (!authorizedDepots.contains(depId)) {
-                unauthorizedDepots.insert(depId);
-                for (const auto& dk : depotKeys) {
-                    if (dk.depotId == depId && dk.dlcId > 0 && dk.dlcId != appId) {
-                        unownedDlcIds.insert(dk.dlcId);
-                    }
-                }
             }
         }
 

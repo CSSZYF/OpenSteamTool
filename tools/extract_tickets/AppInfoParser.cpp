@@ -403,8 +403,10 @@ void ParseVdfRecurse(VdfReader& reader,
                 recordDlcId(static_cast<uint32_t>(val));
             }
         } else {
-            // Unknown or unsupported type encountered: skip this attribute rather than aborting traversal
-            continue;
+            // Unknown or unsupported type encountered: binary VDF is not self-describing in length.
+            // Abort current object traversal to avoid desynchronization and corrupted key/value reads.
+            LOG_DEBUG("AppInfoParser", "遇到未支持的 VDF 类型码 0x{:02X} (key='{}')，终止当前节点解析", type, key);
+            return;
         }
     }
 }
