@@ -106,7 +106,7 @@ namespace {
         // leave it untouched and pass through cleanly.
         if (origTicketValid) {
             if (!PipeManager::IsToolPipe(pipe, appId)) {
-                PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
+                PipeManager::DenuvoAuth::OnOwnershipTicketRequested(pipe, appId);
             }
             return;
         }
@@ -116,7 +116,7 @@ namespace {
         AppTicket::AppOwnershipTicket ticket{};
         // Refresh the Denuvo authorization lease window when an ownership ticket is requested.
         if (!PipeManager::IsToolPipe(pipe, appId)) {
-            PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
+            PipeManager::DenuvoAuth::OnOwnershipTicketRequested(pipe, appId);
         }
         
         AppTicket::AppTicketSource ticketSource;
@@ -180,9 +180,9 @@ namespace {
         // Genuinely owned and family shared apps: Steam natively handles encrypted tickets.
         if (Hooks_Package::HasValidLicense(appId) && !LuaConfig::IsDAuth2(appId)) return;
 
-        // Refresh the Denuvo authorization lease window when an encrypted ticket is requested.
+        // Signal encrypted ticket requested asynchronously (binds AppId early with 0ms identity pollution).
         if (!PipeManager::IsToolPipe(pipe, appId)) {
-            PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
+            PipeManager::DenuvoAuth::OnEncryptedTicketRequested(pipe, appId);
         }
 
         bool haveFresh = false;
@@ -242,16 +242,14 @@ namespace {
         // Genuinely owned and family shared apps: Steam natively handles genuine tickets.
         if (Hooks_Package::HasValidLicense(appId) && !LuaConfig::IsDAuth2(appId)) return;
 
-        // Refresh the Denuvo authorization lease window when reading the encrypted ticket.
-        if (!PipeManager::IsToolPipe(pipe, appId)) {
-            PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
-        }
-
         // 1. If Steam client returned a genuine encrypted ticket, pass through cleanly:
         GetEncryptedAppTicketResp existingResp{pWrite};
         if (existingResp.ok() && existingResp.returnValue()) {
             auto ticketSpan = existingResp.pTicket();
             if (!ticketSpan.empty() || existingResp.pcbTicket() > 0) {
+                if (!PipeManager::IsToolPipe(pipe, appId)) {
+                    PipeManager::DenuvoAuth::OnEncryptedTicketDelivered(pipe, appId);
+                }
                 return;
             }
         }
@@ -291,6 +289,11 @@ namespace {
         resp.set_returnValue(true);
         resp.set_pcbTicket(ticketSize);
         if (!resp.set_pTicket(ticket)) return;
+
+        // Arms the activation delivery pulse (2500ms) upon successful ticket delivery:
+        if (!PipeManager::IsToolPipe(pipe, appId)) {
+            PipeManager::DenuvoAuth::OnEncryptedTicketDelivered(pipe, appId);
+        }
 
         LOG_IPC_DEBUG("GetEncryptedAppTicket: AppId={} {}", appId, resp.DebugString());
     }

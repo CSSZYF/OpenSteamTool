@@ -18,7 +18,16 @@ namespace PipeManager::DenuvoAuth {
     // Returns the AppId tracked for this pipe, or k_uAppIdInvalid if unknown.
     AppId_t GetAuthorizedAppId(const CPipeClient* pipe);
 
-    // Refreshes the authorization window when an ownership or encrypted ticket is requested.
+    // Legacy/fallback: refreshes the authorization window for ownership tickets.
     void OnTicketRequested(const CPipeClient* pipe, AppId_t appId = k_uAppIdInvalid);
+
+    // Refreshes the authorization window when an ownership ticket is requested (Scheme 1: 300ms micro-pulse).
+    void OnOwnershipTicketRequested(const CPipeClient* pipe, AppId_t appId = k_uAppIdInvalid);
+
+    // Signals that an encrypted ticket was asynchronously requested (binds AppId early with 0ms identity pollution).
+    void OnEncryptedTicketRequested(const CPipeClient* pipe, AppId_t appId = k_uAppIdInvalid);
+
+    // Triggered when an encrypted ticket is delivered to the game: arms the activation delivery pulse (2500ms).
+    void OnEncryptedTicketDelivered(const CPipeClient* pipe, AppId_t appId = k_uAppIdInvalid);
 
 } // namespace PipeManager::DenuvoAuth
