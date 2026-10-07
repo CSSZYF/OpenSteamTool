@@ -12,8 +12,21 @@
 
 namespace OST::ExtractTickets {
 
+#pragma comment(lib, "user32.lib")
+
 namespace {
     bool g_tuiActive = false;
+    bool s_inFrame = false;
+    std::string s_frameBuffer;
+    bool s_pasteAllowed = false;
+
+    void OutputToTerminal(std::string_view sv) {
+        if (s_inFrame) {
+            s_frameBuffer.append(sv);
+        } else {
+            std::cout.write(sv.data(), sv.size());
+        }
+    }
 }
 
 bool TuiEngine::IsActive() noexcept {
@@ -22,6 +35,37 @@ bool TuiEngine::IsActive() noexcept {
 
 void TuiEngine::SetActive(bool active) noexcept {
     g_tuiActive = active;
+}
+
+void TuiEngine::BeginFrame() {
+    s_inFrame = true;
+    s_frameBuffer.clear();
+    if (s_frameBuffer.capacity() < 8192) {
+        s_frameBuffer.reserve(8192);
+    }
+    s_frameBuffer.append("\x1b[H");
+}
+
+void TuiEngine::EndFrame() {
+    if (!s_inFrame) return;
+    s_inFrame = false;
+    if (!s_frameBuffer.empty()) {
+        std::cout.write(s_frameBuffer.data(), s_frameBuffer.size());
+        std::cout.flush();
+        s_frameBuffer.clear();
+    }
+}
+
+void TuiEngine::PrintRaw(std::string_view str) {
+    OutputToTerminal(str);
+}
+
+void TuiEngine::SetPasteAllowed(bool allowed) noexcept {
+    s_pasteAllowed = allowed;
+}
+
+bool TuiEngine::IsPasteAllowed() noexcept {
+    return s_pasteAllowed;
 }
 
 #if defined(_WIN32)
@@ -58,9 +102,14 @@ void TuiEngine::EnableVirtualTerminal() {
     if (hIn != INVALID_HANDLE_VALUE && hIn != nullptr) {
         DWORD dwInMode = 0;
         if (GetConsoleMode(hIn, &dwInMode)) {
-            dwInMode = (dwInMode & ~ENABLE_QUICK_EDIT_MODE & ~ENABLE_MOUSE_INPUT) | ENABLE_EXTENDED_FLAGS;
+            // Enable ENABLE_MOUSE_INPUT with ENABLE_WINDOW_INPUT and ENABLE_EXTENDED_FLAGS.
+            // Keep ENABLE_VIRTUAL_TERMINAL_INPUT disabled so ReadConsoleInputW retains
+            // native Win32 VK_UP/VK_DOWN/VK_RETURN and Unicode IME input.
+            dwInMode = (dwInMode & ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_QUICK_EDIT_MODE))
+                     | ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS;
             SetConsoleMode(hIn, dwInMode);
         }
+        SetConsoleCP(CP_UTF8);
     }
 
 #if defined(_WIN32)
@@ -74,37 +123,47 @@ void TuiEngine::EnableVirtualTerminal() {
 }
 
 void TuiEngine::EnterAlternateScreen() {
-    // Disable any terminal mouse tracking modes that may be active from parent shells
-    // (?1000 = normal mouse, ?1002 = button-event, ?1003 = any-event, ?1006 = SGR mode)
-    std::cout << "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049h\x1b[2J\x1b[H";
+    // \x1b[?7l: Disable DECAWM Auto-Wrap Mode to prevent hardware edge line wrapping & auto-scrolling
+    // \x1b[?1000h\x1b[?1006h: Enable mouse button reporting in SGR mode to tell terminal emulators (Windows Terminal, etc.)
+    // that the application captures mouse clicks, completely suppressing terminal GUI default right-click paste!
+    // \x1b[?1049h: Switch to alternate screen buffer
+    // \x1b[?2004h: Bracketed paste mode inside alternate screen
+    // \x1b[2J\x1b[H: Clear screen and home cursor
+    std::cout << "\x1b[?7l\x1b[?1000h\x1b[?1006h\x1b[?1049h\x1b[?2004h\x1b[2J\x1b[H";
     std::cout.flush();
 }
 
 void TuiEngine::ExitAlternateScreen() {
-    std::cout << "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l";
+    // Restore DECAWM Auto-Wrap Mode (\x1b[?7h), disable bracketed paste (\x1b[?2004l),
+    // disable mouse tracking (\x1b[?1000l\x1b[?1006l), and exit alternate screen (\x1b[?1049l)
+    std::cout << "\x1b[?7h\x1b[?2004l\x1b[?1000l\x1b[?1006l\x1b[?1049l";
     std::cout.flush();
 }
 
 void TuiEngine::ShowCursor(bool show) {
-    std::cout << (show ? "\x1b[?25h" : "\x1b[?25l");
-    std::cout.flush();
+    OutputToTerminal(show ? "\x1b[?25h" : "\x1b[?25l");
+    if (!s_inFrame) std::cout.flush();
 }
 
 void TuiEngine::MoveCursor(int row, int col) {
     if (row < 1) row = 1;
     if (col < 1) col = 1;
-    std::cout << "\x1b[" << row << ";" << col << "H";
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "\x1b[%d;%dH", row, col);
+    if (len > 0) {
+        OutputToTerminal(std::string_view(buf, static_cast<size_t>(len)));
+    }
 }
 
 void TuiEngine::ClearScreen() {
-    std::cout << "\x1b[2J\x1b[H";
-    std::cout.flush();
+    OutputToTerminal("\x1b[2J\x1b[H");
+    if (!s_inFrame) std::cout.flush();
 }
 
 void TuiEngine::RepositionCursor() {
     // Reposition cursor to top-left without wiping buffer to black, preventing flicker during typing
-    std::cout << "\x1b[H";
-    std::cout.flush();
+    OutputToTerminal("\x1b[H");
+    if (!s_inFrame) std::cout.flush();
 }
 
 void TuiEngine::GetScreenSize(int& outWidth, int& outHeight) {
@@ -128,9 +187,10 @@ bool TuiEngine::EnsureMinTerminalSize(int minW, int minH) {
         MoveCursor(midY, 1);
         std::string warn1 = std::format("[!] 终端窗口尺寸过小 (当前: {}x{}, 推荐最低: {}x{})", w, h, minW, minH);
         std::string warn2 = "请拉大终端窗口以恢复界面显示... (Please enlarge terminal window)";
-        std::cout << "\x1b[1;33m" << Pad(warn1, static_cast<size_t>(w), true) << "\x1b[0m\n";
+        const size_t safeW = static_cast<size_t>(w > 1 ? w - 1 : 1);
+        std::cout << "\x1b[1;33m" << Pad(warn1, safeW, true) << "\x1b[0m";
         MoveCursor(midY + 1, 1);
-        std::cout << "\x1b[90m" << Pad(warn2, static_cast<size_t>(w), true) << "\x1b[0m";
+        std::cout << "\x1b[90m" << Pad(warn2, safeW, true) << "\x1b[0m";
         std::cout.flush();
         return false;
     }
@@ -138,6 +198,134 @@ bool TuiEngine::EnsureMinTerminalSize(int minW, int minH) {
 }
 
 namespace {
+    std::string GetClipboardTextUtf8() {
+        if (!OpenClipboard(nullptr)) return "";
+        HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+        if (!hData) {
+            CloseClipboard();
+            return "";
+        }
+        const wchar_t* wstr = static_cast<const wchar_t*>(GlobalLock(hData));
+        if (!wstr) {
+            CloseClipboard();
+            return "";
+        }
+        int len = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, nullptr, 0, nullptr, nullptr);
+        std::string result;
+        if (len > 1) {
+            result.resize(len - 1);
+            WideCharToMultiByte(CP_UTF8, 0, wstr, -1, result.data(), len, nullptr, nullptr);
+        }
+        GlobalUnlock(hData);
+        CloseClipboard();
+        std::string clean;
+        clean.reserve(result.size());
+        for (char c : result) {
+            if (c != '\r' && c != '\n') {
+                clean.push_back(c);
+            }
+        }
+        return clean;
+    }
+
+    bool TryReadAnsiSequence(HANDLE hIn, std::string& outSeq) {
+        outSeq.clear();
+        if (WaitForSingleObject(hIn, 15) != WAIT_OBJECT_0) {
+            return false;
+        }
+        DWORD pending = 0;
+        if (!GetNumberOfConsoleInputEvents(hIn, &pending) || pending == 0) {
+            return false;
+        }
+        INPUT_RECORD ir;
+        DWORD read = 0;
+        if (!PeekConsoleInputW(hIn, &ir, 1, &read) || read == 0) {
+            return false;
+        }
+        if (ir.EventType != KEY_EVENT || !ir.Event.KeyEvent.bKeyDown) {
+            return false;
+        }
+        WCHAR lead = ir.Event.KeyEvent.uChar.UnicodeChar;
+        if (lead != L'[' && lead != L'O') {
+            return false;
+        }
+        ReadConsoleInputW(hIn, &ir, 1, &read);
+
+        while (outSeq.size() < 32) {
+            if (WaitForSingleObject(hIn, 25) != WAIT_OBJECT_0) {
+                break;
+            }
+            if (!ReadConsoleInputW(hIn, &ir, 1, &read) || read == 0) {
+                break;
+            }
+            if (ir.EventType != KEY_EVENT || !ir.Event.KeyEvent.bKeyDown) {
+                continue;
+            }
+            WCHAR c = ir.Event.KeyEvent.uChar.UnicodeChar;
+            if (c >= 32 && c <= 126) {
+                outSeq.push_back(static_cast<char>(c));
+                if ((c >= 0x40 && c <= 0x7E) || c == '~') {
+                    return true;
+                }
+            }
+        }
+        return !outSeq.empty();
+    }
+
+    std::string ReadBracketedPastePayload(HANDLE hIn, bool keepPayload) {
+        std::string result;
+        while (true) {
+            if (WaitForSingleObject(hIn, 300) != WAIT_OBJECT_0) {
+                break;
+            }
+            INPUT_RECORD rec;
+            DWORD read = 0;
+            if (!ReadConsoleInputW(hIn, &rec, 1, &read) || read == 0) {
+                break;
+            }
+            if (rec.EventType != KEY_EVENT || !rec.Event.KeyEvent.bKeyDown) {
+                continue;
+            }
+            const auto& ke = rec.Event.KeyEvent;
+            WCHAR wc = ke.uChar.UnicodeChar;
+            WORD vk = ke.wVirtualKeyCode;
+
+            if (vk == VK_ESCAPE || wc == 27) {
+                std::string seq;
+                if (TryReadAnsiSequence(hIn, seq) && seq == "201~") {
+                    break;
+                }
+                continue;
+            }
+
+            if (keepPayload && wc != 0) {
+                if (wc == L'\r' || wc == L'\n') {
+                    continue;
+                }
+                if (IS_HIGH_SURROGATE(wc)) {
+                    INPUT_RECORD nextRec;
+                    DWORD nextRead = 0;
+                    if (ReadConsoleInputW(hIn, &nextRec, 1, &nextRead) && nextRead == 1 &&
+                        nextRec.EventType == KEY_EVENT && IS_LOW_SURROGATE(nextRec.Event.KeyEvent.uChar.UnicodeChar)) {
+                        WCHAR pair[2] = { wc, nextRec.Event.KeyEvent.uChar.UnicodeChar };
+                        char utf8Buf[8]{0};
+                        int b = WideCharToMultiByte(CP_UTF8, 0, pair, 2, utf8Buf, sizeof(utf8Buf) - 1, nullptr, nullptr);
+                        if (b > 0 && result.size() + b <= 256) {
+                            result.append(utf8Buf, b);
+                        }
+                    }
+                    continue;
+                }
+                char utf8Buf[8]{0};
+                int b = WideCharToMultiByte(CP_UTF8, 0, &wc, 1, utf8Buf, sizeof(utf8Buf) - 1, nullptr, nullptr);
+                if (b > 0 && result.size() + b <= 256) {
+                    result.append(utf8Buf, b);
+                }
+            }
+        }
+        return result;
+    }
+
     bool IsWideCodePoint(uint32_t cp) {
         if (cp < 0x1100) return false;
         return (cp >= 0x1100 && cp <= 0x115F) ||
@@ -211,6 +399,34 @@ std::string TuiEngine::TruncateToWidth(std::string_view utf8Str, size_t maxWidth
     return std::string{utf8Str.substr(0, pos)};
 }
 
+std::string TuiEngine::TruncateHeadToWidth(std::string_view utf8Str, size_t maxWidth) {
+    size_t totalWidth = GetDisplayWidth(utf8Str);
+    if (totalWidth <= maxWidth) {
+        return std::string{utf8Str};
+    }
+    size_t pos = 0;
+    uint32_t cp = 0;
+    size_t curWidth = 0;
+    size_t excess = totalWidth - maxWidth;
+    while (pos < utf8Str.size() && curWidth < excess) {
+        size_t len = NextCodePoint(utf8Str, pos, cp);
+        if (len == 0) break;
+        curWidth += IsWideCodePoint(cp) ? 2 : 1;
+        pos += len;
+    }
+    return std::string{utf8Str.substr(pos)};
+}
+
+void TuiEngine::PopBackUtf8(std::string& s) noexcept {
+    while (!s.empty()) {
+        unsigned char c = static_cast<unsigned char>(s.back());
+        s.pop_back();
+        if ((c & 0xC0) != 0x80) {
+            break;
+        }
+    }
+}
+
 std::string TuiEngine::Pad(std::string_view utf8Str, size_t targetWidth, bool center) {
     size_t curWidth = GetDisplayWidth(utf8Str);
     if (curWidth >= targetWidth) {
@@ -232,9 +448,11 @@ void TuiEngine::PrintBounded(int row, int col, std::string_view text, size_t max
     std::string truncated = TruncateToWidth(text, maxWidth);
     std::string padded = Pad(truncated, maxWidth);
     if (!ansiStyle.empty()) {
-        std::cout << ansiStyle << padded << "\x1b[0m";
+        OutputToTerminal(ansiStyle);
+        OutputToTerminal(padded);
+        OutputToTerminal("\x1b[0m");
     } else {
-        std::cout << padded;
+        OutputToTerminal(padded);
     }
 }
 
@@ -245,65 +463,90 @@ void TuiEngine::DrawHeader(std::string_view title, std::string_view statusTag) {
     MoveCursor(1, 1);
     std::string tagStr = statusTag.empty() ? "" : std::format("[{}]", statusTag);
     size_t tagWidth = GetDisplayWidth(tagStr);
-    size_t availTitle = (w > static_cast<int>(tagWidth) + 4) ? (w - tagWidth - 4) : 20;
+    const size_t maxHeaderW = static_cast<size_t>(w > 1 ? w - 1 : 1);
+    size_t availTitle = (maxHeaderW > tagWidth + 4) ? (maxHeaderW - tagWidth - 4) : 20;
 
     std::string truncatedTitle = TruncateToWidth(title, availTitle);
     size_t titleWidth = GetDisplayWidth(truncatedTitle);
 
     size_t spaceBetween = 2;
-    if (w > static_cast<int>(titleWidth + tagWidth + 2)) {
-        spaceBetween = w - titleWidth - tagWidth - 2;
+    if (maxHeaderW > titleWidth + tagWidth + 2) {
+        spaceBetween = maxHeaderW - titleWidth - tagWidth - 2;
     }
 
-    std::cout << "\x1b[1;37;44m " << truncatedTitle
-              << std::string(spaceBetween, ' ')
-              << tagStr << " \x1b[0m";
+    std::string headerStr = std::format("\x1b[1;37;44m {}{}{} \x1b[0m",
+                                        truncatedTitle,
+                                        std::string(spaceBetween, ' '),
+                                        tagStr);
+    OutputToTerminal(headerStr);
 }
 
-void TuiEngine::DrawFooter(std::string_view shortcuts) {
+void TuiEngine::DrawFooter(std::string_view shortcuts, std::string_view ansiStyle) {
     int w = 80, h = 25;
     GetScreenSize(w, h);
 
     MoveCursor(h, 1);
-    std::string padded = Pad(std::format(" {}", shortcuts), static_cast<size_t>(w));
-    std::cout << "\x1b[1;30;47m" << padded << "\x1b[0m";
-    std::cout.flush();
+    // Crucial: Pad to w - 1 to guarantee we never write to the bottom-right corner (h, w),
+    // which triggers hardware DECAWM automatic line-feed/vertical scrolling on Windows Console/VT100!
+    const size_t maxFooterW = static_cast<size_t>(w > 1 ? w - 1 : 1);
+    std::string padded = Pad(std::format(" {}", shortcuts), maxFooterW);
+    OutputToTerminal(ansiStyle);
+    OutputToTerminal(padded);
+    OutputToTerminal("\x1b[0m");
+    if (!s_inFrame) std::cout.flush();
 }
 
-void TuiEngine::DrawBox(int top, int left, int width, int height, std::string_view title) {
+void TuiEngine::DrawFooter(std::string_view shortcuts) {
+    DrawFooter(shortcuts, "\x1b[1;30;47m");
+}
+
+void TuiEngine::DrawBox(int top, int left, int width, int height, std::string_view title, bool clearInterior) {
     if (width < 4 || height < 3) return;
     if (top < 1) top = 1;
     if (left < 1) left = 1;
 
     // Top border
     MoveCursor(top, left);
-    std::cout << "\x1b[36m╭";
+    OutputToTerminal("\x1b[36m╭");
     if (title.empty()) {
-        for (int i = 0; i < width - 2; ++i) std::cout << "─";
+        for (int i = 0; i < width - 2; ++i) OutputToTerminal("─");
     } else {
         std::string titleFormatted = std::format(" [ {} ] ", title);
         size_t titleW = GetDisplayWidth(titleFormatted);
         if (titleW + 4 <= static_cast<size_t>(width)) {
-            std::cout << "─" << "\x1b[1;37m" << titleFormatted << "\x1b[0;36m";
-            for (size_t i = 0; i < width - 2 - 1 - titleW; ++i) std::cout << "─";
+            OutputToTerminal("─\x1b[1;37m");
+            OutputToTerminal(titleFormatted);
+            OutputToTerminal("\x1b[0;36m");
+            for (size_t i = 0; i < width - 2 - 1 - titleW; ++i) OutputToTerminal("─");
         } else {
-            for (int i = 0; i < width - 2; ++i) std::cout << "─";
+            for (int i = 0; i < width - 2; ++i) OutputToTerminal("─");
         }
     }
-    std::cout << "╮\x1b[0m";
+    OutputToTerminal("╮\x1b[0m");
 
-    // Side borders and clear interior with spaces
-    std::string interiorSpaces(static_cast<size_t>(width - 2), ' ');
-    for (int r = 1; r < height - 1; ++r) {
-        MoveCursor(top + r, left);
-        std::cout << "\x1b[36m│\x1b[0m" << interiorSpaces << "\x1b[36m│\x1b[0m";
+    // Side borders
+    if (clearInterior) {
+        std::string interiorSpaces(static_cast<size_t>(width - 2), ' ');
+        for (int r = 1; r < height - 1; ++r) {
+            MoveCursor(top + r, left);
+            OutputToTerminal("\x1b[36m│\x1b[0m");
+            OutputToTerminal(interiorSpaces);
+            OutputToTerminal("\x1b[36m│\x1b[0m");
+        }
+    } else {
+        for (int r = 1; r < height - 1; ++r) {
+            MoveCursor(top + r, left);
+            OutputToTerminal("\x1b[36m│\x1b[0m");
+            MoveCursor(top + r, left + width - 1);
+            OutputToTerminal("\x1b[36m│\x1b[0m");
+        }
     }
 
     // Bottom border
     MoveCursor(top + height - 1, left);
-    std::cout << "\x1b[36m╰";
-    for (int i = 0; i < width - 2; ++i) std::cout << "─";
-    std::cout << "╯\x1b[0m";
+    OutputToTerminal("\x1b[36m╰");
+    for (int i = 0; i < width - 2; ++i) OutputToTerminal("─");
+    OutputToTerminal("╯\x1b[0m");
 }
 
 bool TuiEngine::ShowConfirmModal(std::string_view title,
@@ -331,7 +574,7 @@ bool TuiEngine::ShowConfirmModal(std::string_view title,
     maxTextW = std::max(maxTextW, GetDisplayWidth(title) + 8);
     const int modalW = std::clamp(static_cast<int>(maxTextW) + 12, 60, w - 4);
     const int modalH = detail.empty() ? 7 : 9;
-    const int top = (h - modalH) / 2;
+    const int top = (std::max)(2, (h - modalH) / 2);
     const int left = (w - modalW) / 2;
 
     // Clear modal area
@@ -383,15 +626,15 @@ bool TuiEngine::ShowConfirmModal(std::string_view title,
             continue;
         }
         if (ev.code == KeyCode::Char) {
-            if ((ev.ch == 'y' || ev.ch == 'Y') && !_kbhit()) {
+            if ((ev.ch == 'y' || ev.ch == 'Y') && !HasInputPending()) {
                 FlushInputBuffer();
                 return true;
             }
-            if ((ev.ch == 'n' || ev.ch == 'N') && !_kbhit()) {
+            if ((ev.ch == 'n' || ev.ch == 'N') && !HasInputPending()) {
                 FlushInputBuffer();
                 return false;
             }
-        } else if (ev.code == KeyCode::Enter && !_kbhit()) {
+        } else if (ev.code == KeyCode::Enter && !HasInputPending()) {
             FlushInputBuffer();
             return selectedYes;
         } else if (ev.code == KeyCode::Escape) {
@@ -405,9 +648,6 @@ void TuiEngine::FlushInputBuffer() noexcept {
     HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
     if (hIn != INVALID_HANDLE_VALUE && hIn != nullptr) {
         FlushConsoleInputBuffer(hIn);
-    }
-    while (_kbhit()) {
-        (void)_getch();
     }
 }
 
@@ -431,7 +671,7 @@ bool TuiEngine::ShowMessageModal(std::string_view title,
     maxTextW = std::max(maxTextW, GetDisplayWidth(title) + 8);
     const int modalW = std::clamp(static_cast<int>(maxTextW) + 12, 56, w - 4);
     const int modalH = detail.empty() ? 7 : 9;
-    const int top = (h - modalH) / 2;
+    const int top = (std::max)(2, (h - modalH) / 2);
     const int left = (w - modalW) / 2;
 
     for (int r = 0; r < modalH; ++r) {
@@ -458,9 +698,11 @@ bool TuiEngine::ShowMessageModal(std::string_view title,
     }
     std::cout.flush();
 
+    FlushInputBuffer(); // Discard any residual VK_RETURN injected by mouse right-click before entering modal
+
     while (true) {
         KeyEvent ev = ReadKey();
-        if (ev.code == KeyCode::Enter) {
+        if (ev.code == KeyCode::Enter && !HasInputPending()) {
             FlushInputBuffer();
             return true;
         }
@@ -495,27 +737,32 @@ std::optional<std::string> TuiEngine::PromptInputModal(std::string_view title,
         return std::nullopt;
     }
 
+    struct PasteScopeGuard {
+        PasteScopeGuard() { TuiEngine::SetPasteAllowed(true); }
+        ~PasteScopeGuard() { TuiEngine::SetPasteAllowed(false); }
+    } pasteGuard;
+
     int w = 80, h = 25;
     GetScreenSize(w, h);
 
     size_t maxTextW = std::max(GetDisplayWidth(prompt), GetDisplayWidth(title) + 8);
     const int modalW = std::clamp(static_cast<int>(maxTextW) + 16, 58, w - 4);
     const int modalH = 8;
-    const int top = (h - modalH) / 2;
+    const int top = (std::max)(2, (h - modalH) / 2);
     const int left = (w - modalW) / 2;
 
     for (int r = 0; r < modalH; ++r) {
         MoveCursor(top + r, left);
-        std::cout << std::string(modalW, ' ');
+        OutputToTerminal(std::string(modalW, ' '));
     }
 
     DrawBox(top, left, modalW, modalH, title);
 
     MoveCursor(top + 2, left + 4);
-    std::cout << "\x1b[1;37m" << TruncateToWidth(prompt, modalW - 8) << "\x1b[0m";
+    OutputToTerminal(std::format("\x1b[1;37m{}\x1b[0m", TruncateToWidth(prompt, modalW - 8)));
 
     MoveCursor(top + modalH - 2, left + 4);
-    std::cout << "\x1b[90m" << TR(MsgKey::HintInputEnterEsc) << "\x1b[0m";
+    OutputToTerminal(std::format("\x1b[90m{}\x1b[0m", TR(MsgKey::HintInputEnterEsc)));
 
     std::string value{defaultValue};
     const int inputTop = top + 4;
@@ -532,16 +779,10 @@ std::optional<std::string> TuiEngine::PromptInputModal(std::string_view title,
         }
 
         const size_t visibleWidth = static_cast<size_t>((std::max)(4, inputWidth - 4));
-        std::string visibleText;
-        if (GetDisplayWidth(displayVal) > visibleWidth) {
-            // Horizontally scroll to show tail while user is typing
-            visibleText = displayVal.substr(displayVal.size() - visibleWidth);
-        } else {
-            visibleText = displayVal;
-        }
+        std::string visibleText = TruncateHeadToWidth(displayVal, visibleWidth);
         std::string boxContent = std::format("[ {} ]", Pad(visibleText, visibleWidth));
-        std::cout << "\x1b[30;107m" << boxContent << "\x1b[0m";
-        std::cout.flush();
+        OutputToTerminal(std::format("\x1b[30;107m{}\x1b[0m", boxContent));
+        if (!s_inFrame) std::cout.flush();
 
         KeyEvent ev = ReadKey();
         if (ev.code == KeyCode::Escape) {
@@ -551,7 +792,7 @@ std::optional<std::string> TuiEngine::PromptInputModal(std::string_view title,
             FlushInputBuffer();
             return std::nullopt;
         }
-        if (ev.code == KeyCode::Enter) {
+        if (ev.code == KeyCode::Enter && !HasInputPending()) {
             std::string result = std::move(value);
             if (isPassword && !value.empty()) {
                 SecureZeroMemory(value.data(), value.size());
@@ -561,11 +802,54 @@ std::optional<std::string> TuiEngine::PromptInputModal(std::string_view title,
         }
         if (ev.code == KeyCode::Backspace) {
             if (!value.empty()) {
-                value.pop_back();
+                PopBackUtf8(value);
             }
         } else if (ev.code == KeyCode::Char) {
-            if (ev.ch >= 32 && ev.ch < 127 && value.size() < 128) {
-                value.push_back(ev.ch);
+            std::string chunk;
+            if (!ev.text.empty()) {
+                chunk = ev.text;
+            } else if (static_cast<unsigned char>(ev.ch) >= 32 && ev.ch != 127) {
+                chunk.push_back(ev.ch);
+            }
+
+            // Drain burst of input (e.g. paste of long string) to prevent screen flicker
+            while (HasInputPending()) {
+                KeyEvent nextEv = ReadKey();
+                if (nextEv.code == KeyCode::Char) {
+                    if (!nextEv.text.empty()) {
+                        chunk += nextEv.text;
+                    } else if (static_cast<unsigned char>(nextEv.ch) >= 32 && nextEv.ch != 127) {
+                        chunk.push_back(nextEv.ch);
+                    }
+                } else if (nextEv.code == KeyCode::Backspace) {
+                    if (!chunk.empty()) {
+                        PopBackUtf8(chunk);
+                    } else if (!value.empty()) {
+                        PopBackUtf8(value);
+                    }
+                } else if (nextEv.code == KeyCode::Enter) {
+                    if (!chunk.empty() && value.size() + chunk.size() <= 256) {
+                        value += chunk;
+                    }
+                    std::string result = std::move(value);
+                    if (isPassword && !value.empty()) {
+                        SecureZeroMemory(value.data(), value.size());
+                    }
+                    FlushInputBuffer();
+                    return result;
+                } else if (nextEv.code == KeyCode::Escape) {
+                    if (isPassword && !value.empty()) {
+                        SecureZeroMemory(value.data(), value.size());
+                    }
+                    FlushInputBuffer();
+                    return std::nullopt;
+                } else {
+                    break;
+                }
+            }
+
+            if (!chunk.empty() && value.size() + chunk.size() <= 256) {
+                value += chunk;
             }
         }
     }
@@ -590,128 +874,258 @@ void TuiEngine::DrawProgressBar(int row, int col, int width,
     std::string paddedLabel = Pad(truncatedLabel, maxLabelW);
 
     MoveCursor(row, col);
-    std::cout << "\x1b[1;32m" << barStr << "\x1b[0m"
-              << "\x1b[1;37m" << statsStr << "\x1b[0m"
-              << "\x1b[90m" << paddedLabel << "\x1b[0m";
-    std::cout.flush();
+    OutputToTerminal(std::format("\x1b[1;32m{}\x1b[0m\x1b[1;37m{}\x1b[0m\x1b[90m{}\x1b[0m",
+                                 barStr, statsStr, paddedLabel));
+    if (!s_inFrame) std::cout.flush();
 }
 
 KeyEvent TuiEngine::ReadKey() {
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    if (hIn == INVALID_HANDLE_VALUE || hIn == nullptr) {
+        return { KeyCode::None, 0, "" };
+    }
+
+    DWORD dwMode = 0;
+    if (!GetConsoleMode(hIn, &dwMode)) {
+        int c = std::cin.get();
+        if (c == EOF) return { KeyCode::Escape, 0, "" };
+        if (c == '\r' || c == '\n') return { KeyCode::Enter, 0, "" };
+        return { KeyCode::Char, static_cast<char>(c), std::string(1, static_cast<char>(c)) };
+    }
+
     static int s_lastW = 0, s_lastH = 0;
     if (s_lastW == 0 && s_lastH == 0) {
         GetScreenSize(s_lastW, s_lastH);
     }
 
-    while (!_kbhit()) {
+    INPUT_RECORD ir;
+    DWORD numRead = 0;
+
+    while (true) {
         int curW = 0, curH = 0;
         GetScreenSize(curW, curH);
         if (curW != s_lastW || curH != s_lastH) {
             s_lastW = curW;
             s_lastH = curH;
-            return { KeyCode::Resize, 0 };
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(30));
-    }
-
-    int ch = _getch();
-    if (ch == 0 || ch == 0xE0) {
-        int arrow = _getch();
-        switch (arrow) {
-            case 0x48: return { KeyCode::Up, 0 };
-            case 0x50: return { KeyCode::Down, 0 };
-            case 0x4B: return { KeyCode::Left, 0 };
-            case 0x4D: return { KeyCode::Right, 0 };
-            case 0x53: return { KeyCode::Delete, 0 };
-            default:   return { KeyCode::None, 0 };
-        }
-    }
-    if (ch == 13 || ch == 10) return { KeyCode::Enter, 0 };
-    if (ch == 8 || ch == 127) return { KeyCode::Backspace, 0 };
-    if (ch == 9) return { KeyCode::Tab, 0 };
-
-    if (ch == 27) {
-        // Check if an escape sequence follows
-        int waitMs = 0;
-        while (!_kbhit() && waitMs < 30) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            waitMs += 5;
+            return { KeyCode::Resize, 0, "" };
         }
 
-        if (!_kbhit()) {
-            // Standalone Escape key
-            return { KeyCode::Escape, 0 };
+        if (!ReadConsoleInputW(hIn, &ir, 1, &numRead) || numRead == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
         }
 
-        auto readSeqByteWithTimeout = []() -> int {
-            int waited = 0;
-            while (!_kbhit() && waited < 20) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(2));
-                waited += 2;
-            }
-            return _kbhit() ? _getch() : -1;
-        };
+        if (ir.EventType == WINDOW_BUFFER_SIZE_EVENT) {
+            GetScreenSize(s_lastW, s_lastH);
+            return { KeyCode::Resize, 0, "" };
+        }
 
-        // Parse ANSI / VT escape sequence
-        int seq1 = readSeqByteWithTimeout();
-        if (seq1 == -1) return { KeyCode::Escape, 0 };
-
-        if (seq1 == '[') {
-            // CSI sequence: ESC [ ...
-            int seq2 = readSeqByteWithTimeout();
-            if (seq2 == -1) return { KeyCode::None, 0 };
-            if (seq2 == 'A') return { KeyCode::Up, 0 };
-            if (seq2 == 'B') return { KeyCode::Down, 0 };
-            if (seq2 == 'C') return { KeyCode::Right, 0 };
-            if (seq2 == 'D') return { KeyCode::Left, 0 };
-            if (seq2 == '3') {
-                int nextCh = readSeqByteWithTimeout();
-                if (nextCh == '~') {
-                    return { KeyCode::Delete, 0 };
-                }
-                return { KeyCode::None, 0 };
-            }
-            if (seq2 == '<') {
-                // SGR mouse sequence: ESC [ < C ; X ; Y (M|m)
-                // Drain until M or m or end of burst
-                while (true) {
-                    int mc = readSeqByteWithTimeout();
-                    if (mc == -1 || mc == 'M' || mc == 'm' || (mc >= 0x40 && mc <= 0x7E)) {
-                        break;
+        if (ir.EventType == MOUSE_EVENT) {
+            const auto& me = ir.Event.MouseEvent;
+            // Handle right-click press (RIGHTMOST_BUTTON_PRESSED) on button click (dwEventFlags == 0):
+            if (me.dwEventFlags == 0 && (me.dwButtonState & RIGHTMOST_BUTTON_PRESSED)) {
+                if (s_pasteAllowed) {
+                    std::string clip = GetClipboardTextUtf8();
+                    if (!clip.empty()) {
+                        return { KeyCode::Char, 0, std::move(clip) };
                     }
                 }
-                return { KeyCode::None, 0 };
             }
-            // Other CSI sequence: drain until final byte (0x40 - 0x7E)
-            int lastCh = seq2;
-            while (!(lastCh >= 0x40 && lastCh <= 0x7E)) {
-                lastCh = readSeqByteWithTimeout();
-                if (lastCh == -1) break;
+            // Discard all other mouse interactions (movement, left-click, wheel, right-click in menus)
+            continue;
+        }
+
+        if (ir.EventType == KEY_EVENT && ir.Event.KeyEvent.bKeyDown) {
+            const auto& ke = ir.Event.KeyEvent;
+            WORD vk = ke.wVirtualKeyCode;
+            WCHAR wc = ke.uChar.UnicodeChar;
+
+            if (vk == VK_UP) return { KeyCode::Up, 0, "" };
+            if (vk == VK_DOWN) return { KeyCode::Down, 0, "" };
+            if (vk == VK_LEFT) return { KeyCode::Left, 0, "" };
+            if (vk == VK_RIGHT) return { KeyCode::Right, 0, "" };
+            if (vk == VK_DELETE) return { KeyCode::Delete, 0, "" };
+            if (vk == VK_RETURN) return { KeyCode::Enter, 0, "" };
+            if (vk == VK_BACK) return { KeyCode::Backspace, 0, "" };
+            if (vk == VK_TAB) return { KeyCode::Tab, 0, "" };
+
+            // Intercept Ctrl+V
+            if ((vk == 'V' && (ke.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED))) || wc == 22) {
+                if (s_pasteAllowed) {
+                    std::string clip = GetClipboardTextUtf8();
+                    if (!clip.empty()) {
+                        return { KeyCode::Char, 0, std::move(clip) };
+                    }
+                }
+                return { KeyCode::None, 0, "" };
             }
-            return { KeyCode::None, 0 };
-        } else if (seq1 == 'O') {
-            // SS3 sequence: ESC O ...
-            int seq2 = readSeqByteWithTimeout();
-            if (seq2 == -1) return { KeyCode::None, 0 };
-            if (seq2 == 'A') return { KeyCode::Up, 0 };
-            if (seq2 == 'B') return { KeyCode::Down, 0 };
-            if (seq2 == 'C') return { KeyCode::Right, 0 };
-            if (seq2 == 'D') return { KeyCode::Left, 0 };
-            return { KeyCode::None, 0 };
-        } else {
-            // Other escape sequence: drain while available
-            while (true) {
-                int ec = readSeqByteWithTimeout();
-                if (ec == -1) break;
+
+            if (vk == VK_ESCAPE || wc == 27) {
+                std::string seq;
+                if (TryReadAnsiSequence(hIn, seq)) {
+                    if (!seq.empty() && seq[0] == '<') {
+                        // SGR mouse sequence: <button;col;row(M|m)
+                        // If right button pressed (<2;...M) and paste is allowed:
+                        if (s_pasteAllowed && seq.starts_with("<2;") && seq.ends_with('M')) {
+                            std::string clip = GetClipboardTextUtf8();
+                            if (!clip.empty()) {
+                                return { KeyCode::Char, 0, std::move(clip) };
+                            }
+                        }
+                        return { KeyCode::None, 0, "" };
+                    }
+                    if (seq == "A") return { KeyCode::Up, 0, "" };
+                    if (seq == "B") return { KeyCode::Down, 0, "" };
+                    if (seq == "C") return { KeyCode::Right, 0, "" };
+                    if (seq == "D") return { KeyCode::Left, 0, "" };
+                    if (seq == "3~") return { KeyCode::Delete, 0, "" };
+                    if (seq == "200~") {
+                        std::string payload = ReadBracketedPastePayload(hIn, s_pasteAllowed);
+                        if (s_pasteAllowed && !payload.empty()) {
+                            return { KeyCode::Char, 0, std::move(payload) };
+                        }
+                        return { KeyCode::None, 0, "" };
+                    }
+                    if (seq == "201~") {
+                        return { KeyCode::None, 0, "" };
+                    }
+                    return { KeyCode::None, 0, "" };
+                }
+                return { KeyCode::Escape, 0, "" };
             }
-            return { KeyCode::None, 0 };
+
+            // Ignore pure modifier keys (Shift, Ctrl, Alt, CapsLock, NumLock, etc.)
+            if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU ||
+                vk == VK_CAPITAL || vk == VK_NUMLOCK || vk == VK_SCROLL) {
+                continue;
+            }
+
+            // Printable character or IME committed character
+            if (wc != 0) {
+                if (IS_HIGH_SURROGATE(wc)) {
+                    INPUT_RECORD nextIr;
+                    DWORD nextRead = 0;
+                    if (ReadConsoleInputW(hIn, &nextIr, 1, &nextRead) && nextRead == 1 &&
+                        nextIr.EventType == KEY_EVENT && IS_LOW_SURROGATE(nextIr.Event.KeyEvent.uChar.UnicodeChar)) {
+                        WCHAR pair[2] = { wc, nextIr.Event.KeyEvent.uChar.UnicodeChar };
+                        char utf8Buf[8]{0};
+                        int bytes = WideCharToMultiByte(CP_UTF8, 0, pair, 2, utf8Buf, sizeof(utf8Buf) - 1, nullptr, nullptr);
+                        if (bytes > 0) {
+                            return { KeyCode::Char, 0, std::string(utf8Buf, bytes) };
+                        }
+                    }
+                    continue;
+                }
+
+                char utf8Buf[8]{0};
+                int bytes = WideCharToMultiByte(CP_UTF8, 0, &wc, 1, utf8Buf, sizeof(utf8Buf) - 1, nullptr, nullptr);
+                if (bytes > 0) {
+                    char asciiCh = (bytes == 1) ? utf8Buf[0] : 0;
+                    return { KeyCode::Char, asciiCh, std::string(utf8Buf, bytes) };
+                }
+            }
         }
     }
-
-    return { KeyCode::Char, static_cast<char>(ch) };
 }
 
 bool TuiEngine::HasInputPending() noexcept {
-    return _kbhit() != 0;
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    if (hIn == INVALID_HANDLE_VALUE || hIn == nullptr) {
+        return false;
+    }
+    DWORD dwMode = 0;
+    if (!GetConsoleMode(hIn, &dwMode)) {
+        return false;
+    }
+    DWORD numEvents = 0;
+    if (!GetNumberOfConsoleInputEvents(hIn, &numEvents) || numEvents == 0) {
+        return false;
+    }
+    std::vector<INPUT_RECORD> peekRecs(numEvents);
+    DWORD peekRead = 0;
+    if (!PeekConsoleInputW(hIn, peekRecs.data(), numEvents, &peekRead) || peekRead == 0) {
+        return false;
+    }
+    for (DWORD i = 0; i < peekRead; ++i) {
+        if (peekRecs[i].EventType == KEY_EVENT && peekRecs[i].Event.KeyEvent.bKeyDown) {
+            WORD vk = peekRecs[i].Event.KeyEvent.wVirtualKeyCode;
+            if (vk != VK_SHIFT && vk != VK_CONTROL && vk != VK_MENU &&
+                vk != VK_CAPITAL && vk != VK_NUMLOCK && vk != VK_SCROLL) {
+                return true;
+            }
+        }
+        if (peekRecs[i].EventType == WINDOW_BUFFER_SIZE_EVENT) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::optional<KeyEvent> TuiEngine::PollKey(int timeoutMs) {
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    if (hIn == INVALID_HANDLE_VALUE || hIn == nullptr) {
+        return std::nullopt;
+    }
+
+    DWORD dwMode = 0;
+    if (!GetConsoleMode(hIn, &dwMode)) {
+        return ReadKey();
+    }
+
+    auto startTime = std::chrono::steady_clock::now();
+
+    while (true) {
+        int remainingMs = timeoutMs;
+        if (timeoutMs > 0) {
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - startTime).count();
+            if (elapsed >= timeoutMs) {
+                return std::nullopt;
+            }
+            remainingMs = timeoutMs - static_cast<int>(elapsed);
+        }
+
+        DWORD waitRes = WaitForSingleObject(hIn, remainingMs > 0 ? remainingMs : 0);
+        if (waitRes != WAIT_OBJECT_0) {
+            return std::nullopt;
+        }
+
+        DWORD numEvents = 0;
+        if (!GetNumberOfConsoleInputEvents(hIn, &numEvents) || numEvents == 0) {
+            return std::nullopt;
+        }
+
+        std::vector<INPUT_RECORD> peekRecs(numEvents);
+        DWORD peekRead = 0;
+        if (!PeekConsoleInputW(hIn, peekRecs.data(), numEvents, &peekRead) || peekRead == 0) {
+            return std::nullopt;
+        }
+
+        bool hasActionable = false;
+        for (DWORD i = 0; i < peekRead; ++i) {
+            if (peekRecs[i].EventType == WINDOW_BUFFER_SIZE_EVENT) {
+                hasActionable = true;
+                break;
+            }
+            if (peekRecs[i].EventType == KEY_EVENT && peekRecs[i].Event.KeyEvent.bKeyDown) {
+                WORD vk = peekRecs[i].Event.KeyEvent.wVirtualKeyCode;
+                if (vk != VK_SHIFT && vk != VK_CONTROL && vk != VK_MENU &&
+                    vk != VK_CAPITAL && vk != VK_NUMLOCK && vk != VK_SCROLL) {
+                    hasActionable = true;
+                    break;
+                }
+            }
+        }
+
+        if (hasActionable) {
+            return ReadKey();
+        }
+
+        // Only non-actionable events (mouse, key-up, pure modifier) -> drain one record to advance
+        INPUT_RECORD drainIr;
+        DWORD drainRead = 0;
+        ReadConsoleInputW(hIn, &drainIr, 1, &drainRead);
+    }
 }
 
 } // namespace OST::ExtractTickets

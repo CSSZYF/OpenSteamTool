@@ -31,6 +31,7 @@ enum class KeyCode {
 struct KeyEvent {
     KeyCode code{KeyCode::None};
     char ch{0};
+    std::string text{};
 };
 
 class TuiEngine {
@@ -51,13 +52,21 @@ public:
     // Text formatting and East Asian width alignment
     static size_t GetDisplayWidth(std::string_view utf8Str);
     static std::string TruncateToWidth(std::string_view utf8Str, size_t maxWidth);
+    static std::string TruncateHeadToWidth(std::string_view utf8Str, size_t maxWidth);
+    static void PopBackUtf8(std::string& s) noexcept;
     static std::string Pad(std::string_view utf8Str, size_t targetWidth, bool center = false);
     static void PrintBounded(int row, int col, std::string_view text, size_t maxWidth, std::string_view ansiStyle = "");
 
+    // Frame buffer batch rendering
+    static void BeginFrame();
+    static void EndFrame();
+    static void PrintRaw(std::string_view str);
+
     // Box and UI drawing
     static void DrawHeader(std::string_view title, std::string_view statusTag);
+    static void DrawFooter(std::string_view shortcuts, std::string_view ansiStyle);
     static void DrawFooter(std::string_view shortcuts);
-    static void DrawBox(int top, int left, int width, int height, std::string_view title = "");
+    static void DrawBox(int top, int left, int width, int height, std::string_view title = "", bool clearInterior = true);
     
     // Modal confirmation dialog (returns true for Yes, false for No)
     static bool ShowConfirmModal(std::string_view title,
@@ -71,6 +80,10 @@ public:
                                  std::string_view detail = "");
 
     static void FlushInputBuffer() noexcept;
+
+    // Paste control for modals and terminal bracketed paste
+    static void SetPasteAllowed(bool allowed) noexcept;
+    [[nodiscard]] static bool IsPasteAllowed() noexcept;
 
     // Modal text/password input dialog (returns std::nullopt if cancelled via ESC)
     static std::optional<std::string> PromptInputModal(std::string_view title,
@@ -88,6 +101,7 @@ public:
 
     // Input reading
     static KeyEvent ReadKey();
+    [[nodiscard]] static std::optional<KeyEvent> PollKey(int timeoutMs);
     [[nodiscard]] static bool HasInputPending() noexcept;
 };
 
@@ -99,7 +113,11 @@ public:
             if (hIn != INVALID_HANDLE_VALUE && hIn != nullptr) {
                 if (GetConsoleMode(hIn, &m_origInMode)) {
                     m_hasOrigInMode = true;
-                    DWORD newMode = (m_origInMode & ~ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS;
+                    // Enable ENABLE_MOUSE_INPUT with ENABLE_WINDOW_INPUT and ENABLE_EXTENDED_FLAGS.
+                    // Keep ENABLE_VIRTUAL_TERMINAL_INPUT disabled so ReadConsoleInputW retains
+                    // native Win32 VK_UP/VK_DOWN/VK_RETURN and Unicode IME input.
+                    DWORD newMode = (m_origInMode & ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_QUICK_EDIT_MODE))
+                                  | ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS;
                     SetConsoleMode(hIn, newMode);
                 }
             }
