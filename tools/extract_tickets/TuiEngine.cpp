@@ -45,14 +45,23 @@ namespace {
 
 void TuiEngine::EnableVirtualTerminal() {
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (hOut == INVALID_HANDLE_VALUE) return;
-
-    DWORD dwMode = 0;
-    if (GetConsoleMode(hOut, &dwMode)) {
-        dwMode |= ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-        SetConsoleMode(hOut, dwMode);
+    if (hOut != INVALID_HANDLE_VALUE) {
+        DWORD dwMode = 0;
+        if (GetConsoleMode(hOut, &dwMode)) {
+            dwMode |= ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+            SetConsoleMode(hOut, dwMode);
+        }
+        SetConsoleOutputCP(CP_UTF8);
     }
-    SetConsoleOutputCP(CP_UTF8);
+
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    if (hIn != INVALID_HANDLE_VALUE) {
+        DWORD dwInMode = 0;
+        if (GetConsoleMode(hIn, &dwInMode)) {
+            dwInMode = (dwInMode & ~ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS;
+            SetConsoleMode(hIn, dwInMode);
+        }
+    }
 
 #if defined(_WIN32)
     static bool handlerInstalled = false;
@@ -361,6 +370,8 @@ bool TuiEngine::ShowConfirmModal(std::string_view title,
     };
 
     renderButtons();
+
+    FlushInputBuffer();
 
     while (true) {
         KeyEvent ev = ReadKey();

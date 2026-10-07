@@ -383,12 +383,8 @@ int Run(int argc, char** argv) {
             continue;
         }
 
-        // Enter -> Start local extraction (normal mode)
-        // 'e' / 'E' -> Start local extraction with forced encrypted ticket (--force-eticket)
-        const bool isEnter = (ev.code == KeyCode::Enter);
-        const bool isForceE = (ev.code == KeyCode::Char && (ev.ch == 'e' || ev.ch == 'E'));
-        if ((isEnter || isForceE) && !inputAppId.empty()) {
-            const bool forceEticketForApp = forceEticket || isForceE;
+        // Enter -> Start local extraction
+        if (ev.code == KeyCode::Enter && !inputAppId.empty()) {
             auto appId = ParseAppId(inputAppId);
             if (appId && *appId > 0) {
                 if (!FindSteamInstallPath().has_value()) {
@@ -420,7 +416,7 @@ int Run(int argc, char** argv) {
                 TuiEngine::PrintBounded(top + 2, left + 4, msg, static_cast<size_t>(modalW - 8), "\x1b[1;33m");
                 std::cout.flush();
 
-                bool ok = RunLocalExtractionWorker(*appId, forceEticketForApp);
+                bool ok = RunLocalExtractionWorker(*appId, forceEticket);
 
                 TuiEngine::ClearScreen();
                 if (ok) {

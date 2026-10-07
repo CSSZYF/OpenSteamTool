@@ -288,23 +288,6 @@ void OnlineSession::RunAccountSelectionMenu() {
                 continue;
             }
 
-            // 'x' -> Wipe all
-            if (ev.code == KeyCode::Char && (ev.ch == 'x' || ev.ch == 'X')) {
-                if (!accounts.empty()) {
-                    TuiEngine::ClearScreen();
-                    bool confirmed = TuiEngine::ShowConfirmModal(
-                        TR(MsgKey::WipeAllTitle).data(),
-                        TR(MsgKey::WipeAllMsg).data(),
-                        TR(MsgKey::WipeAllDetail).data(),
-                        false);
-                    needFullClear = true;
-                    if (confirmed) {
-                        TokenStorage::WipeAll();
-                        break;
-                    }
-                }
-                continue;
-            }
 
             // Enter key
             if (ev.code == KeyCode::Enter) {

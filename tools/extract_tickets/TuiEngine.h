@@ -94,6 +94,14 @@ class TuiSessionGuard {
 public:
     explicit TuiSessionGuard(bool active = true) : m_active(active) {
         if (m_active) {
+            HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+            if (hIn != INVALID_HANDLE_VALUE) {
+                if (GetConsoleMode(hIn, &m_origInMode)) {
+                    m_hasOrigInMode = true;
+                    DWORD newMode = (m_origInMode & ~ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS;
+                    SetConsoleMode(hIn, newMode);
+                }
+            }
             TuiEngine::SetActive(true);
             TuiEngine::EnableVirtualTerminal();
             TuiEngine::EnterAlternateScreen();
@@ -107,6 +115,12 @@ public:
             TuiEngine::ShowCursor(true);
             TuiEngine::ExitAlternateScreen();
             TuiEngine::SetActive(false);
+            if (m_hasOrigInMode) {
+                HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+                if (hIn != INVALID_HANDLE_VALUE) {
+                    SetConsoleMode(hIn, m_origInMode | ENABLE_EXTENDED_FLAGS);
+                }
+            }
         }
     }
 
@@ -115,6 +129,8 @@ public:
 
 private:
     bool m_active{true};
+    bool m_hasOrigInMode{false};
+    DWORD m_origInMode{0};
 };
 
 } // namespace OST::ExtractTickets
