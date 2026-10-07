@@ -8,124 +8,18 @@
 #include <charconv>
 #include <cstring>
 #include <filesystem>
+#include <format>
+#include <ranges>
 
 namespace OST::ExtractTickets {
 
-std::unordered_map<uint32_t, uint64_t> ParseAppInfoTokens(
-    const std::string& steamPath,
-    const std::unordered_set<uint32_t>* targetAppIds) {
-    std::unordered_map<uint32_t, uint64_t> tokens;
-    if (steamPath.empty() || (targetAppIds && targetAppIds->empty())) {
-        return tokens;
-    }
-
-    const auto appinfoPath = std::filesystem::path(steamPath) / "appcache" / "appinfo.vdf";
-    ScopedHandle hFile{CreateFileW(
-        appinfoPath.c_str(),
-        GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        nullptr,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        nullptr
-    )};
-
-    if (!hFile.IsValid()) {
-        return tokens;
-    }
-
-    LARGE_INTEGER fileSize{};
-    if (!GetFileSizeEx(hFile, &fileSize) || fileSize.QuadPart < 16) {
-        return tokens;
-    }
-
-    if (fileSize.QuadPart > 1024ULL * 1024ULL * 1024ULL) {
-        return tokens;
-    }
-
-    ScopedHandle hMapping{CreateFileMappingW(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr)};
-    if (!hMapping.IsValid()) {
-        return tokens;
-    }
-
-    ScopedFileMappingView mappedView{MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0)};
-    if (!mappedView) {
-        return tokens;
-    }
-
-    const auto* data = mappedView.As<uint8_t>();
-    const size_t totalBytes = static_cast<size_t>(fileSize.QuadPart);
-
-    uint32_t magic = 0;
-    std::memcpy(&magic, data, sizeof(uint32_t));
-
-    // Valid appinfo.vdf magic format: 0x075644xx (version >= 38 has AccessToken at offset +16)
-    if ((magic & 0xFFFFFF00) != 0x07564400) {
-        return tokens;
-    }
-
-    const uint8_t version = static_cast<uint8_t>(magic & 0xFF);
-    if (version < 38) {
-        return tokens;
-    }
-
-    size_t offset = 8;
-    size_t appsEnd = totalBytes;
-
-    // Version 41+ (0x29+) includes a 64-bit string table offset at file offset 8.
-    // Apps section ends at stringTableOffset.
-    if (version >= 41) {
-        if (totalBytes >= 16) {
-            uint64_t stringTableOffset = 0;
-            std::memcpy(&stringTableOffset, data + 8, sizeof(uint64_t));
-            if (stringTableOffset >= 16 && stringTableOffset <= totalBytes) {
-                appsEnd = static_cast<size_t>(stringTableOffset);
-            }
-            offset = 16;
-        }
-    }
-
-    std::unordered_set<uint32_t> matchedTargetAppIds;
-    while (offset + 8 <= appsEnd) {
-        uint32_t entryAppId = 0;
-        uint32_t entrySize = 0;
-        std::memcpy(&entryAppId, data + offset, sizeof(uint32_t));
-        std::memcpy(&entrySize, data + offset + 4, sizeof(uint32_t));
-
-        if (entryAppId == 0) {
-            break; // 0 marks end of apps list
-        }
-
-        // Each app entry header after size contains at least 60 bytes:
-        // InfoState(4) + LastUpdated(4) + AccessToken(8) + SHA1_text(20) + ChangeNumber(4) + SHA1_bin(20) = 60.
-        // Prevent overflow and ensure entry stays strictly within appsEnd.
-        if (entrySize < 60 || entrySize > appsEnd - (offset + 8)) {
-            break;
-        }
-
-        // If filtering by specific AppIDs, only extract when matched
-        if (!targetAppIds || targetAppIds->contains(entryAppId)) {
-            if (targetAppIds) {
-                matchedTargetAppIds.insert(entryAppId);
-            }
-            // AccessToken is at entry offset +16
-            uint64_t accessToken = 0;
-            std::memcpy(&accessToken, data + offset + 16, sizeof(uint64_t));
-            if (accessToken != 0) {
-                tokens[entryAppId] = accessToken;
-            }
-            if (targetAppIds && matchedTargetAppIds.size() >= targetAppIds->size()) {
-                break; // All unique target apps found; early exit to avoid scanning remaining thousands of apps
-            }
-        }
-
-        offset += 8 + entrySize;
-    }
-
-    return tokens;
-}
-
 namespace {
+
+[[nodiscard]] inline bool EqualIgnoreCase(std::string_view a, std::string_view b) noexcept {
+    return std::ranges::equal(a, b, [](char c1, char c2) {
+        return std::tolower(static_cast<unsigned char>(c1)) == std::tolower(static_cast<unsigned char>(c2));
+    });
+}
 
 void ParseStringTableV41(const uint8_t* data, size_t totalBytes, uint64_t stringTableOffset, std::vector<std::string_view>& outTable) {
     if (stringTableOffset < 16 || stringTableOffset + 4 > totalBytes) return;
@@ -146,11 +40,106 @@ void ParseStringTableV41(const uint8_t* data, size_t totalBytes, uint64_t string
     }
 }
 
-[[nodiscard]] inline bool EqualIgnoreCase(std::string_view a, std::string_view b) noexcept {
-    return std::ranges::equal(a, b, [](char c1, char c2) {
-        return std::tolower(static_cast<unsigned char>(c1)) == std::tolower(static_cast<unsigned char>(c2));
-    });
-}
+struct AppInfoEntryView {
+    uint32_t appId{0};
+    uint64_t accessToken{0};
+    std::span<const uint8_t> vdfBody;
+};
+
+struct AppInfoFileContext {
+    ScopedHandle hFile;
+    ScopedHandle hMapping;
+    ScopedFileMappingView mappedView;
+    const uint8_t* data{nullptr};
+    size_t totalBytes{0};
+    uint8_t version{0};
+    size_t appsStartOffset{8};
+    size_t appsEndOffset{0};
+    std::vector<std::string_view> stringTable;
+
+    static std::optional<AppInfoFileContext> Open(const std::string& steamPath) {
+        if (steamPath.empty()) return std::nullopt;
+        const auto appinfoPath = std::filesystem::path(steamPath) / "appcache" / "appinfo.vdf";
+        ScopedHandle hFile{CreateFileW(
+            appinfoPath.c_str(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr
+        )};
+        if (!hFile.IsValid()) return std::nullopt;
+
+        LARGE_INTEGER fileSize{};
+        if (!GetFileSizeEx(hFile, &fileSize) || fileSize.QuadPart < 16 || fileSize.QuadPart > 1024ULL * 1024ULL * 1024ULL) {
+            return std::nullopt;
+        }
+
+        ScopedHandle hMapping{CreateFileMappingW(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr)};
+        if (!hMapping.IsValid()) return std::nullopt;
+
+        ScopedFileMappingView mappedView{MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0)};
+        if (!mappedView) return std::nullopt;
+
+        AppInfoFileContext ctx;
+        ctx.hFile = std::move(hFile);
+        ctx.hMapping = std::move(hMapping);
+        ctx.mappedView = std::move(mappedView);
+        ctx.data = ctx.mappedView.As<uint8_t>();
+        ctx.totalBytes = static_cast<size_t>(fileSize.QuadPart);
+
+        uint32_t magic = 0;
+        std::memcpy(&magic, ctx.data, sizeof(uint32_t));
+        if ((magic & 0xFFFFFF00) != 0x07564400) return std::nullopt;
+
+        ctx.version = static_cast<uint8_t>(magic & 0xFF);
+        if (ctx.version < 38) return std::nullopt;
+
+        ctx.appsStartOffset = 8;
+        ctx.appsEndOffset = ctx.totalBytes;
+
+        if (ctx.version >= 41) {
+            if (ctx.totalBytes >= 16) {
+                uint64_t stringTableOffset = 0;
+                std::memcpy(&stringTableOffset, ctx.data + 8, sizeof(uint64_t));
+                if (stringTableOffset >= 16 && stringTableOffset + 4 <= ctx.totalBytes) {
+                    ctx.appsEndOffset = static_cast<size_t>(stringTableOffset);
+                    ParseStringTableV41(ctx.data, ctx.totalBytes, stringTableOffset, ctx.stringTable);
+                }
+                ctx.appsStartOffset = 16;
+            }
+        }
+        return ctx;
+    }
+
+    template <typename Callback>
+    void ForEachApp(Callback&& cb) const {
+        size_t offset = appsStartOffset;
+        while (offset + 8 <= appsEndOffset) {
+            uint32_t entryAppId = 0;
+            uint32_t entrySize = 0;
+            std::memcpy(&entryAppId, data + offset, sizeof(uint32_t));
+            std::memcpy(&entrySize, data + offset + 4, sizeof(uint32_t));
+
+            if (entryAppId == 0) break;
+            if (entrySize < 60 || entrySize > appsEndOffset - (offset + 8)) break;
+
+            uint64_t accessToken = 0;
+            std::memcpy(&accessToken, data + offset + 16, sizeof(uint64_t));
+
+            const uint8_t* body = data + offset + 8 + 60;
+            const size_t bodySize = entrySize - 60;
+
+            AppInfoEntryView entry{entryAppId, accessToken, std::span<const uint8_t>(body, bodySize)};
+            if (!cb(entry)) {
+                break;
+            }
+
+            offset += 8 + entrySize;
+        }
+    }
+};
 
 struct VdfReader {
     const uint8_t* p{nullptr};
@@ -420,350 +409,68 @@ void ParseVdfRecurse(VdfReader& reader,
     }
 }
 
-enum class TextVdfTokenType {
-    String,
-    OpenBrace,
-    CloseBrace,
-    EndOfFile
-};
-
-struct TextVdfToken {
-    TextVdfTokenType type{TextVdfTokenType::EndOfFile};
-    std::string value;
-};
-
-class TextVdfLexer {
-public:
-    explicit TextVdfLexer(std::string_view text) : m_text(text), m_pos(0), m_len(text.size()) {
-        if (m_len >= 3 &&
-            static_cast<uint8_t>(m_text[0]) == 0xEF &&
-            static_cast<uint8_t>(m_text[1]) == 0xBB &&
-            static_cast<uint8_t>(m_text[2]) == 0xBF) {
-            m_pos = 3;
-        }
-    }
-
-    TextVdfToken Next() {
-        if (m_peeked.has_value()) {
-            TextVdfToken t = std::move(*m_peeked);
-            m_peeked.reset();
-            return t;
-        }
-        return ReadNext();
-    }
-
-    const TextVdfToken& Peek() {
-        if (!m_peeked.has_value()) {
-            m_peeked = ReadNext();
-        }
-        return *m_peeked;
-    }
-
-private:
-    TextVdfToken ReadNext() {
-        while (m_pos < m_len) {
-            char c = m_text[m_pos];
-            if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
-                ++m_pos;
-                continue;
-            }
-            if (c == '/' && m_pos + 1 < m_len && m_text[m_pos + 1] == '/') {
-                m_pos += 2;
-                while (m_pos < m_len && m_text[m_pos] != '\n') {
-                    ++m_pos;
-                }
-                continue;
-            }
-            if (c == '{') {
-                ++m_pos;
-                return {TextVdfTokenType::OpenBrace, "{"};
-            }
-            if (c == '}') {
-                ++m_pos;
-                return {TextVdfTokenType::CloseBrace, "}"};
-            }
-            if (c == '"') {
-                ++m_pos;
-                std::string s;
-                while (m_pos < m_len) {
-                    char sc = m_text[m_pos];
-                    if (sc == '\\' && m_pos + 1 < m_len) {
-                        char esc = m_text[m_pos + 1];
-                        if (esc == 'n') s += '\n';
-                        else if (esc == 't') s += '\t';
-                        else s += esc;
-                        m_pos += 2;
-                    } else if (sc == '"') {
-                        ++m_pos;
-                        break;
-                    } else {
-                        s += sc;
-                        ++m_pos;
-                    }
-                }
-                return {TextVdfTokenType::String, std::move(s)};
-            }
-
-            size_t start = m_pos;
-            while (m_pos < m_len) {
-                char bc = m_text[m_pos];
-                if (bc == ' ' || bc == '\t' || bc == '\r' || bc == '\n' ||
-                    bc == '{' || bc == '}' || bc == '"' ||
-                    (bc == '/' && m_pos + 1 < m_len && m_text[m_pos + 1] == '/')) {
-                    break;
-                }
-                ++m_pos;
-            }
-            return {TextVdfTokenType::String, std::string(m_text.substr(start, m_pos - start))};
-        }
-        return {TextVdfTokenType::EndOfFile, ""};
-    }
-
-    std::string_view m_text;
-    size_t m_pos{0};
-    size_t m_len{0};
-    std::optional<TextVdfToken> m_peeked;
-};
-
-void ParseTextVdfRecurse(
-    TextVdfLexer& lexer,
-    std::vector<std::string>& pathStack,
-    uint32_t currentDepotId,
-    ParsedAppInfoData& outData)
-{
-    if (pathStack.size() > 64) {
-        int depth = 1;
-        while (depth > 0) {
-            auto tok = lexer.Next();
-            if (tok.type == TextVdfTokenType::EndOfFile) break;
-            if (tok.type == TextVdfTokenType::OpenBrace) ++depth;
-            else if (tok.type == TextVdfTokenType::CloseBrace) --depth;
-        }
-        return;
-    }
-
-    auto recordManifest = [&](uint32_t depotId, std::string_view gidStr, bool isPublic) {
-        if (depotId == 0 || gidStr.empty() || !IsValidManifestId(gidStr)) return;
-        for (auto& d : outData.depots) {
-            if (d.depotId == depotId) {
-                if (isPublic || d.manifestId.empty()) {
-                    d.manifestId = std::string(gidStr);
-                    LOG_DEBUG("AppInfoParser", "Depot {} 记录清单 GID: {} (分支: {})",
-                              depotId, gidStr, isPublic ? "public" : "other");
-                }
-                break;
-            }
-        }
-    };
-
-    auto recordDlcId = [&](uint32_t depotId, uint32_t dlcId) {
-        if (dlcId == 0 || dlcId == outData.appId) return;
-        if (depotId > 0) {
-            for (auto& d : outData.depots) {
-                if (d.depotId == depotId && d.dlcId == 0) {
-                    d.dlcId = dlcId;
-                    break;
-                }
-            }
-        }
-        if (std::ranges::find(outData.dlcAppIds, dlcId) == outData.dlcAppIds.end()) {
-            outData.dlcAppIds.push_back(dlcId);
-            LOG_DEBUG("AppInfoParser", "发现关联 DLC AppID: {}", dlcId);
-        }
-    };
-
-    while (true) {
-        const auto& peek = lexer.Peek();
-        if (peek.type == TextVdfTokenType::CloseBrace || peek.type == TextVdfTokenType::EndOfFile) {
-            if (peek.type == TextVdfTokenType::CloseBrace) {
-                (void)lexer.Next();
-            }
-            return;
-        }
-
-        if (peek.type == TextVdfTokenType::OpenBrace) {
-            (void)lexer.Next();
-            ParseTextVdfRecurse(lexer, pathStack, currentDepotId, outData);
-            continue;
-        }
-
-        TextVdfToken keyToken = lexer.Next();
-        std::string key = std::move(keyToken.value);
-
-        const auto& afterKey = lexer.Peek();
-        if (afterKey.type == TextVdfTokenType::OpenBrace) {
-            (void)lexer.Next();
-
-            uint32_t nextDepotId = currentDepotId;
-            if (!pathStack.empty() && EqualIgnoreCase(pathStack.back(), "depots")) {
-                uint32_t parsedId = 0;
-                auto [ptr, ec] = std::from_chars(key.data(), key.data() + key.size(), parsedId);
-                if (ec == std::errc() && parsedId > 0) {
-                    nextDepotId = parsedId;
-                    if (std::none_of(outData.depots.begin(), outData.depots.end(),
-                                     [&](const AppDepotManifest& d) { return d.depotId == parsedId; })) {
-                        outData.depots.push_back({parsedId, "", 0});
-                        LOG_DEBUG("AppInfoParser", "发现 Depot ID: {}", parsedId);
-                    }
-                }
-            }
-
-            pathStack.push_back(key);
-            ParseTextVdfRecurse(lexer, pathStack, nextDepotId, outData);
-            pathStack.pop_back();
-        } else if (afterKey.type == TextVdfTokenType::String) {
-            TextVdfToken valToken = lexer.Next();
-            const std::string& val = valToken.value;
-
-            // Consume optional conditional tag if present (e.g. [$windows], [!$osx])
-            if (lexer.Peek().type == TextVdfTokenType::String &&
-                !lexer.Peek().value.empty() && lexer.Peek().value.front() == '[') {
-                (void)lexer.Next();
-            }
-
-            const bool isPublicBranch = (!pathStack.empty() && EqualIgnoreCase(pathStack.back(), "public"));
-            const bool isManifestsParent = (!pathStack.empty() && EqualIgnoreCase(pathStack.back(), "manifests"));
-            const bool isPublicKey = EqualIgnoreCase(key, "public");
-            const bool isGidKey = EqualIgnoreCase(key, "gid");
-
-            if (isGidKey || (isManifestsParent && isPublicKey)) {
-                recordManifest(currentDepotId, val, isPublicBranch || isPublicKey);
-            } else if ((EqualIgnoreCase(key, "dlc") || EqualIgnoreCase(key, "listofdlc")) &&
-                       !pathStack.empty() && EqualIgnoreCase(pathStack.back(), "extended")) {
-                size_t start = 0;
-                while (start < val.size()) {
-                    size_t comma = val.find(',', start);
-                    std::string_view token = (comma == std::string::npos) ?
-                        std::string_view(val).substr(start) :
-                        std::string_view(val).substr(start, comma - start);
-                    token = TrimWhitespace(token);
-                    uint32_t dlcId = 0;
-                    auto [ptr, ec] = std::from_chars(token.data(), token.data() + token.size(), dlcId);
-                    if (ec == std::errc() && dlcId > 0) {
-                        recordDlcId(currentDepotId, dlcId);
-                    }
-                    if (comma == std::string::npos) break;
-                    start = comma + 1;
-                }
-            } else if (EqualIgnoreCase(key, "dlcappid") && currentDepotId > 0) {
-                uint32_t dlcId = 0;
-                auto [ptr, ec] = std::from_chars(val.data(), val.data() + val.size(), dlcId);
-                if (ec == std::errc() && dlcId > 0) {
-                    recordDlcId(currentDepotId, dlcId);
-                }
-            } else if (EqualIgnoreCase(key, "name") && !pathStack.empty() && EqualIgnoreCase(pathStack.back(), "common")) {
-                if (outData.name.empty()) {
-                    outData.name = val;
-                    LOG_DEBUG("AppInfoParser", "解析到游戏官方名称: '{}'", outData.name);
-                }
-            } else if (pathStack.size() >= 2 && EqualIgnoreCase(pathStack.back(), "name_localized") &&
-                       EqualIgnoreCase(pathStack[pathStack.size() - 2], "common")) {
-                if (EqualIgnoreCase(key, I18n::GetSteamLanguageCode())) {
-                    outData.localizedName = val;
-                    LOG_DEBUG("AppInfoParser", "解析到匹配语言的官方本地化名称: '{}' ({})", outData.localizedName, key);
-                } else if (I18n::GetCurrentLanguage() == Language::Chinese && EqualIgnoreCase(key, "tchinese") && outData.localizedName.empty()) {
-                    outData.localizedName = val;
-                } else if (I18n::GetCurrentLanguage() == Language::Spanish && EqualIgnoreCase(key, "latam") && outData.localizedName.empty()) {
-                    outData.localizedName = val;
-                }
-            }
-        }
-    }
-}
-
-void ParseTextVdfAppInfo(std::string_view text, ParsedAppInfoData& outData) {
-    TextVdfLexer lexer(text);
-    std::vector<std::string> pathStack;
-    ParseTextVdfRecurse(lexer, pathStack, 0, outData);
-}
-
 } // namespace
+
+std::unordered_map<uint32_t, uint64_t> ParseAppInfoTokens(
+    const std::string& steamPath,
+    const std::unordered_set<uint32_t>* targetAppIds) {
+
+    std::unordered_map<uint32_t, uint64_t> tokens;
+    if (steamPath.empty() || (targetAppIds && targetAppIds->empty())) {
+        return tokens;
+    }
+
+    auto ctx = AppInfoFileContext::Open(steamPath);
+    if (!ctx) return tokens;
+
+    std::unordered_set<uint32_t> matchedTargetAppIds;
+    ctx->ForEachApp([&](const AppInfoEntryView& entry) {
+        if (!targetAppIds || targetAppIds->contains(entry.appId)) {
+            if (targetAppIds) {
+                matchedTargetAppIds.insert(entry.appId);
+            }
+            if (entry.accessToken != 0) {
+                tokens[entry.appId] = entry.accessToken;
+            }
+            if (targetAppIds && matchedTargetAppIds.size() >= targetAppIds->size()) {
+                return false; // All found, stop early
+            }
+        }
+        return true;
+    });
+
+    return tokens;
+}
 
 std::optional<ParsedAppInfoData> ParseAppInfoDepots(
     const std::string& steamPath, uint32_t appId) {
 
     if (steamPath.empty() || appId == 0) return std::nullopt;
 
-    const auto appinfoPath = std::filesystem::path(steamPath) / "appcache" / "appinfo.vdf";
-    ScopedHandle hFile{CreateFileW(
-        appinfoPath.c_str(),
-        GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        nullptr,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        nullptr
-    )};
+    auto ctx = AppInfoFileContext::Open(steamPath);
+    if (!ctx) return std::nullopt;
 
-    if (!hFile.IsValid()) return std::nullopt;
-
-    LARGE_INTEGER fileSize{};
-    if (!GetFileSizeEx(hFile, &fileSize) || fileSize.QuadPart < 16 || fileSize.QuadPart > 1024ULL * 1024ULL * 1024ULL) {
-        return std::nullopt;
-    }
-
-    ScopedHandle hMapping{CreateFileMappingW(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr)};
-    if (!hMapping.IsValid()) return std::nullopt;
-
-    ScopedFileMappingView mappedView{MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0)};
-    if (!mappedView) return std::nullopt;
-
-    const auto* data = mappedView.As<uint8_t>();
-    const size_t totalBytes = static_cast<size_t>(fileSize.QuadPart);
-
-    uint32_t magic = 0;
-    std::memcpy(&magic, data, sizeof(uint32_t));
-    if ((magic & 0xFFFFFF00) != 0x07564400) return std::nullopt;
-
-    const uint8_t version = static_cast<uint8_t>(magic & 0xFF);
-    if (version < 38) return std::nullopt;
-
-    std::vector<std::string_view> stringTable;
-    size_t offset = 8;
-    size_t appsEnd = totalBytes;
-
-    if (version >= 41) {
-        if (totalBytes >= 16) {
-            uint64_t stringTableOffset = 0;
-            std::memcpy(&stringTableOffset, data + 8, sizeof(uint64_t));
-            if (stringTableOffset >= 16 && stringTableOffset + 4 <= totalBytes) {
-                appsEnd = static_cast<size_t>(stringTableOffset);
-                ParseStringTableV41(data, totalBytes, stringTableOffset, stringTable);
-            }
-            offset = 16;
-        }
-    }
-
-    while (offset + 8 <= appsEnd) {
-        uint32_t entryAppId = 0;
-        uint32_t entrySize = 0;
-        std::memcpy(&entryAppId, data + offset, sizeof(uint32_t));
-        std::memcpy(&entrySize, data + offset + 4, sizeof(uint32_t));
-
-        if (entryAppId == 0) break;
-        if (entrySize < 60 || entrySize > appsEnd - (offset + 8)) break;
-
-        if (entryAppId == appId) {
-            const uint8_t* body = data + offset + 8 + 60;
-            size_t bodySize = entrySize - 60;
-
+    std::optional<ParsedAppInfoData> result;
+    ctx->ForEachApp([&](const AppInfoEntryView& entry) {
+        if (entry.appId == appId) {
             ParsedAppInfoData out;
             out.appId = appId;
 
-            VdfReader reader{body, body + bodySize, version >= 41 ? &stringTable : nullptr};
+            VdfReader reader{entry.vdfBody.data(), entry.vdfBody.data() + entry.vdfBody.size(),
+                             ctx->version >= 41 ? &ctx->stringTable : nullptr};
             std::vector<std::string_view> pathStack;
             uint32_t curDepot = 0;
             ParseVdfRecurse(reader, pathStack, out, curDepot);
             if (!out.localizedName.empty()) {
                 out.name = std::move(out.localizedName);
             }
-            return out;
+            result = std::move(out);
+            return false; // Found, stop early
         }
+        return true;
+    });
 
-        offset += 8 + entrySize;
-    }
-
-    return std::nullopt;
+    return result;
 }
 
 std::optional<ParsedAppInfoData> ParseBinaryVdfAppInfo(
@@ -781,33 +488,11 @@ std::optional<ParsedAppInfoData> ParseBinaryVdfAppInfo(
     ParsedAppInfoData out;
     out.appId = appId;
 
-    // Detect format: Text KeyValues vs Binary VDF
-    size_t scanStart = 0;
-    if (buffer.size() >= 3 && buffer[0] == 0xEF && buffer[1] == 0xBB && buffer[2] == 0xBF) {
-        scanStart = 3;
-    }
+    VdfReader reader{buffer.data(), buffer.data() + buffer.size(), nullptr};
+    std::vector<std::string_view> pathStack;
+    uint32_t curDepot = 0;
+    ParseVdfRecurse(reader, pathStack, out, curDepot);
 
-    bool isText = false;
-    for (size_t i = scanStart; i < buffer.size(); ++i) {
-        uint8_t b = buffer[i];
-        if (b == ' ' || b == '\t' || b == '\r' || b == '\n') continue;
-        if (b == '"' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '{') {
-            isText = true;
-        }
-        break;
-    }
-
-    if (isText) {
-        LOG_DEBUG("AppInfoParser", "检测到 PICS 响应为文本 VDF (KeyValues) 格式，启动文本解析引擎...");
-        std::string_view text(reinterpret_cast<const char*>(buffer.data()), buffer.size());
-        ParseTextVdfAppInfo(text, out);
-    } else {
-        LOG_DEBUG("AppInfoParser", "检测到 PICS 响应为二进制 VDF 格式，启动二进制解析引擎...");
-        VdfReader reader{buffer.data(), buffer.data() + buffer.size(), nullptr};
-        std::vector<std::string_view> pathStack;
-        uint32_t curDepot = 0;
-        ParseVdfRecurse(reader, pathStack, out, curDepot);
-    }
     if (!out.localizedName.empty()) {
         out.name = std::move(out.localizedName);
     }
@@ -824,73 +509,16 @@ std::unordered_map<uint32_t, std::string> ParseAppNames(
     std::unordered_map<uint32_t, std::string> names;
     if (steamPath.empty() || targetAppIds.empty()) return names;
 
-    const auto appinfoPath = std::filesystem::path(steamPath) / "appcache" / "appinfo.vdf";
-    ScopedHandle hFile{CreateFileW(
-        appinfoPath.c_str(),
-        GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        nullptr,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        nullptr
-    )};
+    auto ctx = AppInfoFileContext::Open(steamPath);
+    if (!ctx) return names;
 
-    if (!hFile.IsValid()) return names;
-
-    LARGE_INTEGER fileSize{};
-    if (!GetFileSizeEx(hFile, &fileSize) || fileSize.QuadPart < 16 || fileSize.QuadPart > 1024ULL * 1024ULL * 1024ULL) {
-        return names;
-    }
-
-    ScopedHandle hMapping{CreateFileMappingW(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr)};
-    if (!hMapping.IsValid()) return names;
-
-    ScopedFileMappingView mappedView{MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0)};
-    if (!mappedView) return names;
-
-    const auto* data = mappedView.As<uint8_t>();
-    const size_t totalBytes = static_cast<size_t>(fileSize.QuadPart);
-
-    uint32_t magic = 0;
-    std::memcpy(&magic, data, sizeof(uint32_t));
-    if ((magic & 0xFFFFFF00) != 0x07564400) return names;
-
-    const uint8_t version = static_cast<uint8_t>(magic & 0xFF);
-    if (version < 38) return names;
-
-    std::vector<std::string_view> stringTable;
-    size_t offset = 8;
-    size_t appsEnd = totalBytes;
-
-    if (version >= 41) {
-        if (totalBytes >= 16) {
-            uint64_t stringTableOffset = 0;
-            std::memcpy(&stringTableOffset, data + 8, sizeof(uint64_t));
-            if (stringTableOffset >= 16 && stringTableOffset + 4 <= totalBytes) {
-                appsEnd = static_cast<size_t>(stringTableOffset);
-                ParseStringTableV41(data, totalBytes, stringTableOffset, stringTable);
-            }
-            offset = 16;
-        }
-    }
-
-    while (offset + 8 <= appsEnd) {
-        uint32_t entryAppId = 0;
-        uint32_t entrySize = 0;
-        std::memcpy(&entryAppId, data + offset, sizeof(uint32_t));
-        std::memcpy(&entrySize, data + offset + 4, sizeof(uint32_t));
-
-        if (entryAppId == 0) break;
-        if (entrySize < 60 || entrySize > appsEnd - (offset + 8)) break;
-
-        if (targetAppIds.contains(entryAppId)) {
-            const uint8_t* body = data + offset + 8 + 60;
-            size_t bodySize = entrySize - 60;
-
+    ctx->ForEachApp([&](const AppInfoEntryView& entry) {
+        if (targetAppIds.contains(entry.appId)) {
             ParsedAppInfoData out;
-            out.appId = entryAppId;
+            out.appId = entry.appId;
 
-            VdfReader reader{body, body + bodySize, version >= 41 ? &stringTable : nullptr};
+            VdfReader reader{entry.vdfBody.data(), entry.vdfBody.data() + entry.vdfBody.size(),
+                             ctx->version >= 41 ? &ctx->stringTable : nullptr};
             std::vector<std::string_view> pathStack;
             uint32_t curDepot = 0;
             ParseVdfRecurse(reader, pathStack, out, curDepot);
@@ -898,15 +526,14 @@ std::unordered_map<uint32_t, std::string> ParseAppNames(
                 out.name = std::move(out.localizedName);
             }
             if (!out.name.empty()) {
-                names[entryAppId] = std::move(out.name);
+                names[entry.appId] = std::move(out.name);
             }
             if (names.size() >= targetAppIds.size()) {
-                break;
+                return false; // Found all, stop early
             }
         }
-
-        offset += 8 + entrySize;
-    }
+        return true;
+    });
 
     return names;
 }
