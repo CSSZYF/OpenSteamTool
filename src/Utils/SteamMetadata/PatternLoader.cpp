@@ -39,6 +39,17 @@ using PatternMap = std::unordered_map<uint32_t, PatternEntry>;
 // module → its pattern map
 static std::unordered_map<OSTPlatform::DynamicLibrary::ModuleHandle, PatternMap> g_moduleMaps;
 
+struct PatternSource {
+    RemoteToml::Request request;
+    bool fromCache = false;
+    bool refreshNeeded = false;
+    bool refreshAttempted = false;
+};
+
+// Metadata origin for each loaded module. A cached TOML is refreshed at most
+// once per session, and only when a requested function entry is absent.
+static std::unordered_map<OSTPlatform::DynamicLibrary::ModuleHandle, PatternSource> g_moduleSources;
+
 // Modules whose Load() call failed (popup already shown). FindPattern
 // silently returns nullptr for these — without re-logging or adding the
 // function to g_missingFunctions — so we don't follow one "TOML missing"
@@ -177,14 +188,13 @@ namespace PatternLoader {
 
 bool Load(OSTPlatform::DynamicLibrary::ModuleHandle module, const std::string& dllPath, const std::string& component)
 {
-    namespace fs = std::filesystem;
-
     // Delegate fetch + cache + mirror fallback to RemoteToml.
-    RemoteToml::Result r = RemoteToml::Fetch({
+    RemoteToml::Request request{
         kPatternChannel,
         component,
         dllPath,
-    });
+    };
+    RemoteToml::Result r = RemoteToml::Fetch(request);
 
     if (r.ok) {
         std::string parseErr;
@@ -193,6 +203,13 @@ bool Load(OSTPlatform::DynamicLibrary::ModuleHandle module, const std::string& d
             LOG_INFO("PatternLoader: loaded {} patterns for {} ({})",
                      map.size(), component, r.fromCache ? "cache" : "remote");
             g_moduleMaps[module] = std::move(map);
+            g_moduleSources[module] = {
+                std::move(request),
+                r.fromCache,
+                false,
+                false,
+            };
+            g_failedModules.erase(module);
             return true;
         }
         LOG_WARN("PatternLoader: TOML for {} parsed empty ({})",
@@ -233,6 +250,12 @@ void* FindPattern(OSTPlatform::DynamicLibrary::ModuleHandle module, const char* 
     auto entryIt = map.find(key);
     if (entryIt == map.end()) {
         LOG_WARN("PatternLoader: no entry for '{}' (key=0x{:08X})", funcName, key);
+        auto sourceIt = g_moduleSources.find(module);
+        if (sourceIt != g_moduleSources.end() &&
+            sourceIt->second.fromCache &&
+            !sourceIt->second.refreshAttempted) {
+            sourceIt->second.refreshNeeded = true;
+        }
         g_missingFunctions.emplace_back(funcName);
         return nullptr;
     }
@@ -271,6 +294,21 @@ void* FindPattern(OSTPlatform::DynamicLibrary::ModuleHandle module, const char* 
 
     g_missingFunctions.emplace_back(funcName);
     return nullptr;
+}
+
+void RefreshMissingMetadata()
+{
+    for (auto& item : g_moduleSources) {
+        PatternSource& source = item.second;
+        if (!source.refreshNeeded || source.refreshAttempted)
+            continue;
+
+        source.refreshNeeded = false;
+        source.refreshAttempted = true;
+        LOG_DEBUG("PatternLoader: lazy refresh requested for {}",
+                  source.request.component);
+        (void)RemoteToml::Fetch(source.request, RemoteToml::FetchMode::RemoteOnly);
+    }
 }
 
 void ReportMissingFunctions()

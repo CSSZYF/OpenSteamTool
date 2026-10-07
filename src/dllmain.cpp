@@ -275,6 +275,10 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
 
     LOG_INFO("OpenSteamTool init complete ({})",
              g_IsDiversionActive.load() ? "Diversion active" : "Diversion bypassed, using original steamclient64");
+
+    // Only refresh an exact-SHA pattern cache when this session actually found
+    // a requested function entry missing. The parsed map is not hot-reloaded.
+    PatternLoader::RefreshMissingMetadata();
     return 0;
 }
 
