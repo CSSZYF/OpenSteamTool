@@ -194,7 +194,9 @@ void SteamCmClient::UnpackMultiMsg(std::span<const uint8_t> bodySpan) {
         std::span<const uint8_t> subBody;
         if (UnpackSteamMsg(subPacket, subEMsg, subHdr, subBody)) {
             int32_t subEResult = ExtractHeaderEResult(subHdr);
-            LOG_TRACE("SteamCM", "  -> CMsgMulti 内部消息: eMsg {} (EResult: {}, Body: {} 字节)", subEMsg, subEResult, subBody.size());
+            uint64_t subTargetJobId = ExtractHeaderTargetJobId(subHdr);
+            LOG_TRACE("SteamCM", "  -> CMsgMulti 内部消息: eMsg {} (EResult: {}, targetJobId: {}, Body: {} 字节)",
+                      subEMsg, subEResult, subTargetJobId, subBody.size());
 
             if (subEMsg == static_cast<uint32_t>(ESteamMsg::ClientHeartBeat)) {
                 ProtoWriter hb;
@@ -202,18 +204,30 @@ void SteamCmClient::UnpackMultiMsg(std::span<const uint8_t> bodySpan) {
                 continue;
             }
 
-            m_msgQueue.push_back({subEMsg, subEResult, std::vector<uint8_t>(subBody.begin(), subBody.end())});
+            m_msgQueue.push_back({subEMsg, subTargetJobId, subEResult, std::vector<uint8_t>(subBody.begin(), subBody.end())});
         }
     }
 }
 
-bool SteamCmClient::ReadMatchingMsg(uint32_t expectedEMsg, std::vector<uint8_t>& outBody, DWORD timeoutMs, int32_t* outEResult) {
+bool SteamCmClient::ReadMatchingMsg(
+    uint32_t expectedEMsg,
+    std::vector<uint8_t>& outBody,
+    DWORD timeoutMs,
+    int32_t* outEResult,
+    uint64_t expectedJobId) {
+
     auto startTime = std::chrono::steady_clock::now();
+
+    auto isMatch = [&](uint32_t eMsg, uint64_t targetJobId) {
+        if (eMsg != expectedEMsg) return false;
+        if (expectedJobId != 0 && targetJobId != 0 && targetJobId != expectedJobId) return false;
+        return true;
+    };
 
     while (true) {
         // 1. Check if expected message already in queue
         for (auto it = m_msgQueue.begin(); it != m_msgQueue.end(); ++it) {
-            if (it->eMsg == expectedEMsg) {
+            if (isMatch(it->eMsg, it->targetJobId)) {
                 if (outEResult) *outEResult = it->eresult;
                 outBody = std::move(it->body);
                 m_msgQueue.erase(it);
@@ -225,7 +239,7 @@ bool SteamCmClient::ReadMatchingMsg(uint32_t expectedEMsg, std::vector<uint8_t>&
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
         if (elapsed >= static_cast<long long>(timeoutMs)) {
-            LOG_WARN("SteamCM", "等待 eMsg {} 响应超时 ({}ms)", expectedEMsg, timeoutMs);
+            LOG_WARN("SteamCM", "等待 eMsg {} (jobId={}) 响应超时 ({}ms)", expectedEMsg, expectedJobId, timeoutMs);
             return false;
         }
 
@@ -243,7 +257,9 @@ bool SteamCmClient::ReadMatchingMsg(uint32_t expectedEMsg, std::vector<uint8_t>&
 
         if (UnpackSteamMsg(frame, eMsg, hdrSpan, bodySpan)) {
             int32_t eresult = ExtractHeaderEResult(hdrSpan);
-            LOG_TRACE("SteamCM", "收到 eMsg: {} (EResult: {}, Body: {} 字节)", eMsg, eresult, bodySpan.size());
+            uint64_t targetJobId = ExtractHeaderTargetJobId(hdrSpan);
+            LOG_TRACE("SteamCM", "收到 eMsg: {} (EResult: {}, targetJobId: {}, Body: {} 字节)",
+                      eMsg, eresult, targetJobId, bodySpan.size());
 
             // If heartbeat request from server, reply ClientHeartBeat
             if (eMsg == static_cast<uint32_t>(ESteamMsg::ClientHeartBeat)) {
@@ -256,7 +272,7 @@ bool SteamCmClient::ReadMatchingMsg(uint32_t expectedEMsg, std::vector<uint8_t>&
             if (eMsg == 1) { // k_EMsgMulti
                 UnpackMultiMsg(bodySpan);
                 for (auto it = m_msgQueue.begin(); it != m_msgQueue.end(); ++it) {
-                    if (it->eMsg == expectedEMsg) {
+                    if (isMatch(it->eMsg, it->targetJobId)) {
                         if (outEResult) *outEResult = it->eresult;
                         outBody = std::move(it->body);
                         m_msgQueue.erase(it);
@@ -266,13 +282,13 @@ bool SteamCmClient::ReadMatchingMsg(uint32_t expectedEMsg, std::vector<uint8_t>&
                 continue;
             }
 
-            if (eMsg == expectedEMsg) {
+            if (isMatch(eMsg, targetJobId)) {
                 if (outEResult) *outEResult = eresult;
                 outBody.assign(bodySpan.begin(), bodySpan.end());
                 return true;
             }
 
-            m_msgQueue.push_back({eMsg, eresult, std::vector<uint8_t>(bodySpan.begin(), bodySpan.end())});
+            m_msgQueue.push_back({eMsg, targetJobId, eresult, std::vector<uint8_t>(bodySpan.begin(), bodySpan.end())});
         }
     }
 }
@@ -439,7 +455,7 @@ std::optional<std::vector<uint8_t>> SteamCmClient::RequestAppOwnershipTicket(uin
 
     std::vector<uint8_t> respBody;
     // Expected response eMsg is 858 (CMsgClientGetAppOwnershipTicketResponse)
-    if (!ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientGetAppOwnershipTicketResponse), respBody, 8000)) {
+    if (!ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientGetAppOwnershipTicketResponse), respBody, 8000, nullptr, jobId)) {
         return std::nullopt;
     }
 
@@ -480,7 +496,7 @@ std::optional<std::vector<uint8_t>> SteamCmClient::RequestEncryptedAppTicket(uin
     }
 
     std::vector<uint8_t> respBody;
-    if (!ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientRequestEncryptedAppTicketResponse), respBody, 8000)) {
+    if (!ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientRequestEncryptedAppTicketResponse), respBody, 8000, nullptr, jobId)) {
         return std::nullopt;
     }
 
@@ -539,7 +555,7 @@ std::vector<DepotKeyInfo> SteamCmClient::RequestDepotKeys(uint32_t appId, const 
         }
 
         std::vector<uint8_t> respBody;
-        if (!ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientGetDepotDecryptionKeyResponse), respBody, 6000)) {
+        if (!ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientGetDepotDecryptionKeyResponse), respBody, 6000, nullptr, jobId)) {
             continue;
         }
 
@@ -592,7 +608,7 @@ std::unordered_map<uint32_t, uint64_t> SteamCmClient::RequestAppTokens(const std
     }
 
     std::vector<uint8_t> respBody;
-    if (!ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientPICSAccessTokenResponse), respBody, 8000)) {
+    if (!ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientPICSAccessTokenResponse), respBody, 8000, nullptr, jobId)) {
         return tokens;
     }
 
@@ -644,7 +660,7 @@ std::optional<ParsedAppInfoData> SteamCmClient::RequestPicsProductInfo(uint32_t 
     }
 
     std::vector<uint8_t> respBody;
-    if (!ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientPICSProductInfoResponse), respBody, 8000)) {
+    if (!ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientPICSProductInfoResponse), respBody, 8000, nullptr, jobId)) {
         return std::nullopt;
     }
 
@@ -698,7 +714,7 @@ std::unordered_map<uint32_t, std::string> SteamCmClient::RequestPicsAppNames(
         }
 
         std::vector<uint8_t> respBody;
-        if (!ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientPICSProductInfoResponse), respBody, 8000)) {
+        if (!ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientPICSProductInfoResponse), respBody, 8000, nullptr, jobId)) {
             continue;
         }
 
@@ -770,8 +786,8 @@ std::string SteamCmClient::FetchManifestRequestCode(
         LOG_DEBUG("SteamCM", "向 Steam CM 发送统一 RPC 请求 ManifestRequestCode: Depot={}, Manifest={}", depotId, manifestId);
         if (SendProtoMsg(ESteamMsg::ServiceMethodCallFromClient, innerReq, jobId, "ContentServerDirectory.GetManifestRequestCode#1")) {
             std::vector<uint8_t> respBody;
-            if (ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ServiceMethodResponse), respBody, 4000, &rpcResult) ||
-                ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ServiceMethodSendToClient), respBody, 2000, &rpcResult)) {
+            if (ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ServiceMethodResponse), respBody, 4000, &rpcResult, jobId) ||
+                ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ServiceMethodSendToClient), respBody, 2000, &rpcResult, jobId)) {
                 gotReply = true;
                 if (rpcResult == 1) { // k_EResultOK
                     ProtoReader respReader(respBody);
@@ -807,7 +823,7 @@ std::string SteamCmClient::FetchManifestRequestCode(
         if (SendProtoMsg(ESteamMsg::ClientServiceMethod, svcMsg, jobId)) {
             std::vector<uint8_t> respBody;
             int32_t legacyResult = 0;
-            if (ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientServiceMethodResponse), respBody, 4000, &legacyResult)) {
+            if (ReadMatchingMsg(static_cast<uint32_t>(ESteamMsg::ClientServiceMethodResponse), respBody, 4000, &legacyResult, jobId)) {
                 if (legacyResult != 1) {
                     if (outAccessDenied) *outAccessDenied = true;
                     return "";

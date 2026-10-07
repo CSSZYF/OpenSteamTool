@@ -85,11 +85,17 @@ public:
 
 private:
     [[nodiscard]] bool SendProtoMsg(ESteamMsg eMsg, const ProtoWriter& body, uint64_t jobId = 0, std::string_view targetJobName = {});
-    [[nodiscard]] bool ReadMatchingMsg(uint32_t expectedEMsg, std::vector<uint8_t>& outBody, DWORD timeoutMs = 8000, int32_t* outEResult = nullptr);
+    [[nodiscard]] bool ReadMatchingMsg(
+        uint32_t expectedEMsg,
+        std::vector<uint8_t>& outBody,
+        DWORD timeoutMs = 8000,
+        int32_t* outEResult = nullptr,
+        uint64_t expectedJobId = 0);
     void UnpackMultiMsg(std::span<const uint8_t> bodySpan);
 
     struct QueuedMsg {
         uint32_t eMsg{0};
+        uint64_t targetJobId{0};
         int32_t eresult{1};
         std::vector<uint8_t> body;
     };

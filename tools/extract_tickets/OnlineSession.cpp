@@ -492,7 +492,7 @@ void OnlineSession::RunInSessionExtraction(
     TuiEngine::PrintBounded(top + 2, left + 4, TR(MsgKey::SyncingGamesMsg), innerW, "\x1b[1;32m");
     std::cout.flush();
 
-    auto games = authService.FetchOwnedGames(steamId, curAccessToken);
+    auto games = authService.FetchOwnedGames(steamId, curAccessToken, &cmClient);
     if (games.empty()) {
         TuiEngine::ClearScreen();
         TuiEngine::ShowMessageModal(TR(MsgKey::NoGamesFoundTitle).data(),
