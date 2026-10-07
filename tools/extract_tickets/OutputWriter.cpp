@@ -27,7 +27,7 @@ bool WriteOutputs(uint32_t appId,
                   const std::vector<DlcInfo>& dlcs,
                   const std::unordered_map<uint32_t, uint64_t>& appTokens) {
     const std::string dir{std::to_string(appId)};
-    std::filesystem::path dirPath(dir);
+    std::filesystem::path dirPath = Utf8Path(dir);
     std::error_code ec;
     std::filesystem::create_directories(dirPath, ec);
     if (ec) {
@@ -47,7 +47,7 @@ bool WriteOutputs(uint32_t appId,
     copiedManifests.reserve(depotKeys.size());
     for (const auto& dk : depotKeys) {
         if (!dk.manifestFilePath.empty()) {
-            std::filesystem::path srcPath(dk.manifestFilePath);
+            std::filesystem::path srcPath = Utf8Path(dk.manifestFilePath);
             std::string fname = srcPath.filename().string();
             if (std::ranges::find(copiedManifests, fname) == copiedManifests.end()) {
                 std::filesystem::path destPath = dirPath / fname;
@@ -134,7 +134,7 @@ bool WriteOutputs(uint32_t appId,
     // Generate ready-to-use Lua script
     std::string luaText;
     luaText.reserve(8192);
-    luaText += std::format("{}{}\n\n", TR(MsgKey::LuaHeader), appId);
+    std::format_to(std::back_inserter(luaText), "{}{}\n\n", TR(MsgKey::LuaHeader), appId);
 
     std::unordered_set<uint32_t> ownedDlcIdSet;
     for (const auto& dlc : dlcs) {
@@ -151,7 +151,7 @@ bool WriteOutputs(uint32_t appId,
     };
 
     // 1. Base Game Unlocks (AppID and base game depots)
-    luaText += std::format("{}\n", TR(MsgKey::LuaBaseGame));
+    std::format_to(std::back_inserter(luaText), "{}\n", TR(MsgKey::LuaBaseGame));
     const DepotKeyInfo* baseAppDk = nullptr;
     for (const auto& dk : depotKeys) {
         if (dk.depotId == appId) {
@@ -161,19 +161,19 @@ bool WriteOutputs(uint32_t appId,
     }
 
     if (baseAppDk && !baseAppDk->hexKey.empty()) {
-        luaText += std::format("addappid({}, 1, \"{}\")\n", appId, baseAppDk->hexKey);
+        std::format_to(std::back_inserter(luaText), "addappid({}, 1, \"{}\")\n", appId, baseAppDk->hexKey);
     } else {
-        luaText += std::format("addappid({})\n", appId);
+        std::format_to(std::back_inserter(luaText), "addappid({})\n", appId);
     }
 
     if (baseToken != 0) {
-        luaText += std::format("addtoken({}, \"{}\")\n", appId, baseToken);
+        std::format_to(std::back_inserter(luaText), "addtoken({}, \"{}\")\n", appId, baseToken);
     }
 
     for (const auto& dk : depotKeys) {
         if (dk.depotId != appId && (dk.dlcId == 0 || !ownedDlcIdSet.contains(dk.dlcId))) {
             if (!dk.hexKey.empty()) {
-                luaText += std::format("addappid({}, 1, \"{}\")\n", dk.depotId, dk.hexKey);
+                std::format_to(std::back_inserter(luaText), "addappid({}, 1, \"{}\")\n", dk.depotId, dk.hexKey);
             }
         }
     }
@@ -195,21 +195,21 @@ bool WriteOutputs(uint32_t appId,
     }
 
     if (hasBaseManifests) {
-        luaText += std::format("\n{}\n", TR(MsgKey::LuaBaseManifests));
+        std::format_to(std::back_inserter(luaText), "\n{}\n", TR(MsgKey::LuaBaseManifests));
         if (baseAppDk && IsValidManifestId(baseAppDk->manifestId)) {
             if (hasManifestOnDisk(appId, baseAppDk->manifestId)) {
-                luaText += std::format("setManifestid({}, \"{}\")\n", appId, baseAppDk->manifestId);
+                std::format_to(std::back_inserter(luaText), "setManifestid({}, \"{}\")\n", appId, baseAppDk->manifestId);
             } else {
-                luaText += std::format("-- setManifestid({}, \"{}\") -- {}\n", appId, baseAppDk->manifestId, TR(MsgKey::LuaManifestMissing));
+                std::format_to(std::back_inserter(luaText), "-- setManifestid({}, \"{}\") -- {}\n", appId, baseAppDk->manifestId, TR(MsgKey::LuaManifestMissing));
             }
         }
         for (const auto& dk : depotKeys) {
             if (dk.depotId != appId && (dk.dlcId == 0 || !ownedDlcIdSet.contains(dk.dlcId))) {
                 if (IsValidManifestId(dk.manifestId)) {
                     if (hasManifestOnDisk(dk.depotId, dk.manifestId)) {
-                        luaText += std::format("setManifestid({}, \"{}\")\n", dk.depotId, dk.manifestId);
+                        std::format_to(std::back_inserter(luaText), "setManifestid({}, \"{}\")\n", dk.depotId, dk.manifestId);
                     } else {
-                        luaText += std::format("-- setManifestid({}, \"{}\") -- {}\n", dk.depotId, dk.manifestId, TR(MsgKey::LuaManifestMissing));
+                        std::format_to(std::back_inserter(luaText), "-- setManifestid({}, \"{}\") -- {}\n", dk.depotId, dk.manifestId, TR(MsgKey::LuaManifestMissing));
                     }
                 }
             }
@@ -258,7 +258,7 @@ bool WriteOutputs(uint32_t appId,
             }
         }
 
-        luaText += std::format("\n{}\n", TR(MsgKey::LuaOwnedDlcs));
+        std::format_to(std::back_inserter(luaText), "\n{}\n", TR(MsgKey::LuaOwnedDlcs));
         for (size_t i = 0; i < dlcs.size(); ++i) {
             const auto& dlc = dlcs[i];
             const auto& data = dlcDepotList[i];
@@ -283,9 +283,9 @@ bool WriteOutputs(uint32_t appId,
             const std::string reasonSuffix = isDepotIncomplete ? (" -- " + std::string(TR(MsgKey::LuaDlcDepotMissing))) : "";
 
             if (data.dlcDk && !data.dlcDk->hexKey.empty()) {
-                luaText += std::format("{}addappid({}, 1, \"{}\")", prefix, dlc.dlcId, data.dlcDk->hexKey);
+                std::format_to(std::back_inserter(luaText), "{}addappid({}, 1, \"{}\")", prefix, dlc.dlcId, data.dlcDk->hexKey);
             } else {
-                luaText += std::format("{}addappid({}, 1)", prefix, dlc.dlcId);
+                std::format_to(std::back_inserter(luaText), "{}addappid({}, 1)", prefix, dlc.dlcId);
             }
 
             if (!dlc.name.empty()) {
@@ -295,20 +295,20 @@ bool WriteOutputs(uint32_t appId,
 
             auto dlcTokIt = appTokens.find(dlc.dlcId);
             if (dlcTokIt != appTokens.end() && dlcTokIt->second != 0) {
-                luaText += std::format("{}addtoken({}, \"{}\")\n", prefix, dlc.dlcId, dlcTokIt->second);
+                std::format_to(std::back_inserter(luaText), "{}addtoken({}, \"{}\")\n", prefix, dlc.dlcId, dlcTokIt->second);
             }
 
             // Any subdepots of this DLC with keys
             for (const auto* subDk : data.subDepots) {
                 if (!subDk->hexKey.empty()) {
-                    luaText += std::format("{}addappid({}, 1, \"{}\"){}\n", prefix, subDk->depotId, subDk->hexKey, reasonSuffix);
+                    std::format_to(std::back_inserter(luaText), "{}addappid({}, 1, \"{}\"){}\n", prefix, subDk->depotId, subDk->hexKey, reasonSuffix);
                 }
             }
         }
 
         // 4. DLC Manifests (placed right under DLC unlocks)
         if (hasDlcManifests) {
-            luaText += std::format("\n{}\n", TR(MsgKey::LuaDlcManifests));
+            std::format_to(std::back_inserter(luaText), "\n{}\n", TR(MsgKey::LuaDlcManifests));
             for (size_t i = 0; i < dlcs.size(); ++i) {
                 const auto& dlc = dlcs[i];
                 const auto& data = dlcDepotList[i];
@@ -317,9 +317,9 @@ bool WriteOutputs(uint32_t appId,
                 if (data.dlcDk && IsValidManifestId(data.dlcDk->manifestId)) {
                     const bool onDisk = hasManifestOnDisk(data.dlcDk->depotId, data.dlcDk->manifestId);
                     if (onDisk) {
-                        luaText += std::format("setManifestid({}, \"{}\")", data.dlcDk->depotId, data.dlcDk->manifestId);
+                        std::format_to(std::back_inserter(luaText), "setManifestid({}, \"{}\")", data.dlcDk->depotId, data.dlcDk->manifestId);
                     } else {
-                        luaText += std::format("-- setManifestid({}, \"{}\") -- {}", data.dlcDk->depotId, data.dlcDk->manifestId, TR(MsgKey::LuaManifestMissing));
+                        std::format_to(std::back_inserter(luaText), "-- setManifestid({}, \"{}\") -- {}", data.dlcDk->depotId, data.dlcDk->manifestId, TR(MsgKey::LuaManifestMissing));
                     }
                     if (!dlc.name.empty()) {
                         luaText += " -- " + SanitizeComment(dlc.name);
@@ -332,9 +332,9 @@ bool WriteOutputs(uint32_t appId,
                     if (IsValidManifestId(subDk->manifestId)) {
                         const bool onDisk = hasManifestOnDisk(subDk->depotId, subDk->manifestId);
                         if (onDisk) {
-                            luaText += std::format("setManifestid({}, \"{}\")\n", subDk->depotId, subDk->manifestId);
+                            std::format_to(std::back_inserter(luaText), "setManifestid({}, \"{}\")\n", subDk->depotId, subDk->manifestId);
                         } else {
-                            luaText += std::format("-- setManifestid({}, \"{}\") -- {}\n", subDk->depotId, subDk->manifestId, TR(MsgKey::LuaManifestMissing));
+                            std::format_to(std::back_inserter(luaText), "-- setManifestid({}, \"{}\") -- {}\n", subDk->depotId, subDk->manifestId, TR(MsgKey::LuaManifestMissing));
                         }
                     }
                 }
@@ -347,20 +347,20 @@ bool WriteOutputs(uint32_t appId,
     const bool hasOwnership = (ownership && !ownership->empty());
     const bool hasEncrypted = (encrypted && !encrypted->empty());
 
-    luaText += std::format("{}\n", TR(MsgKey::LuaAppTicket));
+    std::format_to(std::back_inserter(luaText), "{}\n", TR(MsgKey::LuaAppTicket));
     if (hasOwnership) {
-        luaText += std::format("setAppTicket({}, \"{}\")\n\n",
-                               appId,
-                               ToHexString(*ownership));
+        std::format_to(std::back_inserter(luaText), "setAppTicket({}, \"{}\")\n\n",
+                       appId,
+                       ToHexString(*ownership));
     } else {
-        luaText += std::format("-- setAppTicket({}, \"null\") -- {}\n\n", appId, TR(MsgKey::LuaAppTicketMissing));
+        std::format_to(std::back_inserter(luaText), "-- setAppTicket({}, \"null\") -- {}\n\n", appId, TR(MsgKey::LuaAppTicketMissing));
     }
 
-    luaText += std::format("{}\n", TR(MsgKey::LuaETicket));
+    std::format_to(std::back_inserter(luaText), "{}\n", TR(MsgKey::LuaETicket));
     if (hasEncrypted) {
-        luaText += std::format("setETicket({}, \"{}\")\n", appId, ToHexString(*encrypted));
+        std::format_to(std::back_inserter(luaText), "setETicket({}, \"{}\")\n", appId, ToHexString(*encrypted));
     } else {
-        luaText += std::format("-- setETicket({}, \"null\") -- {}\n", appId, TR(MsgKey::LuaETicketNote));
+        std::format_to(std::back_inserter(luaText), "-- setETicket({}, \"null\") -- {}\n", appId, TR(MsgKey::LuaETicketNote));
     }
 
     const std::filesystem::path luaPath = dirPath / (std::to_string(appId) + ".lua");

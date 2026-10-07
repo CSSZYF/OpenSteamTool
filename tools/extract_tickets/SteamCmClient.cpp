@@ -41,9 +41,7 @@ namespace {
         std::lock_guard lock(s_cmListMutex);
         auto it = std::find(s_cachedCmList.begin(), s_cachedCmList.end(), endpoint);
         if (it != s_cachedCmList.end() && it != s_cachedCmList.begin()) {
-            std::string s = std::move(*it);
-            s_cachedCmList.erase(it);
-            s_cachedCmList.insert(s_cachedCmList.begin(), std::move(s));
+            std::rotate(s_cachedCmList.begin(), it, it + 1);
         }
     }
 
@@ -863,9 +861,7 @@ void SteamCmClient::PromoteWorkingCdnServer(std::string_view server) {
     std::lock_guard lock(s_cdnMutex);
     auto it = std::find(s_cachedCdnServers.begin(), s_cachedCdnServers.end(), server);
     if (it != s_cachedCdnServers.end() && it != s_cachedCdnServers.begin()) {
-        std::string s = std::move(*it);
-        s_cachedCdnServers.erase(it);
-        s_cachedCdnServers.insert(s_cachedCdnServers.begin(), std::move(s));
+        std::rotate(s_cachedCdnServers.begin(), it, it + 1);
     }
 }
 
@@ -924,7 +920,7 @@ std::optional<std::string> SteamCmClient::DownloadManifestPayload(
     }
 
     std::string fileName = std::format("{}_{}.manifest", depotId, manifestId);
-    std::filesystem::path localPath = std::filesystem::path(destDir) / fileName;
+    std::filesystem::path localPath = Utf8Path(destDir) / fileName;
 
     std::error_code checkEc;
     if (std::filesystem::is_regular_file(localPath, checkEc) && std::filesystem::file_size(localPath, checkEc) > 0) {
@@ -969,7 +965,7 @@ std::optional<std::string> SteamCmClient::DownloadManifestPayload(
     }
 
     std::error_code dirEc;
-    std::filesystem::create_directories(std::filesystem::path(destDir), dirEc);
+    std::filesystem::create_directories(Utf8Path(destDir), dirEc);
     if (dirEc) {
         LOG_WARN("SteamCM", "创建目录失败: {} ({})", destDir, dirEc.message());
     }
@@ -1033,7 +1029,7 @@ std::optional<std::string> SteamCmClient::DownloadManifestOnline(
     }
 
     std::string fileName = std::format("{}_{}.manifest", depotId, manifestId);
-    std::filesystem::path localPath = std::filesystem::path(destDir) / fileName;
+    std::filesystem::path localPath = Utf8Path(destDir) / fileName;
 
     std::error_code checkEc;
     if (std::filesystem::is_regular_file(localPath, checkEc) && std::filesystem::file_size(localPath, checkEc) > 0) {
@@ -1285,7 +1281,7 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bo
 
                 // 本地磁盘快速检查：若已存在则直接秒级复用，完全跳过网络查询
                 std::string fileName = std::format("{}_{}.manifest", dk.depotId, dk.manifestId);
-                std::filesystem::path localPath = std::filesystem::path(outDir) / fileName;
+                std::filesystem::path localPath = Utf8Path(outDir) / fileName;
                 std::error_code checkEc;
                 if (std::filesystem::is_regular_file(localPath, checkEc) && std::filesystem::file_size(localPath, checkEc) > 0) {
                     LOG_INFO("SteamCM", "清单文件已存在于目标目录，直接秒级复用: {}", localPath.string());

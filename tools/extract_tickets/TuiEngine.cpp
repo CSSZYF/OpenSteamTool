@@ -642,18 +642,30 @@ KeyEvent TuiEngine::ReadKey() {
             return { KeyCode::Escape, 0 };
         }
 
+        auto readSeqByteWithTimeout = []() -> int {
+            int waited = 0;
+            while (!_kbhit() && waited < 20) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                waited += 2;
+            }
+            return _kbhit() ? _getch() : -1;
+        };
+
         // Parse ANSI / VT escape sequence
-        int seq1 = _getch();
+        int seq1 = readSeqByteWithTimeout();
+        if (seq1 == -1) return { KeyCode::Escape, 0 };
+
         if (seq1 == '[') {
             // CSI sequence: ESC [ ...
-            if (!_kbhit()) return { KeyCode::None, 0 };
-            int seq2 = _getch();
+            int seq2 = readSeqByteWithTimeout();
+            if (seq2 == -1) return { KeyCode::None, 0 };
             if (seq2 == 'A') return { KeyCode::Up, 0 };
             if (seq2 == 'B') return { KeyCode::Down, 0 };
             if (seq2 == 'C') return { KeyCode::Right, 0 };
             if (seq2 == 'D') return { KeyCode::Left, 0 };
             if (seq2 == '3') {
-                if (_kbhit() && _getch() == '~') {
+                int nextCh = readSeqByteWithTimeout();
+                if (nextCh == '~') {
                     return { KeyCode::Delete, 0 };
                 }
                 return { KeyCode::None, 0 };
@@ -661,9 +673,9 @@ KeyEvent TuiEngine::ReadKey() {
             if (seq2 == '<') {
                 // SGR mouse sequence: ESC [ < C ; X ; Y (M|m)
                 // Drain until M or m or end of burst
-                while (_kbhit()) {
-                    int mc = _getch();
-                    if (mc == 'M' || mc == 'm' || (mc >= 0x40 && mc <= 0x7E)) {
+                while (true) {
+                    int mc = readSeqByteWithTimeout();
+                    if (mc == -1 || mc == 'M' || mc == 'm' || (mc >= 0x40 && mc <= 0x7E)) {
                         break;
                     }
                 }
@@ -671,14 +683,15 @@ KeyEvent TuiEngine::ReadKey() {
             }
             // Other CSI sequence: drain until final byte (0x40 - 0x7E)
             int lastCh = seq2;
-            while (!(lastCh >= 0x40 && lastCh <= 0x7E) && _kbhit()) {
-                lastCh = _getch();
+            while (!(lastCh >= 0x40 && lastCh <= 0x7E)) {
+                lastCh = readSeqByteWithTimeout();
+                if (lastCh == -1) break;
             }
             return { KeyCode::None, 0 };
         } else if (seq1 == 'O') {
             // SS3 sequence: ESC O ...
-            if (!_kbhit()) return { KeyCode::None, 0 };
-            int seq2 = _getch();
+            int seq2 = readSeqByteWithTimeout();
+            if (seq2 == -1) return { KeyCode::None, 0 };
             if (seq2 == 'A') return { KeyCode::Up, 0 };
             if (seq2 == 'B') return { KeyCode::Down, 0 };
             if (seq2 == 'C') return { KeyCode::Right, 0 };
@@ -686,8 +699,9 @@ KeyEvent TuiEngine::ReadKey() {
             return { KeyCode::None, 0 };
         } else {
             // Other escape sequence: drain while available
-            while (_kbhit()) {
-                (void)_getch();
+            while (true) {
+                int ec = readSeqByteWithTimeout();
+                if (ec == -1) break;
             }
             return { KeyCode::None, 0 };
         }

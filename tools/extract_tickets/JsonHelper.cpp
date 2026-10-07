@@ -63,15 +63,33 @@ namespace {
                             auto [ptr, ec] = std::from_chars(hexChunk.data(), hexChunk.data() + 4, codepoint, 16);
                             if (ec == std::errc()) {
                                 i += 4;
+                                // Handle UTF-16 surrogate pairs (RFC 8259)
+                                if (codepoint >= 0xD800 && codepoint <= 0xDBFF &&
+                                    i + 6 < input.size() && input[i + 1] == '\\' && input[i + 2] == 'u') {
+                                    unsigned int lowSurrogate = 0;
+                                    auto lowChunk = input.substr(i + 3, 4);
+                                    auto [ptr2, ec2] = std::from_chars(lowChunk.data(), lowChunk.data() + 4, lowSurrogate, 16);
+                                    if (ec2 == std::errc() && lowSurrogate >= 0xDC00 && lowSurrogate <= 0xDFFF) {
+                                        i += 6;
+                                        codepoint = 0x10000 + (((codepoint - 0xD800) << 10) | (lowSurrogate - 0xDC00));
+                                    }
+                                }
                                 if (codepoint <= 0x7F) {
                                     out.push_back(static_cast<char>(codepoint));
                                 } else if (codepoint <= 0x7FF) {
                                     out.push_back(static_cast<char>(0xC0 | ((codepoint >> 6) & 0x1F)));
                                     out.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
-                                } else {
+                                } else if (codepoint <= 0xFFFF) {
                                     out.push_back(static_cast<char>(0xE0 | ((codepoint >> 12) & 0x0F)));
                                     out.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F)));
                                     out.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+                                } else if (codepoint <= 0x10FFFF) {
+                                    out.push_back(static_cast<char>(0xF0 | ((codepoint >> 18) & 0x07)));
+                                    out.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F)));
+                                    out.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F)));
+                                    out.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+                                } else {
+                                    out.push_back('?');
                                 }
                                 break;
                             }

@@ -5,10 +5,8 @@
 #include <cctype>
 #include <chrono>
 #include <fstream>
-#include <iomanip>
 #include <iostream>
 #include <mutex>
-#include <sstream>
 
 namespace OST::ExtractTickets {
 
@@ -132,7 +130,7 @@ std::string MaskTicketHex(std::span<const uint8_t> ticket, size_t prefixBytes, s
         std::string hex;
         hex.reserve(bytes.size() * 2);
         for (uint8_t b : bytes) {
-            hex += std::format("{:02X}", b);
+            std::format_to(std::back_inserter(hex), "{:02X}", b);
         }
         return hex;
     };
