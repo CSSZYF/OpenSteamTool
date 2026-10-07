@@ -15,7 +15,7 @@ namespace OST::ExtractTickets {
 
 namespace {
 std::string TicketLine(const char* name, const std::optional<std::vector<uint8_t>>& ticket) {
-    if (!ticket || ticket->empty()) return std::string{name} + ":null\n";
+    if (!ticket || ticket->empty()) return std::format("{}:null\n", name);
     return std::format("{}({}bytes):{}\n", name, ticket->size(), ToHexString(*ticket));
 }
 } // namespace
@@ -218,26 +218,45 @@ bool WriteOutputs(uint32_t appId,
 
     // 3. Owned DLCs Unlocks
     if (!dlcs.empty()) {
-        luaText += std::format("\n{}\n", TR(MsgKey::LuaOwnedDlcs));
-        for (const auto& dlc : dlcs) {
+        struct DlcDepotData {
             const DepotKeyInfo* dlcDk = nullptr;
             std::vector<const DepotKeyInfo*> subDepots;
             std::vector<const DepotKeyInfo*> associatedDepots;
+        };
+        std::vector<DlcDepotData> dlcDepotList(dlcs.size());
+        bool hasDlcManifests = false;
 
-            // Single pass over depotKeys to collect primary depot, subdepots, and all associated depots
+        // Single pass over dlcs and depotKeys to build indexed association table
+        for (size_t i = 0; i < dlcs.size(); ++i) {
+            auto& data = dlcDepotList[i];
+            const uint32_t dlcId = dlcs[i].dlcId;
             for (const auto& dk : depotKeys) {
-                if (dk.depotId == dlc.dlcId) {
-                    dlcDk = &dk;
-                    associatedDepots.push_back(&dk);
-                } else if (dk.dlcId == dlc.dlcId) {
-                    subDepots.push_back(&dk);
-                    associatedDepots.push_back(&dk);
+                if (dk.depotId == dlcId) {
+                    data.dlcDk = &dk;
+                    data.associatedDepots.push_back(&dk);
+                } else if (dk.dlcId == dlcId) {
+                    data.subDepots.push_back(&dk);
+                    data.associatedDepots.push_back(&dk);
                 }
             }
+            if (!hasDlcManifests) {
+                for (const auto* dk : data.associatedDepots) {
+                    if (IsValidManifestId(dk->manifestId)) {
+                        hasDlcManifests = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        luaText += std::format("\n{}\n", TR(MsgKey::LuaOwnedDlcs));
+        for (size_t i = 0; i < dlcs.size(); ++i) {
+            const auto& dlc = dlcs[i];
+            const auto& data = dlcDepotList[i];
 
             bool isDepotIncomplete = false;
             bool hasPhysicalDepot = false;
-            for (const auto* dk : associatedDepots) {
+            for (const auto* dk : data.associatedDepots) {
                 if (IsValidManifestId(dk->manifestId)) {
                     hasPhysicalDepot = true;
                     const bool manifestPresent = hasManifestOnDisk(dk->depotId, dk->manifestId);
@@ -254,8 +273,8 @@ bool WriteOutputs(uint32_t appId,
             const std::string_view prefix = isDepotIncomplete ? "-- " : "";
             const std::string reasonSuffix = isDepotIncomplete ? (" -- " + std::string(TR(MsgKey::LuaDlcDepotMissing))) : "";
 
-            if (dlcDk && !dlcDk->hexKey.empty()) {
-                luaText += std::format("{}addappid({}, 1, \"{}\")", prefix, dlc.dlcId, dlcDk->hexKey);
+            if (data.dlcDk && !data.dlcDk->hexKey.empty()) {
+                luaText += std::format("{}addappid({}, 1, \"{}\")", prefix, dlc.dlcId, data.dlcDk->hexKey);
             } else {
                 luaText += std::format("{}addappid({}, 1)", prefix, dlc.dlcId);
             }
@@ -271,7 +290,7 @@ bool WriteOutputs(uint32_t appId,
             }
 
             // Any subdepots of this DLC with keys
-            for (const auto* subDk : subDepots) {
+            for (const auto* subDk : data.subDepots) {
                 if (!subDk->hexKey.empty()) {
                     luaText += std::format("{}addappid({}, 1, \"{}\"){}\n", prefix, subDk->depotId, subDk->hexKey, reasonSuffix);
                 }
@@ -279,38 +298,19 @@ bool WriteOutputs(uint32_t appId,
         }
 
         // 4. DLC Manifests (placed right under DLC unlocks)
-        bool hasDlcManifests = false;
-        for (const auto& dlc : dlcs) {
-            for (const auto& dk : depotKeys) {
-                if ((dk.depotId == dlc.dlcId || dk.dlcId == dlc.dlcId) && IsValidManifestId(dk.manifestId)) {
-                    hasDlcManifests = true;
-                    break;
-                }
-            }
-            if (hasDlcManifests) break;
-        }
-
         if (hasDlcManifests) {
             luaText += std::format("\n{}\n", TR(MsgKey::LuaDlcManifests));
-            for (const auto& dlc : dlcs) {
-                const DepotKeyInfo* dlcDk = nullptr;
-                std::vector<const DepotKeyInfo*> subDepots;
-
-                for (const auto& dk : depotKeys) {
-                    if (dk.depotId == dlc.dlcId) {
-                        dlcDk = &dk;
-                    } else if (dk.dlcId == dlc.dlcId) {
-                        subDepots.push_back(&dk);
-                    }
-                }
+            for (size_t i = 0; i < dlcs.size(); ++i) {
+                const auto& dlc = dlcs[i];
+                const auto& data = dlcDepotList[i];
 
                 // DLC itself manifest
-                if (dlcDk && IsValidManifestId(dlcDk->manifestId)) {
-                    const bool onDisk = hasManifestOnDisk(dlcDk->depotId, dlcDk->manifestId);
+                if (data.dlcDk && IsValidManifestId(data.dlcDk->manifestId)) {
+                    const bool onDisk = hasManifestOnDisk(data.dlcDk->depotId, data.dlcDk->manifestId);
                     if (onDisk) {
-                        luaText += std::format("setManifestid({}, \"{}\")", dlcDk->depotId, dlcDk->manifestId);
+                        luaText += std::format("setManifestid({}, \"{}\")", data.dlcDk->depotId, data.dlcDk->manifestId);
                     } else {
-                        luaText += std::format("-- setManifestid({}, \"{}\") -- {}", dlcDk->depotId, dlcDk->manifestId, TR(MsgKey::LuaManifestMissing));
+                        luaText += std::format("-- setManifestid({}, \"{}\") -- {}", data.dlcDk->depotId, data.dlcDk->manifestId, TR(MsgKey::LuaManifestMissing));
                     }
                     if (!dlc.name.empty()) {
                         luaText += " -- " + SanitizeComment(dlc.name);
@@ -319,7 +319,7 @@ bool WriteOutputs(uint32_t appId,
                 }
 
                 // Any subdepots of this DLC with manifests
-                for (const auto* subDk : subDepots) {
+                for (const auto* subDk : data.subDepots) {
                     if (IsValidManifestId(subDk->manifestId)) {
                         const bool onDisk = hasManifestOnDisk(subDk->depotId, subDk->manifestId);
                         if (onDisk) {

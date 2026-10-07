@@ -45,7 +45,7 @@ namespace {
 
 void TuiEngine::EnableVirtualTerminal() {
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (hOut != INVALID_HANDLE_VALUE) {
+    if (hOut != INVALID_HANDLE_VALUE && hOut != nullptr) {
         DWORD dwMode = 0;
         if (GetConsoleMode(hOut, &dwMode)) {
             dwMode |= ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
@@ -55,7 +55,7 @@ void TuiEngine::EnableVirtualTerminal() {
     }
 
     HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
-    if (hIn != INVALID_HANDLE_VALUE) {
+    if (hIn != INVALID_HANDLE_VALUE && hIn != nullptr) {
         DWORD dwInMode = 0;
         if (GetConsoleMode(hIn, &dwInMode)) {
             dwInMode = (dwInMode & ~ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS;
@@ -400,6 +400,10 @@ bool TuiEngine::ShowConfirmModal(std::string_view title,
 }
 
 void TuiEngine::FlushInputBuffer() noexcept {
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    if (hIn != INVALID_HANDLE_VALUE && hIn != nullptr) {
+        FlushConsoleInputBuffer(hIn);
+    }
     while (_kbhit()) {
         (void)_getch();
     }

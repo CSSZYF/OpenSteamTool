@@ -1071,20 +1071,20 @@ bool SteamCmClient::DetectDenuvoFromStore(uint32_t appId) {
     if (resp.IsSuccess()) {
         auto drmNotice = JsonHelper::GetString(resp.body, "drm_notice");
         if (drmNotice) {
-            std::string lower = *drmNotice;
-            std::transform(lower.begin(), lower.end(), lower.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (lower.find("denuvo") != std::string::npos) {
+            std::string_view notice = *drmNotice;
+            constexpr std::string_view target = "denuvo";
+            auto it = std::ranges::search(notice, target, [](char c1, char c2) {
+                return std::tolower(static_cast<unsigned char>(c1)) == std::tolower(static_cast<unsigned char>(c2));
+            });
+            if (!it.empty()) {
                 isDenuvo = true;
                 LOG_INFO("SteamCM", "从 Steam Store 官方元数据检测到 Denuvo 保护 (AppID={}, drm_notice='{}')", appId, *drmNotice);
             }
         }
-    }
-
-    {
         std::lock_guard lock(s_denuvoMutex);
         s_denuvoCache[appId] = isDenuvo;
     }
+
     return isDenuvo;
 }
 
@@ -1131,6 +1131,13 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bo
             std::cout << "  -> 正在建立定向会话以提取加密票据 (Denuvo / 专用 DRM)...\n";
         }
         SetGamePlayed(appId);
+        struct SessionGuard {
+            SteamCmClient* client;
+            ~SessionGuard() {
+                if (client) client->SetGamePlayed(0);
+            }
+        } sessionGuard{this};
+
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
         creds.encryptedAppTicket = RequestEncryptedAppTicket(appId);
@@ -1153,7 +1160,6 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bo
                 }
             }
         }
-        SetGamePlayed(0);
     } else {
         LOG_DEBUG("SteamCM", "普通游戏无需 Denuvo 加密票据 (eticket)，已优雅跳过会话激活");
     }

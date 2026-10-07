@@ -288,7 +288,6 @@ void OnlineSession::RunAccountSelectionMenu() {
                 continue;
             }
 
-
             // Enter key
             if (ev.code == KeyCode::Enter) {
                 if (selected == 0) {
