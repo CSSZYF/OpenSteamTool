@@ -15,7 +15,7 @@ public:
     // If accountName is empty:
     //   - Automatically picks the account if exactly one account is cached, or latest active account
     // Returns 0 on success, non-zero on error
-    static int RunSilent(uint32_t appId, const std::string& accountName = "");
+    static int RunSilent(uint32_t appId, const std::string& accountName = "", bool forceEticket = false);
 
 private:
     // Level 2: Account Selection and Management Menu

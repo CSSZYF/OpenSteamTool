@@ -36,6 +36,8 @@ struct SteamLoginResult {
     std::string errorMessage;
 };
 
+class SteamCmClient;
+
 class SteamAuthService {
 public:
     SteamAuthService();
@@ -73,13 +75,11 @@ public:
         std::string_view accountName,
         const SecureString& password);
 
-    // High-level interactive login flow (prompts for password and 2FA in console)
-    [[nodiscard]] SteamLoginResult InteractiveLogin(std::string_view accountName);
-
-    // Fetches owned games list via official WebAPI
+    // Fetches owned games list via official WebAPI (optional cmClient for fast batch PICS name resolution)
     [[nodiscard]] std::vector<OwnedGameInfo> FetchOwnedGames(
         uint64_t steamId,
-        std::string_view accessToken);
+        std::string_view accessToken,
+        SteamCmClient* cmClient = nullptr);
 
 private:
     WinHttpTransport m_http;

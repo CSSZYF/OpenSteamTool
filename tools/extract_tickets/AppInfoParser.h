@@ -22,6 +22,7 @@ struct ParsedAppInfoData {
     std::string localizedName;
     std::vector<AppDepotManifest> depots;
     std::vector<uint32_t> dlcAppIds;
+    bool requiresDenuvo{false};
 };
 
 // Parses <steamPath>/appcache/appinfo.vdf to extract non-zero PICS AccessTokens.

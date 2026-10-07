@@ -38,11 +38,5 @@ struct DlcInfo {
     HSteamUser user,
     std::vector<DlcInfo>& outDlcs);
 
-// Fallback helper to extract genuine AppOwnershipTicket and EncryptedAppTicket from local Steam client
-[[nodiscard]] bool ExtractTicketsFromLocalClient(
-    uint32_t appId,
-    std::optional<std::vector<uint8_t>>& outOwnership,
-    std::optional<std::vector<uint8_t>>& outEncrypted);
-
 } // namespace OST::ExtractTickets
 

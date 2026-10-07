@@ -2,6 +2,7 @@
 #include "AppInfoParser.h"
 #include "I18n.h"
 #include "Log.h"
+#include "SteamCmClient.h"
 #include "TuiEngine.h"
 #include "Utils.h"
 
@@ -219,7 +220,8 @@ std::optional<std::string> SteamAuthService::RefreshAccessToken(
 
 std::vector<OwnedGameInfo> SteamAuthService::FetchOwnedGames(
     uint64_t steamId,
-    std::string_view accessToken) {
+    std::string_view accessToken,
+    SteamCmClient* cmClient) {
 
     std::string url = "https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/?access_token=" +
                       UrlEncode(accessToken) +
@@ -288,8 +290,29 @@ std::vector<OwnedGameInfo> SteamAuthService::FetchOwnedGames(
                         // Fast local appinfo.vdf lookup (<1ms) prioritizing name_localized for all shared games
                         resolvedNames = ParseAppNames(*steamPathOpt, sharedAppIds);
                     }
+
+                    std::vector<uint32_t> stillMissing;
                     for (uint32_t mId : missingNameAppIds) {
                         if (!resolvedNames.contains(mId) || resolvedNames[mId].empty()) {
+                            stillMissing.push_back(mId);
+                        }
+                    }
+
+                    // 1. High-speed batch PICS resolution via CM Client (50 apps/batch, ~100ms, immune to Store HTTP 429)
+                    if (!stillMissing.empty() && cmClient && cmClient->EnsureConnected()) {
+                        LOG_INFO("SteamAuth", "正在通过 Steam CM PICS 批量解析 {} 款家庭共享游戏官方名称...", stillMissing.size());
+                        auto picsNames = cmClient->RequestPicsAppNames(stillMissing);
+                        for (auto& [pAppId, pName] : picsNames) {
+                            if (!pName.empty()) {
+                                resolvedNames[pAppId] = std::move(pName);
+                            }
+                        }
+                    } else if (!stillMissing.empty()) {
+                        // 2. Safe fallback to Store WebAPI only if CM Client unavailable, with rate limit cap
+                        size_t fallbackCount = 0;
+                        for (uint32_t mId : stillMissing) {
+                            if (resolvedNames.contains(mId) && !resolvedNames[mId].empty()) continue;
+                            if (++fallbackCount > 10) break; // Hard cap to prevent UI freeze and HTTP 429 flood
                             std::string storeUrl = std::format("https://store.steampowered.com/api/appdetails?appids={}&filters=basic&l={}",
                                                                mId, I18n::GetSteamLanguageCode());
                             HttpResponse sResp = m_http.Get(storeUrl);
@@ -408,18 +431,6 @@ SteamLoginResult SteamAuthService::LoginWithCredentials(
 
     TokenStorage::UpsertAccount(cached);
     return result;
-}
-
-SteamLoginResult SteamAuthService::InteractiveLogin(std::string_view accountName) {
-    SecureString password = ReadPasswordFromConsole("Password: ");
-    if (password.Empty()) {
-        SteamLoginResult fail;
-        fail.accountName = accountName;
-        fail.cancelled = true;
-        fail.errorMessage = std::string(TR(MsgKey::ErrUserCancelledPwd));
-        return fail;
-    }
-    return LoginWithCredentials(accountName, password);
 }
 
 } // namespace OST::ExtractTickets

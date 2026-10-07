@@ -174,7 +174,7 @@ struct SteamSessionGuard {
         if (module) {
             FreeLibrary(module);
             module = nullptr;
-            SetDllDirectoryA(nullptr);
+            SetDllDirectoryW(nullptr);
         }
         // Clear spoofed Steam environment variables
         SetEnvironmentVariableA("SteamAppId", nullptr);

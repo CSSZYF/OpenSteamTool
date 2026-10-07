@@ -111,7 +111,7 @@ SecureString ReadPasswordFromConsole(const char* prompt) {
         } else if (ch == 3) { // Ctrl+C
             pwd.Clear();
             std::cout << "\n[INFO] 用户中断输入。\n";
-            exit(0);
+            return pwd;
         } else if (ch >= 32 && ch <= 126) { // Printable characters
             pwd.Append(static_cast<char>(ch));
             std::cout << '*';
@@ -173,36 +173,6 @@ std::string Base64Encode(std::span<const uint8_t> data) {
         result.pop_back();
     }
     return result;
-}
-
-std::vector<uint8_t> Base64Decode(std::string_view base64Str) {
-    if (base64Str.empty()) return {};
-
-    DWORD bytesNeeded = 0;
-    if (!CryptStringToBinaryA(
-            base64Str.data(),
-            static_cast<DWORD>(base64Str.size()),
-            CRYPT_STRING_BASE64,
-            nullptr,
-            &bytesNeeded,
-            nullptr,
-            nullptr) || bytesNeeded == 0) {
-        return {};
-    }
-
-    std::vector<uint8_t> buffer(bytesNeeded);
-    if (!CryptStringToBinaryA(
-            base64Str.data(),
-            static_cast<DWORD>(base64Str.size()),
-            CRYPT_STRING_BASE64,
-            buffer.data(),
-            &bytesNeeded,
-            nullptr,
-            nullptr)) {
-        return {};
-    }
-    buffer.resize(bytesNeeded);
-    return buffer;
 }
 
 // ============================================================================

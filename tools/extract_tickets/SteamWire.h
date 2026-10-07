@@ -123,6 +123,7 @@ public:
         : m_ptr(data.data()), m_end(data.data() + data.size()) {}
 
     bool ReadNext(ProtoField& outField) {
+        outField = {};
         if (m_ptr >= m_end) return false;
 
         uint64_t tag = 0;
@@ -252,6 +253,20 @@ inline int32_t ExtractHeaderEResult(std::span<const uint8_t> hdrBytes) {
         }
     }
     return 1;
+}
+
+// Extracts job_id_target (field 11) from CMsgProtoBufHeader
+inline uint64_t ExtractHeaderTargetJobId(std::span<const uint8_t> hdrBytes) {
+    if (hdrBytes.empty()) return 0;
+    ProtoReader r(hdrBytes);
+    ProtoField f;
+    while (r.ReadNext(f)) {
+        if (f.fieldNumber == 11) { // job_id_target
+            uint64_t id = (f.wireType == 1) ? f.fixed64Val : f.varintVal;
+            return (id == UINT64_MAX) ? 0 : id;
+        }
+    }
+    return 0;
 }
 
 } // namespace OST::ExtractTickets

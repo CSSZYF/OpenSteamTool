@@ -14,7 +14,19 @@ namespace {
     }
 
     size_t FindKeyPosition(std::string_view json, std::string_view key) {
-        std::string pattern = "\"" + std::string(key) + "\"";
+        char stackBuf[128];
+        std::string heapBuf;
+        std::string_view pattern;
+        if (key.size() + 2 <= sizeof(stackBuf)) {
+            stackBuf[0] = '"';
+            std::memcpy(stackBuf + 1, key.data(), key.size());
+            stackBuf[key.size() + 1] = '"';
+            pattern = std::string_view(stackBuf, key.size() + 2);
+        } else {
+            heapBuf = "\"" + std::string(key) + "\"";
+            pattern = heapBuf;
+        }
+
         size_t pos = 0;
         while ((pos = json.find(pattern, pos)) != std::string_view::npos) {
             size_t afterKey = pos + pattern.size();
@@ -51,15 +63,33 @@ namespace {
                             auto [ptr, ec] = std::from_chars(hexChunk.data(), hexChunk.data() + 4, codepoint, 16);
                             if (ec == std::errc()) {
                                 i += 4;
+                                // Handle UTF-16 surrogate pairs (RFC 8259)
+                                if (codepoint >= 0xD800 && codepoint <= 0xDBFF &&
+                                    i + 6 < input.size() && input[i + 1] == '\\' && input[i + 2] == 'u') {
+                                    unsigned int lowSurrogate = 0;
+                                    auto lowChunk = input.substr(i + 3, 4);
+                                    auto [ptr2, ec2] = std::from_chars(lowChunk.data(), lowChunk.data() + 4, lowSurrogate, 16);
+                                    if (ec2 == std::errc() && lowSurrogate >= 0xDC00 && lowSurrogate <= 0xDFFF) {
+                                        i += 6;
+                                        codepoint = 0x10000 + (((codepoint - 0xD800) << 10) | (lowSurrogate - 0xDC00));
+                                    }
+                                }
                                 if (codepoint <= 0x7F) {
                                     out.push_back(static_cast<char>(codepoint));
                                 } else if (codepoint <= 0x7FF) {
                                     out.push_back(static_cast<char>(0xC0 | ((codepoint >> 6) & 0x1F)));
                                     out.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
-                                } else {
+                                } else if (codepoint <= 0xFFFF) {
                                     out.push_back(static_cast<char>(0xE0 | ((codepoint >> 12) & 0x0F)));
                                     out.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F)));
                                     out.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+                                } else if (codepoint <= 0x10FFFF) {
+                                    out.push_back(static_cast<char>(0xF0 | ((codepoint >> 18) & 0x07)));
+                                    out.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F)));
+                                    out.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F)));
+                                    out.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+                                } else {
+                                    out.push_back('?');
                                 }
                                 break;
                             }
@@ -135,44 +165,6 @@ std::optional<uint32_t> JsonHelper::GetUInt32(std::string_view json, std::string
         return static_cast<uint32_t>(*val64);
     }
     return std::nullopt;
-}
-
-std::optional<bool> JsonHelper::GetBool(std::string_view json, std::string_view key) {
-    size_t valPos = FindKeyPosition(json, key);
-    if (valPos == std::string_view::npos) return std::nullopt;
-
-    std::string_view sv = SkipWhitespace(json.substr(valPos));
-    if (sv.starts_with("true")) return true;
-    if (sv.starts_with("false")) return false;
-    return std::nullopt;
-}
-
-std::vector<int> JsonHelper::GetConfirmationTypes(std::string_view json) {
-    std::vector<int> types;
-    for (const auto& conf : GetConfirmations(json)) {
-        types.push_back(conf.type);
-    }
-    if (types.empty()) {
-        size_t pos = 0;
-        std::string_view target = "\"confirmation_type\"";
-        while ((pos = json.find(target, pos)) != std::string_view::npos) {
-            size_t afterKey = pos + target.size();
-            afterKey = json.find_first_not_of(" \t\r\n", afterKey);
-            if (afterKey != std::string_view::npos && json[afterKey] == ':') {
-                std::string_view sv = SkipWhitespace(json.substr(afterKey + 1));
-                size_t endNum = sv.find_first_of(" \t\r\n,}]");
-                if (endNum != std::string_view::npos) {
-                    int cType = 0;
-                    auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + endNum, cType);
-                    if (ec == std::errc()) {
-                        types.push_back(cType);
-                    }
-                }
-            }
-            pos += target.size();
-        }
-    }
-    return types;
 }
 
 std::vector<AllowedConfirmation> JsonHelper::GetConfirmations(std::string_view json) {

@@ -45,14 +45,23 @@ namespace {
 
 void TuiEngine::EnableVirtualTerminal() {
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (hOut == INVALID_HANDLE_VALUE) return;
-
-    DWORD dwMode = 0;
-    if (GetConsoleMode(hOut, &dwMode)) {
-        dwMode |= ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-        SetConsoleMode(hOut, dwMode);
+    if (hOut != INVALID_HANDLE_VALUE && hOut != nullptr) {
+        DWORD dwMode = 0;
+        if (GetConsoleMode(hOut, &dwMode)) {
+            dwMode |= ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+            SetConsoleMode(hOut, dwMode);
+        }
+        SetConsoleOutputCP(CP_UTF8);
     }
-    SetConsoleOutputCP(CP_UTF8);
+
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    if (hIn != INVALID_HANDLE_VALUE && hIn != nullptr) {
+        DWORD dwInMode = 0;
+        if (GetConsoleMode(hIn, &dwInMode)) {
+            dwInMode = (dwInMode & ~ENABLE_QUICK_EDIT_MODE & ~ENABLE_MOUSE_INPUT) | ENABLE_EXTENDED_FLAGS;
+            SetConsoleMode(hIn, dwInMode);
+        }
+    }
 
 #if defined(_WIN32)
     static bool handlerInstalled = false;
@@ -65,12 +74,14 @@ void TuiEngine::EnableVirtualTerminal() {
 }
 
 void TuiEngine::EnterAlternateScreen() {
-    std::cout << "\x1b[?1049h\x1b[2J\x1b[H";
+    // Disable any terminal mouse tracking modes that may be active from parent shells
+    // (?1000 = normal mouse, ?1002 = button-event, ?1003 = any-event, ?1006 = SGR mode)
+    std::cout << "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049h\x1b[2J\x1b[H";
     std::cout.flush();
 }
 
 void TuiEngine::ExitAlternateScreen() {
-    std::cout << "\x1b[?1049l";
+    std::cout << "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l";
     std::cout.flush();
 }
 
@@ -94,10 +105,6 @@ void TuiEngine::RepositionCursor() {
     // Reposition cursor to top-left without wiping buffer to black, preventing flicker during typing
     std::cout << "\x1b[H";
     std::cout.flush();
-}
-
-void TuiEngine::EraseToEndOfLine() {
-    std::cout << "\x1b[K";
 }
 
 void TuiEngine::GetScreenSize(int& outWidth, int& outHeight) {
@@ -366,6 +373,8 @@ bool TuiEngine::ShowConfirmModal(std::string_view title,
 
     renderButtons();
 
+    FlushInputBuffer();
+
     while (true) {
         KeyEvent ev = ReadKey();
         if (ev.code == KeyCode::Left || ev.code == KeyCode::Right || ev.code == KeyCode::Tab) {
@@ -374,15 +383,15 @@ bool TuiEngine::ShowConfirmModal(std::string_view title,
             continue;
         }
         if (ev.code == KeyCode::Char) {
-            if (ev.ch == 'y' || ev.ch == 'Y') {
+            if ((ev.ch == 'y' || ev.ch == 'Y') && !_kbhit()) {
                 FlushInputBuffer();
                 return true;
             }
-            if (ev.ch == 'n' || ev.ch == 'N') {
+            if ((ev.ch == 'n' || ev.ch == 'N') && !_kbhit()) {
                 FlushInputBuffer();
                 return false;
             }
-        } else if (ev.code == KeyCode::Enter) {
+        } else if (ev.code == KeyCode::Enter && !_kbhit()) {
             FlushInputBuffer();
             return selectedYes;
         } else if (ev.code == KeyCode::Escape) {
@@ -393,6 +402,10 @@ bool TuiEngine::ShowConfirmModal(std::string_view title,
 }
 
 void TuiEngine::FlushInputBuffer() noexcept {
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    if (hIn != INVALID_HANDLE_VALUE && hIn != nullptr) {
+        FlushConsoleInputBuffer(hIn);
+    }
     while (_kbhit()) {
         (void)_getch();
     }
@@ -613,11 +626,92 @@ KeyEvent TuiEngine::ReadKey() {
         }
     }
     if (ch == 13 || ch == 10) return { KeyCode::Enter, 0 };
-    if (ch == 27) return { KeyCode::Escape, 0 };
     if (ch == 8 || ch == 127) return { KeyCode::Backspace, 0 };
     if (ch == 9) return { KeyCode::Tab, 0 };
 
+    if (ch == 27) {
+        // Check if an escape sequence follows
+        int waitMs = 0;
+        while (!_kbhit() && waitMs < 30) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            waitMs += 5;
+        }
+
+        if (!_kbhit()) {
+            // Standalone Escape key
+            return { KeyCode::Escape, 0 };
+        }
+
+        auto readSeqByteWithTimeout = []() -> int {
+            int waited = 0;
+            while (!_kbhit() && waited < 20) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                waited += 2;
+            }
+            return _kbhit() ? _getch() : -1;
+        };
+
+        // Parse ANSI / VT escape sequence
+        int seq1 = readSeqByteWithTimeout();
+        if (seq1 == -1) return { KeyCode::Escape, 0 };
+
+        if (seq1 == '[') {
+            // CSI sequence: ESC [ ...
+            int seq2 = readSeqByteWithTimeout();
+            if (seq2 == -1) return { KeyCode::None, 0 };
+            if (seq2 == 'A') return { KeyCode::Up, 0 };
+            if (seq2 == 'B') return { KeyCode::Down, 0 };
+            if (seq2 == 'C') return { KeyCode::Right, 0 };
+            if (seq2 == 'D') return { KeyCode::Left, 0 };
+            if (seq2 == '3') {
+                int nextCh = readSeqByteWithTimeout();
+                if (nextCh == '~') {
+                    return { KeyCode::Delete, 0 };
+                }
+                return { KeyCode::None, 0 };
+            }
+            if (seq2 == '<') {
+                // SGR mouse sequence: ESC [ < C ; X ; Y (M|m)
+                // Drain until M or m or end of burst
+                while (true) {
+                    int mc = readSeqByteWithTimeout();
+                    if (mc == -1 || mc == 'M' || mc == 'm' || (mc >= 0x40 && mc <= 0x7E)) {
+                        break;
+                    }
+                }
+                return { KeyCode::None, 0 };
+            }
+            // Other CSI sequence: drain until final byte (0x40 - 0x7E)
+            int lastCh = seq2;
+            while (!(lastCh >= 0x40 && lastCh <= 0x7E)) {
+                lastCh = readSeqByteWithTimeout();
+                if (lastCh == -1) break;
+            }
+            return { KeyCode::None, 0 };
+        } else if (seq1 == 'O') {
+            // SS3 sequence: ESC O ...
+            int seq2 = readSeqByteWithTimeout();
+            if (seq2 == -1) return { KeyCode::None, 0 };
+            if (seq2 == 'A') return { KeyCode::Up, 0 };
+            if (seq2 == 'B') return { KeyCode::Down, 0 };
+            if (seq2 == 'C') return { KeyCode::Right, 0 };
+            if (seq2 == 'D') return { KeyCode::Left, 0 };
+            return { KeyCode::None, 0 };
+        } else {
+            // Other escape sequence: drain while available
+            while (true) {
+                int ec = readSeqByteWithTimeout();
+                if (ec == -1) break;
+            }
+            return { KeyCode::None, 0 };
+        }
+    }
+
     return { KeyCode::Char, static_cast<char>(ch) };
+}
+
+bool TuiEngine::HasInputPending() noexcept {
+    return _kbhit() != 0;
 }
 
 } // namespace OST::ExtractTickets

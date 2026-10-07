@@ -14,7 +14,7 @@ namespace OST::ExtractTickets {
 namespace {
 
 void ParseTomlLuaPaths(const std::string& tomlFilePath, std::vector<std::string>& outPaths) {
-    std::filesystem::path tomlPath(tomlFilePath);
+    std::filesystem::path tomlPath = Utf8Path(tomlFilePath);
     std::ifstream file(tomlPath);
     if (!file) return;
 
@@ -31,11 +31,7 @@ void ParseTomlLuaPaths(const std::string& tomlFilePath, std::vector<std::string>
         if (sv.starts_with('[') && sv.ends_with(']')) {
             std::string_view sec = sv.substr(1, sv.size() - 2);
             sec = TrimWhitespace(sec);
-            std::string lowerSec(sec);
-            std::transform(lowerSec.begin(), lowerSec.end(), lowerSec.begin(), [](unsigned char c) {
-                return static_cast<char>(std::tolower(c));
-            });
-            inLuaSection = (lowerSec == "lua");
+            inLuaSection = EqualIgnoreCase(sec, "lua");
             inPathsArray = false;
             continue;
         }
@@ -67,7 +63,7 @@ void ParseTomlLuaPaths(const std::string& tomlFilePath, std::vector<std::string>
                     size_t closeQ = sv.find('"', pos + 1);
                     if (closeQ != std::string_view::npos) {
                         std::string pStr(sv.substr(pos + 1, closeQ - pos - 1));
-                        std::filesystem::path p(pStr);
+                        std::filesystem::path p = Utf8Path(pStr);
                         if (p.is_relative()) {
                             outPaths.push_back((baseDir / p).lexically_normal().string());
                         } else {
@@ -212,7 +208,7 @@ void ParseLuaContent(std::string_view content, uint32_t targetAppId, LuaFallback
 
 void ScanManifestFilesInDir(const std::string& dir, LuaFallbackData& out) {
     std::error_code ec;
-    std::filesystem::path dirP(dir);
+    std::filesystem::path dirP = Utf8Path(dir);
     if (!std::filesystem::exists(dirP, ec) || !std::filesystem::is_directory(dirP, ec)) return;
 
     for (const auto& entry : std::filesystem::directory_iterator(dirP, ec)) {
@@ -247,10 +243,10 @@ std::vector<std::string> GetOstLuaSearchDirectories(const std::string& steamPath
         std::string norm = NormalizeDir(path);
         if (norm.empty()) return;
 
-        DWORD attr = GetFileAttributesW(std::filesystem::path(norm).c_str());
-        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        std::error_code ec;
+        if (std::filesystem::is_directory(Utf8Path(norm), ec)) {
             if (std::none_of(dirs.begin(), dirs.end(), [&](const std::string& existing) {
-                return _stricmp(existing.c_str(), norm.c_str()) == 0;
+                return EqualIgnoreCase(existing, norm);
             })) {
                 dirs.push_back(std::move(norm));
             }
@@ -264,13 +260,12 @@ std::vector<std::string> GetOstLuaSearchDirectories(const std::string& steamPath
     }
 
     // 2. Executable directory
-    char exeBuf[MAX_PATH]{};
+    wchar_t exeBuf[32768]{};
     std::string exeDir;
-    if (GetModuleFileNameA(nullptr, exeBuf, MAX_PATH) > 0) {
-        std::string exePath{exeBuf};
-        size_t slash = exePath.find_last_of("\\/");
-        if (slash != std::string_view::npos) {
-            exeDir = exePath.substr(0, slash);
+    if (GetModuleFileNameW(nullptr, exeBuf, static_cast<DWORD>(std::size(exeBuf))) > 0) {
+        std::filesystem::path p(exeBuf);
+        exeDir = p.parent_path().string();
+        if (!exeDir.empty()) {
             addDir(JoinPath(exeDir, "config\\lua"));
             addDir(JoinPath(exeDir, "lua"));
             addDir(JoinPath(exeDir, "st_config"));
@@ -279,10 +274,11 @@ std::vector<std::string> GetOstLuaSearchDirectories(const std::string& steamPath
     }
 
     // 3. Current working directory
-    char cwdBuf[MAX_PATH]{};
+    std::error_code cwdEc;
+    std::filesystem::path cwdPath = std::filesystem::current_path(cwdEc);
     std::string cwd;
-    if (GetCurrentDirectoryA(MAX_PATH, cwdBuf) > 0) {
-        cwd = std::string{cwdBuf};
+    if (!cwdEc) {
+        cwd = cwdPath.string();
         addDir(JoinPath(cwd, "config\\lua"));
         addDir(JoinPath(cwd, "lua"));
         addDir(JoinPath(cwd, "st_config"));
@@ -301,7 +297,8 @@ std::vector<std::string> GetOstLuaSearchDirectories(const std::string& steamPath
 
     std::vector<std::string> tomlLuaPaths;
     for (const auto& tomlFile : tomlLocations) {
-        if (GetFileAttributesA(tomlFile.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(Utf8Path(tomlFile), ec)) {
             ParseTomlLuaPaths(tomlFile, tomlLuaPaths);
         }
     }
@@ -326,17 +323,16 @@ LuaFallbackData ParseLuaFallbackData(const std::string& steamPath, uint32_t targ
     // First, look specifically for <targetAppId>.lua and dedicated <targetAppId>/ folder
     for (const auto& dir : searchDirs) {
         std::string directFile = JoinPath(dir, targetLuaName);
-        DWORD attr = GetFileAttributesW(std::filesystem::path(directFile).c_str());
-        if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(Utf8Path(directFile), ec)) {
             matchedFiles.push_back(directFile);
             manifestDirs.push_back(dir);
         }
 
         std::string subDir = JoinPath(dir, std::to_string(targetAppId));
-        DWORD subAttr = GetFileAttributesW(std::filesystem::path(subDir).c_str());
-        if (subAttr != INVALID_FILE_ATTRIBUTES && (subAttr & FILE_ATTRIBUTE_DIRECTORY)) {
+        if (std::filesystem::is_directory(Utf8Path(subDir), ec)) {
             std::string subFile = JoinPath(subDir, targetLuaName);
-            if (GetFileAttributesW(std::filesystem::path(subFile).c_str()) != INVALID_FILE_ATTRIBUTES) {
+            if (std::filesystem::is_regular_file(Utf8Path(subFile), ec)) {
                 matchedFiles.push_back(subFile);
             }
             manifestDirs.push_back(subDir);
@@ -347,7 +343,7 @@ LuaFallbackData ParseLuaFallbackData(const std::string& steamPath, uint32_t targ
     if (matchedFiles.empty()) {
         for (const auto& dir : searchDirs) {
             std::error_code dirEc;
-            std::filesystem::path dirP(dir);
+            std::filesystem::path dirP = Utf8Path(dir);
             if (!std::filesystem::exists(dirP, dirEc) || !std::filesystem::is_directory(dirP, dirEc)) continue;
 
             for (const auto& entry : std::filesystem::directory_iterator(dirP, dirEc)) {
@@ -364,7 +360,7 @@ LuaFallbackData ParseLuaFallbackData(const std::string& steamPath, uint32_t targ
     }
 
     for (const auto& filePath : matchedFiles) {
-        std::ifstream file(std::filesystem::path(filePath), std::ios::binary);
+        std::ifstream file(Utf8Path(filePath), std::ios::binary);
         if (!file) continue;
 
         file.seekg(0, std::ios::end);

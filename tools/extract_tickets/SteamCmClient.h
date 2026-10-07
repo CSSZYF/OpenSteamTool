@@ -76,8 +76,11 @@ public:
     // Promotes a validated fast CDN server to the head of the cached server list
     static void PromoteWorkingCdnServer(std::string_view server);
 
+    // Queries official Steam Store API for drm_notice and caches the result
+    [[nodiscard]] static bool DetectDenuvoFromStore(uint32_t appId);
+
     // High-level extraction pipeline for a single target AppID
-    [[nodiscard]] ExtractedAppCredentials ExtractFullCredentials(uint32_t appId);
+    [[nodiscard]] ExtractedAppCredentials ExtractFullCredentials(uint32_t appId, bool forceEticket = false);
 
     void SetAccessToken(std::string_view token) { m_accessToken = token; }
     [[nodiscard]] bool IsConnected() const noexcept { return m_ws.IsConnected() && m_isLoggedOn; }
@@ -85,11 +88,17 @@ public:
 
 private:
     [[nodiscard]] bool SendProtoMsg(ESteamMsg eMsg, const ProtoWriter& body, uint64_t jobId = 0, std::string_view targetJobName = {});
-    [[nodiscard]] bool ReadMatchingMsg(uint32_t expectedEMsg, std::vector<uint8_t>& outBody, DWORD timeoutMs = 8000, int32_t* outEResult = nullptr);
+    [[nodiscard]] bool ReadMatchingMsg(
+        uint32_t expectedEMsg,
+        std::vector<uint8_t>& outBody,
+        DWORD timeoutMs = 8000,
+        int32_t* outEResult = nullptr,
+        uint64_t expectedJobId = 0);
     void UnpackMultiMsg(std::span<const uint8_t> bodySpan);
 
     struct QueuedMsg {
         uint32_t eMsg{0};
+        uint64_t targetJobId{0};
         int32_t eresult{1};
         std::vector<uint8_t> body;
     };

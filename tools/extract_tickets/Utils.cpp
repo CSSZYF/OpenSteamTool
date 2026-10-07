@@ -58,13 +58,6 @@ std::optional<uint32_t> ParseAppId(std::string_view value) noexcept {
     return parsed;
 }
 
-std::optional<uint32_t> ReadAppIdFromConsole() {
-    std::cout << "AppID: ";
-    std::string input;
-    if (!std::getline(std::cin, input)) return std::nullopt;
-    return ParseAppId(input);
-}
-
 std::string SanitizeComment(std::string_view text) {
     std::string out(text);
     for (char& c : out) {
@@ -127,38 +120,6 @@ std::string ToHexString(std::span<const uint8_t> data) {
     return out;
 }
 
-void PrintHex(const char* label, std::span<const uint8_t> data) {
-    if (TuiEngine::IsActive()) return;
-    std::cout << label << " (" << data.size() << " bytes):\n";
-
-    constexpr size_t kBytesPerRow = 16;
-    static constexpr char kHex[] = "0123456789abcdef";
-
-    for (size_t row = 0; row < data.size(); row += kBytesPerRow) {
-        std::string line;
-        for (int shift = 12; shift >= 0; shift -= 4) {
-            line += kHex[(row >> shift) & 0xF];
-        }
-        line += "  ";
-
-        std::string ascii;
-        for (size_t col = 0; col < kBytesPerRow; ++col) {
-            if (row + col < data.size()) {
-                const uint8_t byte = data[row + col];
-                line += kHex[byte >> 4];
-                line += kHex[byte & 0xF];
-                line += ' ';
-                ascii += (byte >= 0x20 && byte < 0x7F) ? static_cast<char>(byte) : '.';
-            } else {
-                line += "   ";
-            }
-            if (col == 7) line += ' ';
-        }
-
-        std::cout << line << " " << ascii << "\n";
-    }
-}
-
 bool WriteBinaryFile(const std::filesystem::path& path, std::span<const uint8_t> data) {
     std::ofstream output{path, std::ios::binary | std::ios::trunc};
     if (!output) {
@@ -200,25 +161,23 @@ std::string NormalizeDir(std::string dir) {
     return dir;
 }
 
-namespace {
-    std::wstring Utf8ToWide(std::string_view utf8) {
-        if (utf8.empty()) return {};
-        int len = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
-        if (len <= 0) return {};
-        std::wstring w(len, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), w.data(), len);
-        return w;
-    }
+std::wstring Utf8ToWide(std::string_view utf8) {
+    if (utf8.empty()) return {};
+    int len = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+    if (len <= 0) return {};
+    std::wstring w(len, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), w.data(), len);
+    return w;
+}
 
-    std::string WideToUtf8(std::wstring_view wide) {
-        if (wide.empty()) return {};
-        int len = WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
-        if (len <= 0) return {};
-        std::string s(len, '\0');
-        WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), s.data(), len, nullptr, nullptr);
-        return s;
-    }
-} // namespace
+std::string WideToUtf8(std::wstring_view wide) {
+    if (wide.empty()) return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return {};
+    std::string s(len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), s.data(), len, nullptr, nullptr);
+    return s;
+}
 
 std::optional<std::string> QueryRegistryString(HKEY root, const char* subKey, const char* valueName) {
     std::wstring wSubKey = Utf8ToWide(subKey ? subKey : "");
@@ -257,10 +216,16 @@ std::optional<std::string> QueryRegistryString(HKEY root, const char* subKey, co
     }
 
     if (valueType == REG_EXPAND_SZ) {
-        wchar_t expanded[MAX_PATH * 2]{0};
-        DWORD expLen = ExpandEnvironmentStringsW(wValue.c_str(), expanded, static_cast<DWORD>(sizeof(expanded) / sizeof(wchar_t)));
-        if (expLen > 0 && expLen < sizeof(expanded) / sizeof(wchar_t)) {
-            wValue = expanded;
+        DWORD reqSize = ExpandEnvironmentStringsW(wValue.c_str(), nullptr, 0);
+        if (reqSize > 0) {
+            std::wstring expanded(reqSize, L'\0');
+            DWORD expLen = ExpandEnvironmentStringsW(wValue.c_str(), expanded.data(), reqSize);
+            if (expLen > 0) {
+                while (!expanded.empty() && expanded.back() == L'\0') {
+                    expanded.pop_back();
+                }
+                wValue = std::move(expanded);
+            }
         }
     }
 
@@ -289,8 +254,8 @@ std::optional<std::string> FindSteamInstallPath() {
         };
         for (const wchar_t* p : defaultPaths) {
             std::filesystem::path checkExe = std::filesystem::path(p) / L"steam.exe";
-            DWORD attr = GetFileAttributesW(checkExe.c_str());
-            if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+            std::error_code ec;
+            if (std::filesystem::is_regular_file(checkExe, ec)) {
                 std::string norm = NormalizeDir(WideToUtf8(p));
                 LOG_DEBUG("SteamPath", "Found Steam install path at default location: {}", norm);
                 return norm;

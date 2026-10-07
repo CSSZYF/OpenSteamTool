@@ -271,6 +271,7 @@ void OnlineSession::RunAccountSelectionMenu() {
             // 'd' or Delete -> Delete selected account
             if (ev.code == KeyCode::Delete ||
                 (ev.code == KeyCode::Char && (ev.ch == 'd' || ev.ch == 'D'))) {
+                if (TuiEngine::HasInputPending()) continue;
                 if (selected >= 1 && selected <= accounts.size()) {
                     const auto& targetAcc = accounts[selected - 1];
                     TuiEngine::ClearScreen();
@@ -283,24 +284,6 @@ void OnlineSession::RunAccountSelectionMenu() {
                     if (confirmed) {
                         TokenStorage::DeleteAccount(targetAcc.accountName);
                         break; // Reload accounts & redraw menu
-                    }
-                }
-                continue;
-            }
-
-            // 'x' -> Wipe all
-            if (ev.code == KeyCode::Char && (ev.ch == 'x' || ev.ch == 'X')) {
-                if (!accounts.empty()) {
-                    TuiEngine::ClearScreen();
-                    bool confirmed = TuiEngine::ShowConfirmModal(
-                        TR(MsgKey::WipeAllTitle).data(),
-                        TR(MsgKey::WipeAllMsg).data(),
-                        TR(MsgKey::WipeAllDetail).data(),
-                        false);
-                    needFullClear = true;
-                    if (confirmed) {
-                        TokenStorage::WipeAll();
-                        break;
                     }
                 }
                 continue;
@@ -492,7 +475,7 @@ void OnlineSession::RunInSessionExtraction(
     TuiEngine::PrintBounded(top + 2, left + 4, TR(MsgKey::SyncingGamesMsg), innerW, "\x1b[1;32m");
     std::cout.flush();
 
-    auto games = authService.FetchOwnedGames(steamId, curAccessToken);
+    auto games = authService.FetchOwnedGames(steamId, curAccessToken, &cmClient);
     if (games.empty()) {
         TuiEngine::ClearScreen();
         TuiEngine::ShowMessageModal(TR(MsgKey::NoGamesFoundTitle).data(),
@@ -554,6 +537,7 @@ void OnlineSession::RunInSessionExtraction(
 
         // 'l' / 'L' -> Export CSV
         if (ev.code == KeyCode::Char && (ev.ch == 'l' || ev.ch == 'L')) {
+            if (TuiEngine::HasInputPending()) continue;
             TuiEngine::ClearScreen();
             bool confirmed = TuiEngine::ShowConfirmModal(
                 TR(MsgKey::CsvExportTitle).data(),
@@ -576,6 +560,7 @@ void OnlineSession::RunInSessionExtraction(
 
         // 'a' / 'A' -> Batch extract all
         if (ev.code == KeyCode::Char && (ev.ch == 'a' || ev.ch == 'A')) {
+            if (TuiEngine::HasInputPending()) continue;
             TuiEngine::ClearScreen();
             bool confirmed = TuiEngine::ShowConfirmModal(
                 TR(MsgKey::BatchConfirmTitle).data(),
@@ -669,8 +654,12 @@ void OnlineSession::RunInSessionExtraction(
             continue;
         }
 
-        // Enter -> Extract target AppID
-        if (ev.code == KeyCode::Enter) {
+        // Enter -> Extract target AppID (normal mode, auto-detect Denuvo)
+        // 'e' / 'E' -> Extract target AppID with forced encrypted ticket (--force-eticket)
+        const bool isEnter = (ev.code == KeyCode::Enter);
+        const bool isForceE = (ev.code == KeyCode::Char && (ev.ch == 'e' || ev.ch == 'E'));
+        if (isEnter || isForceE) {
+            const bool forceEticket = isForceE;
             uint32_t targetAppId = 0;
             std::string gameName;
 
@@ -700,14 +689,13 @@ void OnlineSession::RunInSessionExtraction(
                 TuiEngine::ClearScreen();
                 TuiEngine::DrawBox(eTop, eLeft, eModalW, eModalH, TR(MsgKey::ExtractingOnlineTitle).data());
 
-                std::string line1 = std::string{TR(MsgKey::ExtractingOnlineMsg1)};
                 std::string line2 = TR_FMT(MsgKey::ExtractingOnlineMsg2, gameName, targetAppId);
 
-                TuiEngine::PrintBounded(eTop + 2, eLeft + 4, line1, eInnerW, "\x1b[1;33m");
+                TuiEngine::PrintBounded(eTop + 2, eLeft + 4, TR(MsgKey::ExtractingOnlineMsg1), eInnerW, "\x1b[1;33m");
                 TuiEngine::PrintBounded(eTop + 3, eLeft + 4, line2, eInnerW, "\x1b[36m");
                 std::cout.flush();
 
-                auto creds = cmClient.ExtractFullCredentials(targetAppId);
+                auto creds = cmClient.ExtractFullCredentials(targetAppId, forceEticket);
                 bool ok = WriteOutputs(targetAppId, creds.appOwnershipTicket, creds.encryptedAppTicket,
                                        creds.depotKeys, creds.dlcs, creds.appTokens);
                 TuiEngine::ClearScreen();
@@ -747,7 +735,7 @@ void OnlineSession::RunInSessionExtraction(
     }
 }
 
-int OnlineSession::RunSilent(uint32_t appId, const std::string& accountName) {
+int OnlineSession::RunSilent(uint32_t appId, const std::string& accountName, bool forceEticket) {
     if (appId == 0) {
         std::cerr << TR(MsgKey::InvalidAppId) << "\n";
         return 1;
@@ -814,7 +802,7 @@ int OnlineSession::RunSilent(uint32_t appId, const std::string& accountName) {
 
         if (logonOk) {
             std::cout << TR(MsgKey::CliExtractLoginSuccess) << "\n";
-            auto curCreds = cmClient.ExtractFullCredentials(appId);
+            auto curCreds = cmClient.ExtractFullCredentials(appId, forceEticket);
 
             const bool hasTicket = curCreds.appOwnershipTicket.has_value() || curCreds.encryptedAppTicket.has_value();
             const bool hasKeys = std::any_of(curCreds.depotKeys.begin(), curCreds.depotKeys.end(),
