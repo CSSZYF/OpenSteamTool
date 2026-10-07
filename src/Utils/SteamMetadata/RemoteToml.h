@@ -3,6 +3,11 @@
 
 namespace RemoteToml {
 
+    enum class FetchMode {
+        PreferCache,
+        RemoteOnly,
+    };
+
     struct Request {
         std::string channel;    // "pattern" or "ipc"
         std::string component;  // "steamclient" or "steamui"
@@ -16,7 +21,8 @@ namespace RemoteToml {
         std::string sha256;
     };
 
-    // Fetch remote TOML first, then fall back to the exact local cache entry.
-    Result Fetch(const Request& request);
+    // Prefer the exact local cache during normal startup. RemoteOnly bypasses
+    // that cache and is reserved for an explicit lazy refresh.
+    Result Fetch(const Request& request, FetchMode mode = FetchMode::PreferCache);
 
 } // namespace RemoteToml

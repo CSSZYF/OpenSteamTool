@@ -72,7 +72,7 @@ namespace {
     }
 } // namespace
 
-Result Fetch(const Request& request)
+Result Fetch(const Request& request, FetchMode mode)
 {
     namespace fs = std::filesystem;
     using OSTPlatform::Encoding::PathFromUtf8;
@@ -102,11 +102,12 @@ Result Fetch(const Request& request)
     fs::path cacheDir  = baseDir / "opensteamtool" / request.channel / request.component;
     fs::path cachePath = cacheDir / (out.sha256 + ".toml");
 
-    // Check local cache first (pattern & IPC files are immutable per DLL SHA-256).
+    // Normal startup is cache-first. RemoteOnly deliberately skips this read
+    // so the existing mirror chain can replace a stale exact-SHA cache.
     fs::path localPath = cachePath;
     std::error_code ec;
-    bool found = fs::exists(localPath, ec) && !ec;
-    if (!found && IsPortableMode()) {
+    bool found = mode == FetchMode::PreferCache && fs::exists(localPath, ec) && !ec;
+    if (!found && mode == FetchMode::PreferCache && IsPortableMode()) {
         fs::path steamCachePath = steamRoot / "opensteamtool" / request.channel / request.component / (out.sha256 + ".toml");
         if (fs::exists(steamCachePath, ec) && !ec) {
             localPath = steamCachePath;
@@ -135,7 +136,7 @@ Result Fetch(const Request& request)
         }
     }
 
-    // 3. Cache miss -> Try remote (mirror chain with early-out on 404).
+    // 3. Cache miss or explicit refresh -> Try remote (mirror chain with early-out on 404).
     const std::vector<std::string> urlTemplates = BuildUrlTemplates();
     OSTPlatform::Http::Result http;
     std::string lastUrl;
