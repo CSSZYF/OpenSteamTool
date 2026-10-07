@@ -178,6 +178,7 @@ namespace {
         if (!TuiEngine::EnsureMinTerminalSize(76, 18)) {
             return {0, 0, 0, 0};
         }
+        TuiEngine::BeginFrame();
         int w = 80, h = 25;
         TuiEngine::GetScreenSize(w, h);
         TuiEngine::ClearScreen();
@@ -187,11 +188,12 @@ namespace {
                               hasSteam ? TR(MsgKey::L1HeaderTagLocal) : TR(MsgKey::L1HeaderTagNoSteam));
 
         const int boxW = std::clamp(w - 4, 70, 100);
-        const int boxH = 17;
-        const int top = (std::max)(1, (h - boxH) / 2);
+        const int maxBoxH = (std::min)(17, h - 2);
+        const int boxH = std::clamp(16, 15, maxBoxH);
+        const int top = 2 + (h - 2 - boxH) / 2;
         const int left = (std::max)(1, (w - boxW) / 2);
 
-        TuiEngine::DrawBox(top, left, boxW, boxH, TR(MsgKey::L1BoxTitle).data());
+        TuiEngine::DrawBox(top, left, boxW, boxH, TR(MsgKey::L1BoxTitle).data(), /*clearInterior=*/false);
 
         const size_t innerW = static_cast<size_t>(boxW - 8);
 
@@ -214,7 +216,7 @@ namespace {
             innerW, "\x1b[1;36m");
 
         TuiEngine::MoveCursor(top + 10, left + 4);
-        std::cout << "\x1b[90m" << std::string(innerW, '-') << "\x1b[0m";
+        TuiEngine::PrintRaw(std::format("\x1b[90m{}\x1b[0m", std::string(innerW, '-')));
 
         TuiEngine::PrintBounded(top + 11, left + 4, TR(MsgKey::L1NavTitle), innerW, "\x1b[1;33m");
 
@@ -227,6 +229,7 @@ namespace {
             (innerW > 2) ? (innerW - 2) : innerW, "\x1b[37m");
 
         TuiEngine::DrawFooter(TR(MsgKey::L1Footer));
+        TuiEngine::EndFrame();
         return {top, left, boxW, boxH};
     }
 
@@ -234,8 +237,7 @@ namespace {
         if (layout.boxW == 0 || layout.boxH == 0) return;
         TuiEngine::MoveCursor(layout.top + 7, layout.left + 4);
         std::string boxContent = std::format("[ {:<16} ]", std::string{inputAppId} + "_");
-        std::cout << "\x1b[1;30;47m" << boxContent << "\x1b[0m  \x1b[90m" << TR(MsgKey::L1InputTip) << "\x1b[0m   ";
-        std::cout.flush();
+        TuiEngine::PrintRaw(std::format("\x1b[1;30;47m{}\x1b[0m  \x1b[90m{}\x1b[0m   ", boxContent, TR(MsgKey::L1InputTip)));
     }
 } // namespace
 
@@ -276,7 +278,7 @@ int Run(int argc, char** argv) {
         } else if (!cliAppId) {
             cliAppId = ParseAppId(arg);
             if (!cliAppId) {
-                std::cerr << "[ERROR] 无效的 AppID / Invalid AppID: " << arg << "\n";
+                std::cerr << TR_FMT(MsgKey::ErrInvalidAppIdCli, arg) << "\n";
                 return 1;
             }
         }
@@ -394,10 +396,15 @@ int Run(int argc, char** argv) {
             continue;
         }
 
-        // Enter -> Start local extraction
-        if (ev.code == KeyCode::Enter && !inputAppId.empty()) {
+        // Enter -> Start local extraction (standard ticket)
+        // 'e' / 'E' -> Start local extraction with forced encrypted ticket (--force-eticket)
+        const bool isEnter = (ev.code == KeyCode::Enter);
+        const bool isForceE = (ev.code == KeyCode::Char && (ev.ch == 'e' || ev.ch == 'E'));
+
+        if ((isEnter || isForceE) && !inputAppId.empty()) {
             auto appId = ParseAppId(inputAppId);
             if (appId && *appId > 0) {
+                const bool runForceEticket = isForceE;
                 if (!FindSteamInstallPath().has_value()) {
                     TuiEngine::ClearScreen();
                     bool goOnline = TuiEngine::ShowConfirmModal(
@@ -427,7 +434,7 @@ int Run(int argc, char** argv) {
                 TuiEngine::PrintBounded(top + 2, left + 4, msg, static_cast<size_t>(modalW - 8), "\x1b[1;33m");
                 std::cout.flush();
 
-                bool ok = RunLocalExtractionWorker(*appId, forceEticket);
+                bool ok = RunLocalExtractionWorker(*appId, runForceEticket);
 
                 TuiEngine::ClearScreen();
                 if (ok) {
