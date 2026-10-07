@@ -72,7 +72,6 @@ namespace {
         AppId_t authorizedAppId = k_uAppIdInvalid;
         uint32 handshakeCount = 0;
 
-
         [[nodiscard]] Stage CurrentStage(std::chrono::steady_clock::time_point now) const noexcept {
             if (!denuvo) return Stage::None;
             const auto deadline = isDAuth2 ? authDeadline : scheme1Deadline;
@@ -125,7 +124,10 @@ namespace {
                 if (!startupArmed) {
                     startupArmed = true;
                     const auto now = std::chrono::steady_clock::now();
-                    scheme1Deadline = now + kScheme1StartupPulseDuration;
+                    const auto startupDeadline = now + kScheme1StartupPulseDuration;
+                    if (startupDeadline > scheme1Deadline) {
+                        scheme1Deadline = startupDeadline;
+                    }
                     LOG_PIPE_INFO("DenuvoAuth: [Scheme 1 - Default] startup micro-pulse armed for pid={} (+{}ms) {}",
                                   pid, kScheme1StartupPulseDuration.count(), this->DebugString());
                 } else {
