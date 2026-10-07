@@ -9,10 +9,11 @@
 #include <wincrypt.h>
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <filesystem>
+#include <format>
 #include <fstream>
-#include <sstream>
 
 #pragma comment(lib, "crypt32.lib")
 
@@ -31,15 +32,14 @@ namespace {
     };
 
     std::string SerializeAccounts(const std::vector<CachedAccount>& accounts) {
-        std::ostringstream oss;
+        std::string result;
+        result.reserve(accounts.size() * 256);
         for (const auto& acc : accounts) {
-            oss << acc.accountName << '\t'
-                << acc.steamId << '\t'
-                << acc.lastLoginTime << '\t'
-                << acc.refreshToken << '\t'
-                << acc.accessToken << '\n';
+            std::format_to(std::back_inserter(result), "{}\t{}\t{}\t{}\t{}\n",
+                           acc.accountName, acc.steamId, acc.lastLoginTime,
+                           acc.refreshToken, acc.accessToken);
         }
-        return oss.str();
+        return result;
     }
 
     std::vector<CachedAccount> DeserializeAccounts(std::string_view plaintext) {
@@ -102,11 +102,11 @@ namespace {
         if (!ec && fileSize > 0) {
             std::ofstream ofs(p, std::ios::binary | std::ios::in | std::ios::out);
             if (ofs.is_open()) {
-                std::vector<uint8_t> zeros(1024, 0);
+                constexpr std::array<char, 1024> zeros{};
                 size_t remaining = fileSize;
                 while (remaining > 0) {
                     size_t toWrite = (std::min)(remaining, zeros.size());
-                    ofs.write(reinterpret_cast<const char*>(zeros.data()), toWrite);
+                    ofs.write(zeros.data(), toWrite);
                     remaining -= toWrite;
                 }
                 ofs.flush();
@@ -118,12 +118,18 @@ namespace {
 } // namespace
 
 std::filesystem::path TokenStorage::GetStorageFilePath() {
-    wchar_t localAppData[MAX_PATH] = {0};
-    if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, localAppData)) || localAppData[0] == L'\0') {
-        DWORD len = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
-        if (len == 0 || len >= MAX_PATH) {
-            return L"accounts.enc";
+    wchar_t localAppData[32768]{0};
+    DWORD len = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, static_cast<DWORD>(std::size(localAppData)));
+    if (len == 0 || len >= std::size(localAppData)) {
+        PWSTR pPath = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &pPath)) && pPath) {
+            std::filesystem::path dir = std::filesystem::path(pPath) / L"OpenSteamTool" / L"credentials";
+            CoTaskMemFree(pPath);
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
+            return dir / L"accounts.enc";
         }
+        return L"accounts.enc";
     }
 
     std::filesystem::path dir = std::filesystem::path(localAppData) / L"OpenSteamTool" / L"credentials";

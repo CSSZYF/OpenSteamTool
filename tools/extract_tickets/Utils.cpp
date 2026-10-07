@@ -218,10 +218,16 @@ std::optional<std::string> QueryRegistryString(HKEY root, const char* subKey, co
     }
 
     if (valueType == REG_EXPAND_SZ) {
-        wchar_t expanded[MAX_PATH * 2]{0};
-        DWORD expLen = ExpandEnvironmentStringsW(wValue.c_str(), expanded, static_cast<DWORD>(sizeof(expanded) / sizeof(wchar_t)));
-        if (expLen > 0 && expLen < sizeof(expanded) / sizeof(wchar_t)) {
-            wValue = expanded;
+        DWORD reqSize = ExpandEnvironmentStringsW(wValue.c_str(), nullptr, 0);
+        if (reqSize > 0) {
+            std::wstring expanded(reqSize, L'\0');
+            DWORD expLen = ExpandEnvironmentStringsW(wValue.c_str(), expanded.data(), reqSize);
+            if (expLen > 0) {
+                while (!expanded.empty() && expanded.back() == L'\0') {
+                    expanded.pop_back();
+                }
+                wValue = std::move(expanded);
+            }
         }
     }
 
