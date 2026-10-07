@@ -34,13 +34,17 @@ public:
 
     [[nodiscard]] HttpResponse Get(
         std::string_view url,
-        const std::vector<std::string>& extraHeaders = {});
+        const std::vector<std::string>& extraHeaders = {},
+        DWORD timeoutMs = 0);
 
     [[nodiscard]] HttpResponse Post(
         std::string_view url,
         std::string_view postData,
         std::string_view contentType = "application/x-www-form-urlencoded",
-        const std::vector<std::string>& extraHeaders = {});
+        const std::vector<std::string>& extraHeaders = {},
+        DWORD timeoutMs = 0);
+
+    void SetTimeouts(int resolveMs, int connectMs, int sendMs, int receiveMs);
 
 private:
     HINTERNET m_hSession{nullptr};

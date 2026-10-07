@@ -54,6 +54,12 @@ private:
 // Encodes binary data to standard Base64 string (no newlines)
 [[nodiscard]] std::string Base64Encode(std::span<const uint8_t> data);
 
+// Decodes standard Base64 string to binary data
+[[nodiscard]] std::vector<uint8_t> Base64Decode(std::string_view base64);
+
+// Parses expiration unix timestamp from Steam OAuth JWT access token (0 if missing/invalid)
+[[nodiscard]] int64_t GetJwtExpiration(std::string_view jwt);
+
 // Encrypts password using Steam's RSA public key (modulus & exponent)
 // Returns Base64-encoded encrypted password ready for BeginAuthSessionViaCredentials
 [[nodiscard]] std::string EncryptPasswordWithRSA(

@@ -7,6 +7,7 @@
 #include "WinHttpTransport.h"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -79,10 +80,16 @@ public:
     // Queries official Steam Store API for drm_notice and caches the result
     [[nodiscard]] static bool DetectDenuvoFromStore(uint32_t appId);
 
+    using ProgressCallback = std::function<void(std::string_view stage, size_t current, size_t total, uint32_t depotId)>;
+
     // High-level extraction pipeline for a single target AppID
-    [[nodiscard]] ExtractedAppCredentials ExtractFullCredentials(uint32_t appId, bool forceEticket = false);
+    [[nodiscard]] ExtractedAppCredentials ExtractFullCredentials(
+        uint32_t appId,
+        bool forceEticket = false,
+        ProgressCallback onProgress = nullptr);
 
     void SetAccessToken(std::string_view token) { m_accessToken = token; }
+    [[nodiscard]] int32_t GetLastLogonEResult() const noexcept { return m_lastLogonEResult; }
     [[nodiscard]] bool IsConnected() const noexcept { return m_ws.IsConnected() && m_isLoggedOn; }
     [[nodiscard]] bool EnsureConnected();
 
@@ -111,6 +118,7 @@ private:
     uint64_t m_nextJobId{100};
     int32_t m_clientSessionId{0};
     uint32_t m_cellId{0};
+    int32_t m_lastLogonEResult{1};
     bool m_isLoggedOn{false};
 };
 

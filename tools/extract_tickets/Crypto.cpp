@@ -1,4 +1,5 @@
 #include "Crypto.h"
+#include "JsonHelper.h"
 #include "Log.h"
 
 #include <bcrypt.h>
@@ -173,6 +174,60 @@ std::string Base64Encode(std::span<const uint8_t> data) {
         result.pop_back();
     }
     return result;
+}
+
+std::vector<uint8_t> Base64Decode(std::string_view base64) {
+    if (base64.empty()) return {};
+
+    DWORD bytesNeeded = 0;
+    if (!CryptStringToBinaryA(
+            base64.data(),
+            static_cast<DWORD>(base64.size()),
+            CRYPT_STRING_BASE64,
+            nullptr,
+            &bytesNeeded,
+            nullptr,
+            nullptr) || bytesNeeded == 0) {
+        return {};
+    }
+
+    std::vector<uint8_t> result(bytesNeeded);
+    if (!CryptStringToBinaryA(
+            base64.data(),
+            static_cast<DWORD>(base64.size()),
+            CRYPT_STRING_BASE64,
+            result.data(),
+            &bytesNeeded,
+            nullptr,
+            nullptr)) {
+        return {};
+    }
+    result.resize(bytesNeeded);
+    return result;
+}
+
+int64_t GetJwtExpiration(std::string_view jwt) {
+    auto firstDot = jwt.find('.');
+    if (firstDot == std::string_view::npos) return 0;
+    auto secondDot = jwt.find('.', firstDot + 1);
+    if (secondDot == std::string_view::npos) return 0;
+
+    std::string_view payloadB64 = jwt.substr(firstDot + 1, secondDot - firstDot - 1);
+    std::string b64{payloadB64};
+    for (char& c : b64) {
+        if (c == '-') c = '+';
+        else if (c == '_') c = '/';
+    }
+    while (b64.size() % 4 != 0) {
+        b64.push_back('=');
+    }
+
+    auto decoded = Base64Decode(b64);
+    if (decoded.empty()) return 0;
+
+    std::string_view jsonStr(reinterpret_cast<const char*>(decoded.data()), decoded.size());
+    auto expOpt = JsonHelper::GetUInt64(jsonStr, "exp");
+    return expOpt.has_value() ? static_cast<int64_t>(*expOpt) : 0;
 }
 
 // ============================================================================

@@ -296,6 +296,7 @@ bool SteamCmClient::ConnectAndLogon(uint64_t steamId, std::string_view refreshTo
     m_steamId = steamId;
     m_refreshToken = refreshToken;
     m_accessToken = accessToken;
+    m_lastLogonEResult = 2; // k_EResultFail
 
     std::string_view tokenToUse = !m_refreshToken.empty() ? m_refreshToken : m_accessToken;
     if (tokenToUse.empty()) {
@@ -325,11 +326,11 @@ bool SteamCmClient::ConnectAndLogon(uint64_t steamId, std::string_view refreshTo
             const int modalW = std::clamp(w - 12, 64, 84);
             const int modalH = 6;
             const int top = (h - modalH) / 2, left = (w - modalW) / 2;
-            std::string connMsg = std::format("正在连接 CM 节点 ({}/{}) 并登录...", i + 1, tryLimit);
+            std::string connMsg = TR_FMT(MsgKey::ConnectingNodeProgress, i + 1, tryLimit);
             TuiEngine::PrintBounded(top + 2, left + 4, connMsg, static_cast<size_t>(modalW - 8), "\x1b[1;36m");
             std::cout.flush();
         } else {
-            std::cout << std::format("[NET] 正在连接 Steam CM 服务器 ({}/{}): {}...\n", i + 1, tryLimit, endpoint);
+            std::cout << TR_FMT(MsgKey::CliConnectingServer, i + 1, tryLimit, endpoint) << "\n";
         }
 
         if (!m_ws.Connect(wsUrl, 5000)) {
@@ -385,6 +386,8 @@ bool SteamCmClient::ConnectAndLogon(uint64_t steamId, std::string_view refreshTo
             }
         }
 
+        m_lastLogonEResult = eresult;
+
         if (eresult == 1) { // 1 == k_EResultOK
             m_isLoggedOn = true;
             logonSuccess = true;
@@ -392,7 +395,7 @@ bool SteamCmClient::ConnectAndLogon(uint64_t steamId, std::string_view refreshTo
             LOG_INFO("SteamCM", "CM WebSocket 登录成功！节点: {}, SteamID: {}, SessionID: {}, CellID: {}",
                      endpoint, MaskSteamId(m_steamId), m_clientSessionId, m_cellId);
             if (!TuiEngine::IsActive()) {
-                std::cout << "[OK] Steam CM 登录就绪！(SteamID: " << m_steamId << ")\n";
+                std::cout << TR_FMT(MsgKey::CliLogonReady, m_steamId) << "\n";
             }
             break;
         }
@@ -629,7 +632,7 @@ std::unordered_map<uint32_t, uint64_t> SteamCmClient::RequestAppTokens(const std
             }
         } else if (field.fieldNumber == 4) { // app_denied_tokens (repeated)
             uint32_t deniedAppId = static_cast<uint32_t>(field.varintVal);
-            LOG_DEBUG("SteamCM", "AppID {} 属于公开产品，无需独立 PICS AccessToken (使用公开模式 token=0)", deniedAppId);
+            LOG_DEBUG("SteamCM", "AppID {} 属于公开产品，无需独立 AccessToken，使用公开模式 token=0 即可", deniedAppId);
         }
     }
 
@@ -862,6 +865,7 @@ void SteamCmClient::PromoteWorkingCdnServer(std::string_view server) {
     auto it = std::find(s_cachedCdnServers.begin(), s_cachedCdnServers.end(), server);
     if (it != s_cachedCdnServers.end() && it != s_cachedCdnServers.begin()) {
         std::rotate(s_cachedCdnServers.begin(), it, it + 1);
+        LOG_INFO("SteamCM", "已将验证成功的活跃 CDN 节点置顶: {}", server);
     }
 }
 
@@ -929,6 +933,9 @@ std::optional<std::string> SteamCmClient::DownloadManifestPayload(
     }
 
     WinHttpTransport localHttp;
+    if (!httpPtr) {
+        localHttp.SetTimeouts(3000, 2500, 5000, 15000);
+    }
     WinHttpTransport& http = httpPtr ? *httpPtr : localHttp;
     HttpResponse cdnResp;
 
@@ -941,18 +948,6 @@ std::optional<std::string> SteamCmClient::DownloadManifestPayload(
         cdnResp = http.Get(manifestUrl);
         if (cdnResp.IsSuccess() && !cdnResp.body.empty()) {
             LOG_INFO("SteamCM", "成功从 Steam CDN ({}) 获取清单数据 ({} 字节)", server, cdnResp.body.size());
-            PromoteWorkingCdnServer(server);
-            break;
-        }
-
-        // Fallback to HTTP on port 80 if HTTPS was rejected or throttled by ISP/CDN edge
-        std::string httpManifestUrl = std::format(
-            "http://{}/depot/{}/manifest/{}/5/{}",
-            server, depotId, manifestId, reqCode);
-        LOG_DEBUG("SteamCM", "正在尝试 HTTP 降级下载清单: {}", httpManifestUrl);
-        cdnResp = http.Get(httpManifestUrl);
-        if (cdnResp.IsSuccess() && !cdnResp.body.empty()) {
-            LOG_INFO("SteamCM", "成功从 Steam CDN HTTP ({}) 获取清单数据 ({} 字节)", server, cdnResp.body.size());
             PromoteWorkingCdnServer(server);
             break;
         }
@@ -1084,20 +1079,23 @@ bool SteamCmClient::DetectDenuvoFromStore(uint32_t appId) {
     return isDenuvo;
 }
 
-ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bool forceEticket) {
+ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bool forceEticket, ProgressCallback onProgress) {
+    if (onProgress) {
+        onProgress("tickets", 0, 0, 0);
+    }
     ExtractedAppCredentials creds;
     creds.appId = appId;
 
     // 1. AppOwnershipTicket (纯净拉取，自主拥有与家庭共享在无会话状态下原生直接下发)
     LOG_DEBUG("SteamCM", "正在向 Steam CM 请求 AppOwnershipTicket (AppID={})...", appId);
     if (!TuiEngine::IsActive()) {
-        std::cout << "  -> 正在向 Steam CM 请求 AppOwnershipTicket...\n";
+        std::cout << TR(MsgKey::CliExtractRequestTicket) << "\n";
     }
     creds.appOwnershipTicket = RequestAppOwnershipTicket(appId);
     if (creds.appOwnershipTicket) {
         LOG_INFO("SteamCM", "提取到所有权票据 ({} 字节)", creds.appOwnershipTicket->size());
         if (!TuiEngine::IsActive()) {
-            std::cout << "     [OK] 提取到所有权票据 (" << creds.appOwnershipTicket->size() << " 字节)\n";
+            std::cout << TR_FMT(MsgKey::CliExtractTicketGot, creds.appOwnershipTicket->size()) << "\n";
         }
     } else {
         LOG_INFO("SteamCM", "未能获取所有权票据 (账号未直接拥有或属于共享借用；OpenSteamTool 将在运行时自动执行 AppID 7 伪造兜底)");
@@ -1124,7 +1122,7 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bo
     if (needsETicket) {
         LOG_INFO("SteamCM", "检测到游戏需要加密票据 (Denuvo={}, 强制={})，建立定向会话授权...", isDenuvoApp, forceEticket);
         if (!TuiEngine::IsActive()) {
-            std::cout << "  -> 正在建立定向会话以提取加密票据 (Denuvo / 专用 DRM)...\n";
+            std::cout << TR(MsgKey::CliExtractDenuvoSession) << "\n";
         }
         SetGamePlayed(appId);
         struct SessionGuard {
@@ -1140,7 +1138,7 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bo
         if (creds.encryptedAppTicket) {
             LOG_INFO("SteamCM", "定向会话提取到加密票据 ({} 字节)", creds.encryptedAppTicket->size());
             if (!TuiEngine::IsActive()) {
-                std::cout << "     [OK] 激活会话提取到加密票据 (" << creds.encryptedAppTicket->size() << " 字节)\n";
+                std::cout << TR_FMT(MsgKey::CliExtractEticketGot, creds.encryptedAppTicket->size()) << "\n";
             }
         } else {
             LOG_WARN("SteamCM", "定向会话仍未能获取加密票据 (可能账号无权访问该产品)");
@@ -1152,7 +1150,7 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bo
             if (creds.appOwnershipTicket) {
                 LOG_INFO("SteamCM", "会话激活后成功提取到所有权票据 ({} 字节)", creds.appOwnershipTicket->size());
                 if (!TuiEngine::IsActive()) {
-                    std::cout << "     [OK] 激活会话提取到所有权票据 (" << creds.appOwnershipTicket->size() << " 字节)\n";
+                    std::cout << TR_FMT(MsgKey::CliExtractTicketGot, creds.appOwnershipTicket->size()) << "\n";
                 }
             }
         }
@@ -1235,7 +1233,7 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bo
 
         LOG_DEBUG("SteamCM", "正在向 Steam CM 查询 Depot 解密密钥 (AppID={}, 共 {} 个候选物理 Depot)...", appId, queryDepotList.size());
         if (!TuiEngine::IsActive()) {
-            std::cout << "  -> 正在向 Steam CM 查询 Depot 解密密钥与授权...\n";
+            std::cout << TR(MsgKey::CliExtractQueryDepots) << "\n";
         }
 
         std::vector<DepotKeyInfo> cmKeys = RequestDepotKeys(appId, queryDepotList);
@@ -1268,7 +1266,7 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bo
         // 4.4 针对已授权物理 Depot 拉取官方清单文件 (免撞门两阶段流水线: CM 请求码收集 + 异步并发 CDN 下载)
         LOG_INFO("SteamCM", "正在云端拉取官方清单文件 (已授权 Depot: {}/{})...", authorizedDepots.size(), queryDepotList.size());
         if (!TuiEngine::IsActive()) {
-            std::cout << "  -> 正在纯云端拉取官方清单文件 (.manifest)...\n";
+            std::cout << TR(MsgKey::CliExtractPullManifests) << "\n";
         }
 
         for (auto& dk : depotKeys) {
@@ -1299,10 +1297,11 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bo
         }
 
         if (!downloadTasks.empty()) {
-            auto cdnServers = GetCdnServers(m_cellId);
-            manifestFuture = std::async(std::launch::async, [tasks = downloadTasks, appId, outDir, cdnServers]() {
+            const uint32_t cellId = m_cellId;
+            manifestFuture = std::async(std::launch::async, [tasks = downloadTasks, appId, outDir, cellId, onProgress]() {
                 std::vector<std::pair<uint32_t, std::string>> results(tasks.size());
                 std::atomic<size_t> nextIndex{0};
+                std::atomic<size_t> completedCount{0};
                 const size_t numWorkers = std::min<size_t>(tasks.size(), 4);
                 std::vector<std::thread> workers;
                 workers.reserve(numWorkers);
@@ -1310,14 +1309,20 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bo
                 for (size_t w = 0; w < numWorkers; ++w) {
                     workers.emplace_back([&]() {
                         WinHttpTransport http;
+                        http.SetTimeouts(3000, 2500, 5000, 15000);
                         while (true) {
                             size_t idx = nextIndex.fetch_add(1, std::memory_order_relaxed);
                             if (idx >= tasks.size()) break;
                             const auto& t = tasks[idx];
+                            auto currentCdnServers = GetCdnServers(cellId);
                             auto downloaded = DownloadManifestPayload(
-                                appId, t.depotId, t.manifestId, t.reqCode, outDir, cdnServers, &http);
+                                appId, t.depotId, t.manifestId, t.reqCode, outDir, currentCdnServers, &http);
                             if (downloaded) {
                                 results[idx] = {t.depotId, std::move(*downloaded)};
+                            }
+                            size_t done = completedCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                            if (onProgress) {
+                                onProgress("manifest", done, tasks.size(), t.depotId);
                             }
                         }
                     });
@@ -1378,8 +1383,12 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bo
         }
     }
 
+    if (onProgress) {
+        onProgress("done", downloadedManifests, downloadedManifests, 0);
+    }
+
     if (downloadedManifests > 0 && !TuiEngine::IsActive()) {
-        std::cout << "     [OK] 成功拉取 " << downloadedManifests << " 个官方清单文件\n";
+        std::cout << TR_FMT(MsgKey::CliExtractManifestsGot, downloadedManifests) << "\n";
     }
 
     // 剔除无有效密钥、无清单文件且无有效清单ID的空项
@@ -1396,14 +1405,14 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bo
     if (!creds.depotKeys.empty()) {
         LOG_INFO("SteamCM", "提取到 {} 个 Depot 解密密钥/清单", creds.depotKeys.size());
         if (!TuiEngine::IsActive()) {
-            std::cout << "     [OK] 提取到 " << creds.depotKeys.size() << " 个 Depot 解密密钥/清单\n";
+            std::cout << TR_FMT(MsgKey::CliExtractDepotKeysGot, creds.depotKeys.size()) << "\n";
         }
     }
 
     // 6. 纯官方云端查询 64 位 PICS AccessTokens (AppID + 全部 DLC)
     LOG_DEBUG("SteamCM", "正在查询 64 位 PICS AccessToken (AppID={})...", appId);
     if (!TuiEngine::IsActive()) {
-        std::cout << "  -> 正在查询 64 位 PICS AccessToken...\n";
+        std::cout << TR(MsgKey::CliExtractQueryAccessToken) << "\n";
     }
 
     std::unordered_set<uint32_t> targetAppIds;
@@ -1427,7 +1436,7 @@ ExtractedAppCredentials SteamCmClient::ExtractFullCredentials(uint32_t appId, bo
     if (!creds.appTokens.empty()) {
         LOG_INFO("SteamCM", "提取到 PICS 访问令牌 (共 {} 个)", creds.appTokens.size());
         if (!TuiEngine::IsActive()) {
-            std::cout << "     [OK] 提取到 PICS 访问令牌\n";
+            std::cout << TR(MsgKey::CliExtractAccessTokenGot) << "\n";
         }
     }
 

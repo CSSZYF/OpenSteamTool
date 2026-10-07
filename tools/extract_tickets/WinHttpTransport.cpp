@@ -136,6 +136,12 @@ WinHttpTransport::~WinHttpTransport() {
     }
 }
 
+void WinHttpTransport::SetTimeouts(int resolveMs, int connectMs, int sendMs, int receiveMs) {
+    if (m_hSession) {
+        WinHttpSetTimeouts(m_hSession, resolveMs, connectMs, sendMs, receiveMs);
+    }
+}
+
 HINTERNET WinHttpTransport::GetOrCreateConnection(const std::wstring& host, INTERNET_PORT port) {
     if (m_hCachedConnect && m_cachedConnectHost == host && m_cachedConnectPort == port) {
         return m_hCachedConnect;
@@ -160,7 +166,8 @@ void WinHttpTransport::InvalidateConnection() {
 
 HttpResponse WinHttpTransport::Get(
     std::string_view url,
-    const std::vector<std::string>& extraHeaders) {
+    const std::vector<std::string>& extraHeaders,
+    DWORD timeoutMs) {
     
     HttpResponse resp;
     if (!m_hSession) {
@@ -197,6 +204,10 @@ HttpResponse WinHttpTransport::Get(
             WINHTTP_DEFAULT_ACCEPT_TYPES,
             flags)};
         if (!req) return req;
+
+        if (timeoutMs > 0) {
+            WinHttpSetTimeouts(req, timeoutMs, timeoutMs, timeoutMs, timeoutMs);
+        }
 
         if (parsed.isHttps) {
             WinHttpSetOption(req, WINHTTP_OPTION_SECURITY_FLAGS, &secFlags, sizeof(secFlags));
@@ -280,7 +291,8 @@ HttpResponse WinHttpTransport::Post(
     std::string_view url,
     std::string_view postData,
     std::string_view contentType,
-    const std::vector<std::string>& extraHeaders) {
+    const std::vector<std::string>& extraHeaders,
+    DWORD timeoutMs) {
 
     HttpResponse resp;
     if (!m_hSession) {
@@ -320,6 +332,10 @@ HttpResponse WinHttpTransport::Post(
             WINHTTP_DEFAULT_ACCEPT_TYPES,
             flags)};
         if (!req) return req;
+
+        if (timeoutMs > 0) {
+            WinHttpSetTimeouts(req, timeoutMs, timeoutMs, timeoutMs, timeoutMs);
+        }
 
         if (parsed.isHttps) {
             WinHttpSetOption(req, WINHTTP_OPTION_SECURITY_FLAGS, &secFlags, sizeof(secFlags));

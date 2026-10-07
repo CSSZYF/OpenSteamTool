@@ -34,6 +34,180 @@ namespace {
         }
         return escaped.str();
     }
+
+    SteamLoginResult RunDualTrack2FaLoop(
+        SteamAuthService& authService,
+        const SteamAuthSession& session,
+        std::string_view accountName,
+        bool hasDeviceCode,
+        bool hasDeviceConfirmation,
+        bool hasEmailCode,
+        std::string_view emailAddress) {
+
+        SteamLoginResult result;
+        result.accountName = accountName;
+        result.steamId = session.steamId;
+
+        int w = 80, h = 25;
+        TuiEngine::GetScreenSize(w, h);
+        const int modalW = std::clamp(w - 12, 64, 84);
+        const int modalH = 10;
+        const int top = (h - modalH) / 2;
+        const int left = (w - modalW) / 2;
+        const size_t innerW = static_cast<size_t>(modalW - 8);
+
+        std::string title = hasEmailCode
+            ? std::string(TR(MsgKey::GuardEmailTitle))
+            : std::string(TR(MsgKey::GuardMobileTitle));
+
+        std::string prompt;
+        if (hasEmailCode) {
+            prompt = emailAddress.empty()
+                ? std::string(TR(MsgKey::GuardEmailTitle))
+                : TR_FMT(MsgKey::GuardEmailPrompt, MaskEmail(emailAddress));
+        } else if (hasDeviceConfirmation || hasDeviceCode) {
+            prompt = std::string(TR(MsgKey::GuardMobileDualPrompt));
+        } else {
+            prompt = std::string(TR(MsgKey::GuardMobilePrompt));
+        }
+
+        TuiEngine::ClearScreen();
+        TuiEngine::DrawBox(top, left, modalW, modalH, title);
+        TuiEngine::PrintBounded(top + 2, left + 4, prompt, innerW, "\x1b[1;37m");
+
+        std::string footerText = "[Enter] 提交验证码   [ESC] 取消登录";
+        TuiEngine::DrawFooter(footerText);
+
+        std::string code;
+        std::string statusMsg;
+        std::string statusStyle = "\x1b[90m";
+        bool inputAllowed = true;
+
+        int elapsedMs = 0;
+        int pollTimerMs = 0;
+        constexpr int kMaxDurationMs = 120000; // 2 minutes
+        constexpr int kPollIntervalMs = 1500;  // 1.5s
+
+        auto drawInputAndStatus = [&]() {
+            if (inputAllowed) {
+                TuiEngine::MoveCursor(top + 4, left + 4);
+                std::string displayCode = std::format("[ {:<8} ]", code + "_");
+                std::cout << "\x1b[1;30;47m" << displayCode << "\x1b[0m";
+            }
+            TuiEngine::MoveCursor(top + 6, left + 4);
+            std::string currentStatus = statusMsg;
+            if (currentStatus.empty()) {
+                if (hasDeviceConfirmation) {
+                    currentStatus = std::format("正在等待手机确认... ({}/{}s)", elapsedMs / 1000, kMaxDurationMs / 1000);
+                    statusStyle = "\x1b[90m";
+                } else {
+                    currentStatus = "请输入 5 位验证码后按回车提交";
+                    statusStyle = "\x1b[90m";
+                }
+            }
+            std::cout << statusStyle << TuiEngine::Pad(TuiEngine::TruncateToWidth(currentStatus, innerW), innerW) << "\x1b[0m";
+            std::cout.flush();
+        };
+
+        drawInputAndStatus();
+
+        while (elapsedMs < kMaxDurationMs) {
+            auto keyOpt = TuiEngine::PollKey(50);
+            elapsedMs += 50;
+            pollTimerMs += 50;
+
+            if (keyOpt) {
+                KeyEvent ev = *keyOpt;
+                if (ev.code == KeyCode::Escape) {
+                    result.cancelled = true;
+                    result.errorMessage = std::string(TR(MsgKey::ErrUserCancelledInput));
+                    LOG_INFO("SteamAuth", "用户在 2FA 界面按下 ESC 取消登录");
+                    return result;
+                }
+
+                if (inputAllowed) {
+                    if (ev.code == KeyCode::Backspace) {
+                        if (!code.empty()) {
+                            code.pop_back();
+                            statusMsg.clear();
+                            drawInputAndStatus();
+                        }
+                    } else if (ev.code == KeyCode::Char) {
+                        std::string toAdd = !ev.text.empty() ? ev.text : (ev.ch != 0 ? std::string(1, ev.ch) : "");
+                        bool changed = false;
+                        for (char c : toAdd) {
+                            if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+                                if (code.size() < 8) {
+                                    code.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+                                    changed = true;
+                                }
+                            }
+                        }
+                        if (changed) {
+                            statusMsg.clear();
+                            drawInputAndStatus();
+                        }
+                    } else if (ev.code == KeyCode::Enter) {
+                        if (!code.empty()) {
+                            statusMsg = "正在验证并提交...";
+                            statusStyle = "\x1b[1;33m";
+                            drawInputAndStatus();
+
+                            int codeType = hasEmailCode ? 2 : 3;
+                            if (authService.SubmitSteamGuardCode(session, code, codeType)) {
+                                auto pollRes = authService.PollAuthSessionOnce(session, 2500);
+                                if (pollRes) {
+                                    result.success = true;
+                                    result.refreshToken = pollRes->first;
+                                    result.accessToken = pollRes->second;
+                                    LOG_INFO("SteamAuth", "2FA 动态码验证通过并成功取得登录 Token！");
+                                    return result;
+                                }
+                            }
+                            code.clear();
+                            statusMsg = std::string(TR(MsgKey::GuardCodeIncorrect));
+                            statusStyle = "\x1b[1;31m";
+                            drawInputAndStatus();
+                        } else if (hasDeviceConfirmation) {
+                            statusMsg = "正在检查手机确认状态...";
+                            statusStyle = "\x1b[1;36m";
+                            drawInputAndStatus();
+
+                            auto pollRes = authService.PollAuthSessionOnce(session, 2500);
+                            if (pollRes) {
+                                LOG_INFO("SteamAuth", "手机 Steam App 确认批准 (按回车即时轮询通过)！");
+                                result.success = true;
+                                result.refreshToken = pollRes->first;
+                                result.accessToken = pollRes->second;
+                                return result;
+                            }
+                            statusMsg = "手机端尚未批准，请在手机点击【确认登录】后再按回车，或直接输入 5 位动态码";
+                            statusStyle = "\x1b[1;33m";
+                            drawInputAndStatus();
+                        }
+                    }
+                }
+            }
+
+            if (hasDeviceConfirmation && pollTimerMs >= kPollIntervalMs) {
+                pollTimerMs = 0;
+                drawInputAndStatus();
+
+                auto pollRes = authService.PollAuthSessionOnce(session, 2500);
+                if (pollRes) {
+                    LOG_INFO("SteamAuth", "手机 Steam App 确认批准 (Zero-Keypress 零按键通过)！");
+                    result.success = true;
+                    result.refreshToken = pollRes->first;
+                    result.accessToken = pollRes->second;
+                    return result;
+                }
+            }
+        }
+
+        result.errorMessage = std::string(TR(MsgKey::ErrAuthTimeoutOrCancelled));
+        LOG_WARN("SteamAuth", "{}", result.errorMessage);
+        return result;
+    }
 } // namespace
 
 SteamAuthService::SteamAuthService() = default;
@@ -123,7 +297,7 @@ bool SteamAuthService::SubmitSteamGuardCode(
     std::string url = "https://api.steampowered.com/IAuthenticationService/UpdateAuthSessionWithSteamGuardCode/v1";
     LOG_DEBUG("SteamAuth", "正在提交 2FA 动态码 (codeType={})", codeType);
 
-    HttpResponse resp = m_http.Post(url, postData, "application/x-www-form-urlencoded");
+    HttpResponse resp = m_http.Post(url, postData, "application/x-www-form-urlencoded", {}, 5000);
     if (!resp.IsSuccess()) {
         LOG_WARN("SteamAuth", "提交 2FA 动态码响应非成功 (HTTP {}): {}", resp.statusCode, resp.errorMessage);
         return false;
@@ -131,6 +305,28 @@ bool SteamAuthService::SubmitSteamGuardCode(
 
     LOG_DEBUG("SteamAuth", "已成功提交动态码至 Valve 服务器");
     return true;
+}
+
+std::optional<std::pair<std::string, std::string>> SteamAuthService::PollAuthSessionOnce(
+    const SteamAuthSession& session,
+    int timeoutMs) {
+
+    std::string postData = "client_id=" + UrlEncode(session.clientId) +
+                           "&request_id=" + UrlEncode(session.requestId);
+    std::string url = "https://api.steampowered.com/IAuthenticationService/PollAuthSessionStatus/v1";
+
+    HttpResponse resp = m_http.Post(url, postData, "application/x-www-form-urlencoded", {}, timeoutMs);
+    if (!resp.IsSuccess()) {
+        return std::nullopt;
+    }
+
+    auto refreshOpt = JsonHelper::GetString(resp.body, "refresh_token");
+    auto accessOpt = JsonHelper::GetString(resp.body, "access_token");
+
+    if (refreshOpt && !refreshOpt->empty() && accessOpt && !accessOpt->empty()) {
+        return std::make_pair(*refreshOpt, *accessOpt);
+    }
+    return std::nullopt;
 }
 
 SteamLoginResult SteamAuthService::PollAuthSession(
@@ -143,42 +339,48 @@ SteamLoginResult SteamAuthService::PollAuthSession(
     result.accountName = accountName;
     result.steamId = session.steamId;
 
-    std::string postData = "client_id=" + UrlEncode(session.clientId) +
-                           "&request_id=" + UrlEncode(session.requestId);
-
-    std::string url = "https://api.steampowered.com/IAuthenticationService/PollAuthSessionStatus/v1";
+    if (TuiEngine::IsActive()) {
+        int w = 80, h = 25;
+        TuiEngine::GetScreenSize(w, h);
+        const int modalW = std::clamp(w - 12, 60, 80);
+        const int modalH = 6;
+        const int top = (h - modalH) / 2, left = (w - modalW) / 2;
+        TuiEngine::DrawBox(top, left, modalW, modalH, TR(MsgKey::ConnectingTitle));
+        TuiEngine::MoveCursor(top + 3, left + 4);
+        std::cout << "\x1b[90m" << TR(MsgKey::GuardDeviceDetail) << "\x1b[0m";
+        std::cout.flush();
+    }
 
     for (int attempt = 0; attempt < maxAttempts; ++attempt) {
+        if (TuiEngine::IsActive()) {
+            int w = 80, h = 25;
+            TuiEngine::GetScreenSize(w, h);
+            const int modalW = std::clamp(w - 12, 60, 80);
+            const int modalH = 6;
+            const int top = (h - modalH) / 2, left = (w - modalW) / 2;
+            std::string pollMsg = std::format("{} ({}/{}s)", TR(MsgKey::ConnectingGatewayMsg), (attempt + 1) * delayMs / 1000, (maxAttempts * delayMs) / 1000);
+            TuiEngine::PrintBounded(top + 2, left + 4, pollMsg, static_cast<size_t>(modalW - 8), "\x1b[1;36m");
+            std::cout.flush();
+        }
+
         constexpr int sliceMs = 50;
         const int slices = delayMs / sliceMs;
         for (int s = 0; s < slices; ++s) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(sliceMs));
-#if defined(_WIN32)
-            if (_kbhit()) {
-                int ch = _getch();
-                if (ch == 27) { // ESC key
-                    TuiEngine::FlushInputBuffer();
-                    result.cancelled = true;
-                    result.errorMessage = std::string(TR(MsgKey::ErrUserCancelledPoll));
-                    LOG_INFO("SteamAuth", "用户按下 ESC 取消认证轮询");
-                    return result;
-                }
+            auto keyOpt = TuiEngine::PollKey(sliceMs);
+            if (keyOpt && keyOpt->code == KeyCode::Escape) {
+                TuiEngine::FlushInputBuffer();
+                result.cancelled = true;
+                result.errorMessage = std::string(TR(MsgKey::ErrUserCancelledPoll));
+                LOG_INFO("SteamAuth", "用户按下 ESC 取消认证轮询");
+                return result;
             }
-#endif
         }
 
-        HttpResponse resp = m_http.Post(url, postData, "application/x-www-form-urlencoded");
-        if (!resp.IsSuccess()) {
-            continue;
-        }
-
-        auto refreshOpt = JsonHelper::GetString(resp.body, "refresh_token");
-        auto accessOpt = JsonHelper::GetString(resp.body, "access_token");
-
-        if (refreshOpt && !refreshOpt->empty() && accessOpt && !accessOpt->empty()) {
+        auto tokens = PollAuthSessionOnce(session, 2500);
+        if (tokens) {
             result.success = true;
-            result.refreshToken = *refreshOpt;
-            result.accessToken = *accessOpt;
+            result.refreshToken = tokens->first;
+            result.accessToken = tokens->second;
             LOG_DEBUG("SteamAuth", "授权状态轮询成功！获取到 Token (refresh={}, access={})",
                       MaskToken(result.refreshToken), MaskToken(result.accessToken));
             return result;
@@ -369,52 +571,44 @@ SteamLoginResult SteamAuthService::LoginWithCredentials(
         return failResult;
     }
 
+    bool hasDeviceCode = false;
+    bool hasDeviceConfirmation = false;
+    bool hasEmailCode = false;
+    std::string emailAddress;
+
     for (const auto& conf : session->allowedConfirmations) {
         LOG_INFO("SteamAuth", "检测到需要二次验证: type={}, message={}", conf.type,
                  conf.type == 2 ? MaskEmail(conf.associatedMessage) : conf.associatedMessage);
-        if (conf.type == 3) { // k_EAuthSessionGuardType_DeviceCode (Steam Mobile Authenticator TOTP)
-            TuiEngine::ClearScreen();
-            auto codeOpt = TuiEngine::PromptInputModal(TR(MsgKey::GuardMobileTitle), TR(MsgKey::GuardMobilePrompt));
-            if (!codeOpt) {
-                failResult.cancelled = true;
-                failResult.errorMessage = std::string(TR(MsgKey::ErrUserCancelledInput));
-                LOG_INFO("SteamAuth", "用户在 2FA 手机令牌界面按 ESC 取消登录");
-                return failResult;
+        if (conf.type == 3) {
+            hasDeviceCode = true;
+        } else if (conf.type == 4) {
+            hasDeviceConfirmation = true;
+        } else if (conf.type == 2) {
+            hasEmailCode = true;
+            if (!conf.associatedMessage.empty()) {
+                emailAddress = conf.associatedMessage;
             }
-            if (!codeOpt->empty()) {
-                SubmitSteamGuardCode(*session, *codeOpt, 3);
-            }
-            break;
-        } else if (conf.type == 2) { // k_EAuthSessionGuardType_EmailCode (Steam Guard Email Code)
-            TuiEngine::ClearScreen();
-            std::string prompt = conf.associatedMessage.empty()
-                ? std::string(TR(MsgKey::GuardEmailTitle))
-                : TR_FMT(MsgKey::GuardEmailPrompt, MaskEmail(conf.associatedMessage));
-            auto codeOpt = TuiEngine::PromptInputModal(TR(MsgKey::GuardEmailTitle), prompt);
-            if (!codeOpt) {
-                failResult.cancelled = true;
-                failResult.errorMessage = std::string(TR(MsgKey::ErrUserCancelledInput));
-                LOG_INFO("SteamAuth", "用户在邮箱验证码界面按 ESC 取消登录");
-                return failResult;
-            }
-            if (!codeOpt->empty()) {
-                SubmitSteamGuardCode(*session, *codeOpt, 2);
-            }
-            break;
-        } else if (conf.type == 4) { // k_EAuthSessionGuardType_DeviceConfirmation (Steam App 1-tap)
-            TuiEngine::ClearScreen();
-            bool proceed = TuiEngine::ShowMessageModal(TR(MsgKey::GuardDeviceTitle), TR(MsgKey::GuardDevicePrompt), TR(MsgKey::GuardDeviceDetail));
-            if (!proceed) {
-                failResult.cancelled = true;
-                failResult.errorMessage = std::string(TR(MsgKey::ErrUserCancelledDevice));
-                LOG_INFO("SteamAuth", "用户在手机确认提示界面按 ESC 取消登录");
-                return failResult;
-            }
-            break;
         }
     }
 
-    auto result = PollAuthSession(*session, accountName);
+    SteamLoginResult result;
+    if (hasDeviceCode || hasDeviceConfirmation || hasEmailCode) {
+        if (TuiEngine::IsActive()) {
+            result = RunDualTrack2FaLoop(*this, *session, accountName,
+                                         hasDeviceCode, hasDeviceConfirmation,
+                                         hasEmailCode, emailAddress);
+        } else {
+            if (hasDeviceCode || hasEmailCode) {
+                std::cout << "[2FA] " << (hasEmailCode ? TR(MsgKey::GuardEmailPrompt) : TR(MsgKey::GuardMobilePrompt)) << " ";
+                std::string code;
+                std::cin >> code;
+                SubmitSteamGuardCode(*session, code, hasDeviceCode ? 3 : 2);
+            }
+            result = PollAuthSession(*session, accountName);
+        }
+    } else {
+        result = PollAuthSession(*session, accountName);
+    }
     if (!result.success) {
         if (!result.cancelled) {
             LOG_WARN("SteamAuth", "{}", result.errorMessage);

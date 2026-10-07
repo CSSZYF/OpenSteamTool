@@ -58,11 +58,16 @@ public:
         std::string_view code,
         int codeType = 2);
 
-    // Step 4: Polls auth session status until completed or timed out
+    // Step 4: Polls auth session status a single time with specified short timeout
+    [[nodiscard]] std::optional<std::pair<std::string, std::string>> PollAuthSessionOnce(
+        const SteamAuthSession& session,
+        int timeoutMs = 2500);
+
+    // Polls auth session status until completed or timed out
     [[nodiscard]] SteamLoginResult PollAuthSession(
         const SteamAuthSession& session,
         std::string_view accountName,
-        int maxAttempts = 30,
+        int maxAttempts = 40,
         int delayMs = 1500);
 
     // Refreshes an access token using cached refresh_token
