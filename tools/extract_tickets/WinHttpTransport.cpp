@@ -1,5 +1,6 @@
 #include "WinHttpTransport.h"
 #include "Log.h"
+#include "Utils.h"
 
 #include <chrono>
 #include <iostream>
@@ -10,23 +11,6 @@
 namespace OST::ExtractTickets {
 
 namespace {
-    std::wstring Utf8ToWide(std::string_view utf8Str) {
-        if (utf8Str.empty()) return {};
-        int count = MultiByteToWideChar(CP_UTF8, 0, utf8Str.data(), static_cast<int>(utf8Str.size()), nullptr, 0);
-        if (count <= 0) return {};
-        std::wstring wide(count, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, utf8Str.data(), static_cast<int>(utf8Str.size()), wide.data(), count);
-        return wide;
-    }
-
-    std::string WideToUtf8(std::wstring_view wideStr) {
-        if (wideStr.empty()) return {};
-        int count = WideCharToMultiByte(CP_UTF8, 0, wideStr.data(), static_cast<int>(wideStr.size()), nullptr, 0, nullptr, nullptr);
-        if (count <= 0) return {};
-        std::string utf8(count, '\0');
-        WideCharToMultiByte(CP_UTF8, 0, wideStr.data(), static_cast<int>(wideStr.size()), utf8.data(), count, nullptr, nullptr);
-        return utf8;
-    }
 
     struct ParsedUrl {
         std::wstring host;

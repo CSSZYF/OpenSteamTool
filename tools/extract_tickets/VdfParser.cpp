@@ -15,7 +15,7 @@ std::vector<std::string> FindSteamLibraryFolders(const std::string& steamPath) {
         libraries.push_back(NormalizeDir(steamPath));
     }
 
-    const std::filesystem::path libraryVdfPath = std::filesystem::path(steamPath) / "steamapps" / "libraryfolders.vdf";
+    const std::filesystem::path libraryVdfPath = Utf8Path(steamPath) / "steamapps" / "libraryfolders.vdf";
     std::ifstream file(libraryVdfPath);
     if (!file) return libraries;
 
@@ -32,7 +32,7 @@ std::vector<std::string> FindSteamLibraryFolders(const std::string& steamPath) {
         }
         unescaped = NormalizeDir(unescaped);
         if (!unescaped.empty() && std::none_of(libraries.begin(), libraries.end(), [&](const auto& existing) {
-            return _stricmp(existing.c_str(), unescaped.c_str()) == 0;
+            return EqualIgnoreCase(existing, unescaped);
         })) {
             libraries.push_back(std::move(unescaped));
         }
@@ -47,7 +47,7 @@ std::vector<std::string> FindSteamLibraryFolders(const std::string& steamPath) {
         auto tokens = TokenizeQuoted(line);
 
         if (tokens.size() >= 2) {
-            if (_stricmp(tokens[0].c_str(), "path") == 0) {
+            if (EqualIgnoreCase(tokens[0], "path")) {
                 addLibrary(tokens[1]);
             } else if (IsDecimal(tokens[0])) {
                 if (tokens[1].find(':') != std::string::npos ||
@@ -66,7 +66,7 @@ bool IsAppInstalledLocally(const std::string& steamPath, uint32_t appId) {
     const std::string manifestName = "appmanifest_" + std::to_string(appId) + ".acf";
     const auto libraries = FindSteamLibraryFolders(steamPath);
     for (const auto& lib : libraries) {
-        const std::filesystem::path manifestPath = std::filesystem::path(lib) / "steamapps" / manifestName;
+        const std::filesystem::path manifestPath = Utf8Path(lib) / "steamapps" / manifestName;
         std::error_code ec;
         if (std::filesystem::is_regular_file(manifestPath, ec)) {
             return true;
@@ -79,7 +79,7 @@ std::vector<std::string> GetDepotcacheDirs(const std::string& steamPath, const s
     std::vector<std::string> dirs;
     auto addDir = [&](std::string d) {
         if (!d.empty() && std::none_of(dirs.begin(), dirs.end(), [&](const auto& existing) {
-            return _stricmp(existing.c_str(), d.c_str()) == 0;
+            return EqualIgnoreCase(existing, d);
         })) {
             dirs.push_back(std::move(d));
         }
@@ -105,7 +105,7 @@ std::string FindDepotManifestFile(const std::vector<std::string>& depotcacheDirs
         for (const auto& dc : depotcacheDirs) {
             std::string fullPath = JoinPath(dc, expectedName);
             std::error_code ec;
-            if (std::filesystem::is_regular_file(std::filesystem::path(fullPath), ec)) {
+            if (std::filesystem::is_regular_file(Utf8Path(fullPath), ec)) {
                 return fullPath;
             }
         }
@@ -117,7 +117,7 @@ std::string FindDepotManifestFile(const std::vector<std::string>& depotcacheDirs
 
     for (const auto& dc : depotcacheDirs) {
         std::error_code dirEc;
-        std::filesystem::path dirP(dc);
+        std::filesystem::path dirP = Utf8Path(dc);
         if (!std::filesystem::exists(dirP, dirEc) || !std::filesystem::is_directory(dirP, dirEc)) {
             continue;
         }
@@ -156,7 +156,7 @@ void ParseAcfDepots(const std::string& acfPath,
                     std::unordered_map<uint32_t, std::string>& outDepots,
                     std::unordered_set<uint32_t>& outDlcIds,
                     std::unordered_map<uint32_t, uint32_t>& outDepotToDlc) {
-    std::ifstream file{std::filesystem::path(acfPath)};
+    std::ifstream file{Utf8Path(acfPath)};
     if (!file) return;
 
     std::string line;
@@ -178,11 +178,11 @@ void ParseAcfDepots(const std::string& acfPath,
 
         if (!inInstalledDepots && !inMountedDepots) {
             for (const auto& tok : tokens) {
-                if (_stricmp(tok.c_str(), "InstalledDepots") == 0) {
+                if (EqualIgnoreCase(tok, "InstalledDepots")) {
                     pendingInstalledDepots = true;
                     break;
                 }
-                if (_stricmp(tok.c_str(), "MountedDepots") == 0) {
+                if (EqualIgnoreCase(tok, "MountedDepots")) {
                     pendingMountedDepots = true;
                     break;
                 }
@@ -230,9 +230,9 @@ void ParseAcfDepots(const std::string& acfPath,
                     outDepotToDlc.try_emplace(currentDepotId, 0);
                 }
             } else if (tokens.size() >= 2 && currentDepotId != 0) {
-                if (_stricmp(tokens[0].c_str(), "manifest") == 0) {
+                if (EqualIgnoreCase(tokens[0], "manifest")) {
                     outDepots[currentDepotId] = tokens[1];
-                } else if (_stricmp(tokens[0].c_str(), "dlcappid") == 0) {
+                } else if (EqualIgnoreCase(tokens[0], "dlcappid")) {
                     if (auto dlc = ParseAppId(tokens[1])) {
                         outDlcIds.insert(*dlc);
                         outDepotToDlc[currentDepotId] = *dlc;
@@ -255,7 +255,7 @@ void ParseAcfDepots(const std::string& acfPath,
 
 std::unordered_map<uint32_t, std::string> ParseConfigVdfDepotKeys(const std::string& steamPath) {
     std::unordered_map<uint32_t, std::string> depotKeys;
-    const std::filesystem::path configPath = std::filesystem::path(steamPath) / "config" / "config.vdf";
+    const std::filesystem::path configPath = Utf8Path(steamPath) / "config" / "config.vdf";
     std::ifstream file(configPath);
     if (!file) return depotKeys;
 
@@ -275,7 +275,7 @@ std::unordered_map<uint32_t, std::string> ParseConfigVdfDepotKeys(const std::str
 
         if (!inDepots) {
             for (const auto& tok : tokens) {
-                if (_stricmp(tok.c_str(), "depots") == 0) {
+                if (EqualIgnoreCase(tok, "depots")) {
                     pendingDepots = true;
                     break;
                 }
@@ -314,7 +314,7 @@ std::unordered_map<uint32_t, std::string> ParseConfigVdfDepotKeys(const std::str
                 currentDepotId = *parsed;
             }
         } else if (tokens.size() >= 2) {
-            if (_stricmp(tokens[0].c_str(), "DecryptionKey") == 0 && IsHex64(tokens[1]) && currentDepotId != 0) {
+            if (EqualIgnoreCase(tokens[0], "DecryptionKey") && IsHex64(tokens[1]) && currentDepotId != 0) {
                 depotKeys[currentDepotId] = tokens[1];
             }
         }

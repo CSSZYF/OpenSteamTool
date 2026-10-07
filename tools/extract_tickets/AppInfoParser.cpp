@@ -15,12 +15,6 @@ namespace OST::ExtractTickets {
 
 namespace {
 
-[[nodiscard]] inline bool EqualIgnoreCase(std::string_view a, std::string_view b) noexcept {
-    return std::ranges::equal(a, b, [](char c1, char c2) {
-        return std::tolower(static_cast<unsigned char>(c1)) == std::tolower(static_cast<unsigned char>(c2));
-    });
-}
-
 void ParseStringTableV41(const uint8_t* data, size_t totalBytes, uint64_t stringTableOffset, std::vector<std::string_view>& outTable) {
     if (stringTableOffset < 16 || stringTableOffset + 4 > totalBytes) return;
 
@@ -59,7 +53,7 @@ struct AppInfoFileContext {
 
     static std::optional<AppInfoFileContext> Open(const std::string& steamPath) {
         if (steamPath.empty()) return std::nullopt;
-        const auto appinfoPath = std::filesystem::path(steamPath) / "appcache" / "appinfo.vdf";
+        const auto appinfoPath = Utf8Path(steamPath) / "appcache" / "appinfo.vdf";
         ScopedHandle hFile{CreateFileW(
             appinfoPath.c_str(),
             GENERIC_READ,
