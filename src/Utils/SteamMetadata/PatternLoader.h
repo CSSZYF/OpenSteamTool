@@ -12,6 +12,10 @@ namespace PatternLoader {
     // Resolve by RVA first, then fall back to signature scanning.
     void* FindPattern(OSTPlatform::DynamicLibrary::ModuleHandle module, const char* funcName);
 
+    // If a cached TOML lacked a requested function entry, refresh that module's
+    // exact-SHA cache after initialization. Parsed metadata is not hot-reloaded.
+    void RefreshMissingMetadata();
+
     // Report unresolved functions after all hooks have been installed.
     void ReportMissingFunctions();
 

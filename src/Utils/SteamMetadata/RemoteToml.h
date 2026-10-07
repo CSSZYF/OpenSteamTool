@@ -3,6 +3,11 @@
 
 namespace RemoteToml {
 
+    enum class FetchMode {
+        PreferCache,
+        RemoteOnly,
+    };
+
     struct Request {
         std::string channel;    // "pattern" or "ipc"
         std::string component;  // "steamclient" or "steamui"
@@ -16,15 +21,8 @@ namespace RemoteToml {
         std::string sha256;
     };
 
-    // Load the exact local cache entry first. Only hit the network synchronously
-    // when no usable cache exists, keeping metadata lookup off SteamUI's critical
-    // startup path once a matching SHA has been cached.
-    Result Fetch(const Request& request);
-
-    // Best-effort conditional refresh for cache entries that were served by Fetch()
-    // during this startup. Call only after critical initialization is complete;
-    // ETag validators avoid unchanged response bodies, while updated metadata is
-    // written atomically for the next launch and is not hot-reloaded.
-    void RefreshQueuedCaches();
+    // Prefer the exact local cache during normal startup. RemoteOnly bypasses
+    // that cache and is reserved for an explicit lazy refresh.
+    Result Fetch(const Request& request, FetchMode mode = FetchMode::PreferCache);
 
 } // namespace RemoteToml
