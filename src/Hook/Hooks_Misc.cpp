@@ -1,6 +1,7 @@
 #include "Hooks_Misc.h"
 #include "HookMacros.h"
 #include "Utils/HookSupport/VehCommon.h"
+#include "Utils/OfflineLaunch/SteamPlayRedirect.h"
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
 #include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
 #include "Utils/Config/LuaConfig.h"
@@ -81,6 +82,8 @@ namespace {
         } else {
             Hooks_Misc::ResetOnlineFixState();
         }
+
+        SteamPlayRedirect::TryRedirect(ctx, appId, pExePath, cmdLine);
     }
 
     // ── SteamController_OptedInMask ──────────────────────────────────────────

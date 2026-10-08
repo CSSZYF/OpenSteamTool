@@ -24,6 +24,20 @@ jobs:
       - name: Build Debug (OpenSteamTool.dll / dwmapi.dll / xinput1_4.dll)
         run: cmake --build build --config Debug
 
+      - name: Build native Play helper and run tests
+        shell: pwsh
+        run: |
+          ./tools/DaveLauncher/build.ps1 -Test -OutputDirectory build/Debug/dave-launcher
+          Copy-Item tools/DaveLauncher/README.zh.md build/Debug/dave-launcher/
+
+      - name: Test original Play argument redirection
+        shell: pwsh
+        run: |
+          cl /nologo /std:c++20 /EHsc /utf-8 /MT /DNOMINMAX /DOST_STEAMPLAY_REDIRECT_TEST /Isrc /Isrc/OSTPlatform /Ibuild/generated src/Utils/OfflineLaunch/SteamPlayRedirectTests.cpp src/OSTPlatform/Encoding.cpp /Fe:build/SteamPlayRedirectTests.exe shell32.lib crypt32.lib
+          if ($LASTEXITCODE -ne 0) { throw 'Native redirect test build failed' }
+          ./build/SteamPlayRedirectTests.exe "$PWD/build"
+          if ($LASTEXITCODE -ne 0) { throw 'Native redirect tests failed' }
+
       - name: Check DLL loads and unloads in a non-Steam host
         shell: pwsh
         run: |

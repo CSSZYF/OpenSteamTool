@@ -27,12 +27,14 @@ namespace DaveLauncher
         private bool startRequested;
         private bool completed;
         private readonly bool probe;
+        private readonly SteamPlayRequest steamPlay;
 
-        public WindowsLaunchHost(string directory, LauncherConfig config, bool probe = false)
+        public WindowsLaunchHost(string directory, LauncherConfig config, bool probe = false, SteamPlayRequest steamPlay = null)
         {
             baseDir = directory;
             this.config = config;
             this.probe = probe;
+            this.steamPlay = steamPlay;
             sessionDir = Path.Combine(directory, "sessions", DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 8));
             Directory.CreateDirectory(sessionDir);
             gameLog = Path.Combine(sessionDir, "Dave.Player.log");
@@ -76,11 +78,13 @@ namespace DaveLauncher
                 if (File.Exists(candidate)) { gameExe = candidate; break; }
             }
             if (gameExe == null) throw new InvalidOperationException("未找到潜水员戴夫（1868140）的已安装主程序。");
+            if (steamPlay != null) steamPlay.ValidateInstalledExecutable(gameExe);
         }
 
         public async Task PrepareAsync(CancellationToken token)
         {
             ResolvePaths();
+            ValidateSteamPlayClient();
             CheckNoGames();
             Process[] clients = Process.GetProcessesByName("steam");
             try {
@@ -89,6 +93,7 @@ namespace DaveLauncher
                         throw new InvalidOperationException("正在运行的 Steam 路径与注册安装位置不一致。");
                 }
                 if (clients.Length == 0) {
+                    if (steamPlay != null) throw new InvalidOperationException("发起开始游戏请求的 Steam 已退出，未重新启动客户端。");
                     Report("启动 Steam，等待登录缓存和客户端初始化。");
                     using (Process started = Process.Start(new ProcessStartInfo(steamExe, "-silent") {
                         UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(steamExe)
@@ -104,6 +109,7 @@ namespace DaveLauncher
                 catch (OperationCanceledException) { throw; }
                 catch (Exception) { }
                 if (state != null && state.ServicesReady) {
+                    ValidateSteamPlayClient();
                     CheckNoGames();
                     Report("Steam 原生控制就绪。");
                     return;
@@ -113,7 +119,20 @@ namespace DaveLauncher
             throw new InvalidOperationException("Steam 原生接口未就绪。若登录缓存过期，请先登录；没有启动游戏或改写登录配置。");
         }
 
-        private static void CheckNoGames()
+        private void ValidateSteamPlayClient()
+        {
+            if (steamPlay == null) return;
+            try {
+                using (Process client = Process.GetProcessById(steamPlay.SteamProcessId)) {
+                    if (client.HasExited || !String.Equals(client.MainModule.FileName, steamExe, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("发起开始游戏请求的 Steam 进程无效，已停止启动流程。");
+                }
+            }
+            catch (ArgumentException) { throw new InvalidOperationException("发起开始游戏请求的 Steam 已退出，已停止启动流程。"); }
+            catch (System.ComponentModel.Win32Exception) { throw new InvalidOperationException("无法验证发起开始游戏请求的 Steam 进程，已停止启动流程。"); }
+        }
+
+        private void CheckNoGames()
         {
             Process[] games = Process.GetProcessesByName("DaveTheDiver");
             try { if (games.Length != 0) throw new InvalidOperationException("戴夫已经在运行，请先退出游戏。"); }
@@ -121,6 +140,10 @@ namespace DaveLauncher
             using (RegistryKey apps = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam\Apps")) {
                 if (apps == null) return;
                 foreach (string name in apps.GetSubKeyNames()) using (RegistryKey app = apps.OpenSubKey(name)) {
+                    // Steam records the replacement launcher as this app before
+                    // it actually creates DaveTheDiver.exe. Real game processes
+                    // are still rejected above; other apps are never exempted.
+                    if (steamPlay != null && name == "1868140") continue;
                     if (app != null && Convert.ToInt32(app.GetValue("Running", 0)) != 0)
                         throw new InvalidOperationException("Steam 中仍有应用运行（" + name + "），已停止切换离线。");
                 }
@@ -130,6 +153,7 @@ namespace DaveLauncher
         public Task<SteamState> ReadSteamAsync(CancellationToken token) { return control.ReadStateAsync(token); }
         public async Task GoOfflineAsync(CancellationToken token)
         {
+            ValidateSteamPlayClient();
             CheckNoGames();
             Report("请求 Steam 原生离线模式。");
             await control.GoOfflineAsync(token).ConfigureAwait(false);
@@ -161,11 +185,27 @@ namespace DaveLauncher
 
         public async Task StartGameAsync(CancellationToken token)
         {
+            ValidateSteamPlayClient();
             CheckNoGames();
             SteamState state = await ReadSteamAsync(token).ConfigureAwait(false);
             if (!state.Offline || state.Connected) throw new InvalidOperationException("Steam 离线状态已改变，已停止启动。");
             if (File.Exists(gameLog)) throw new InvalidOperationException("本次专用游戏日志路径被占用。");
             launchTime = DateTime.UtcNow;
+            if (steamPlay != null) {
+                startRequested = true;
+                try {
+                    game = Process.Start(new ProcessStartInfo(gameExe, steamPlay.BuildArguments(gameLog)) {
+                        UseShellExecute = false, WorkingDirectory = steamPlay.WorkingDirectory
+                    });
+                    if (game == null) throw new InvalidOperationException("Steam 游戏启动请求未生成可跟踪进程。");
+                }
+                catch {
+                    if (game == null) startRequested = false;
+                    throw;
+                }
+                Report("已从 Steam 开始游戏请求启动戴夫，保留原始环境及其他启动参数；PID=" + game.Id + "。");
+                return;
+            }
             string command = "-applaunch 1868140 -logFile \"" + gameLog + "\"";
             startRequested = true; // Keep offline while Steam may still create the process.
             using (Process request = Process.Start(new ProcessStartInfo(steamExe, command) {
@@ -196,6 +236,14 @@ namespace DaveLauncher
         {
             if (game != null) return !game.HasExited;
             return startRequested;
+        }
+
+        public async Task WaitForGameExitAsync()
+        {
+            if (game == null) return;
+            while (!game.HasExited) await Task.Delay(1000).ConfigureAwait(false);
+            try { Report("戴夫进程已退出，结束 Steam 开始游戏会话。"); }
+            catch (Exception) { /* Process lifetime does not depend on log writes. */ }
         }
 
         public async Task WaitForGameReadyAsync(CancellationToken token)

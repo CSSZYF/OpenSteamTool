@@ -23,6 +23,10 @@ namespace OSTPlatform::Trap {
         // prologue moves it). Returns 0 on a bad index or unreadable stack slot.
         uint64_t Argument(int index) const;
 
+        // Write only the four x64 register arguments. Stack arguments and
+        // control-flow registers are deliberately not exposed.
+        bool SetRegisterArgument(int index, uint64_t value);
+
         void EnableSingleStep();
 
     private:

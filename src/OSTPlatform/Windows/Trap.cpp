@@ -114,6 +114,18 @@ uint64_t Context::Argument(int index) const {
     }
 }
 
+bool Context::SetRegisterArgument(int index, uint64_t value) {
+    PCONTEXT context = AsWindowsContext(nativeContext_);
+    if (!context) return false;
+    switch (index) {
+    case 1: context->Rcx = value; return true;
+    case 2: context->Rdx = value; return true;
+    case 3: context->R8 = value; return true;
+    case 4: context->R9 = value; return true;
+    default: return false;
+    }
+}
+
 void Context::EnableSingleStep() {
     PCONTEXT context = AsWindowsContext(nativeContext_);
     if (!context) {

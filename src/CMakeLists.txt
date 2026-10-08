@@ -123,6 +123,7 @@ add_library(OpenSteamTool SHARED
     Utils/Config/LuaFileWatcher.cpp
     Utils/CloudRedirect/CloudRedirectHost.cpp
     Utils/HookSupport/VehCommon.cpp
+    Utils/OfflineLaunch/SteamPlayRedirect.cpp
     Utils/Logging/Log.cpp
     Utils/SteamMetadata/IPCLoader.cpp
     Utils/SteamMetadata/ManifestClient.cpp
