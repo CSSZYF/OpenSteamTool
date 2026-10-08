@@ -1453,15 +1453,6 @@ namespace {
         // ExitSyncDone/ConflictResolution are notifications that must reach
         // Steam's internal cloud state machine untouched.
         const std::string_view jobView(targetJobName ? targetJobName : "");
-
-        // Experimental DLC-starve: during a Lua game's launch window, drop the family-group
-        // request so the client can't refresh the borrowed-DLC entitlement from the server.
-        if (Hooks_Misc::IsDlcStarveWindow() && jobView.starts_with("FamilyGroups.")) {
-            g_SuppressSend = true;
-            LOG_NETPACKET_INFO("DLCSTARVE: dropped outbound {} in launch window", targetJobName);
-            return false;
-        }
-
         if (jobView.starts_with("Cloud.")) {
             if (jobView == "Cloud.SignalAppExitSyncDone#1") {
                 Hooks_Misc::ResetOnlineFixState();
@@ -1492,15 +1483,6 @@ namespace {
     {
         g_NeedReplaceSend = false;
         g_SuppressSend    = false;
-
-        // Experimental DLC-starve: during a Lua game's launch window, drop the outbound
-        // server ownership-ticket request so the client falls back to LOCAL (package 0)
-        // ownership — makes injected DLC on a family-shared base resolve while online.
-        if (Hooks_Misc::IsDlcStarveWindow() && eMsg == k_EMsgClientGetAppOwnershipTicket) {
-            g_SuppressSend = true;
-            LOG_NETPACKET_INFO("DLCSTARVE: dropped outbound GetAppOwnershipTicket(857) in launch window");
-            return;
-        }
 
         if (pHdr && cbHdr > 0 && Hooks_NetPacket_RichPresence::g_LocalSteamId.load(std::memory_order_relaxed) == 0) {
             CMsgProtoBufHeader hdr;
