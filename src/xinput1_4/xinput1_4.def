@@ -1,3 +1,5 @@
+; xinput1_4.dll Module Definition File
+; Maps standard exports and undocumented ordinals for Steam Big Picture / Controller support
 LIBRARY "xinput1_4"
 EXPORTS
     XInputEnable @5

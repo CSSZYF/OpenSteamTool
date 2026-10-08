@@ -1,14 +1,12 @@
-// xinput1_4.dll HiJack Project - True Dynamic Wrapper (With Undocumented Ordinals)
+// xinput1_4.dll HiJack Project - Dynamic System Wrapper using ProxyBootstrap
 #include <windows.h>
-#include <cstdio>
-#include <cstring>
 #include <mutex>
+#include "../Common/ProxyBootstrap.hpp"
 
 // ─── 1. Real XInput Function Pointers ───────────────────────────
 static HMODULE g_hRealXInput = nullptr;
 static std::once_flag g_xinputInitOnce;
 
-// Standard
 using XInputGetState_t = DWORD(WINAPI*)(DWORD, void*);
 using XInputSetState_t = DWORD(WINAPI*)(DWORD, void*);
 using XInputGetCapabilities_t = DWORD(WINAPI*)(DWORD, DWORD, void*);
@@ -26,47 +24,38 @@ static XInputGetBatteryInformation_t o_XInputGetBatteryInformation = nullptr;
 static XInputGetKeystroke_t o_XInputGetKeystroke = nullptr;
 
 // Undocumented Ordinals (Required for Steam Big Picture / Guide Button)
-static FARPROC o_100 = nullptr; // XInputGetStateEx
-static FARPROC o_101 = nullptr; // XInputWaitForGuideButton
-static FARPROC o_102 = nullptr; // XInputCancelGuideButtonWait
-static FARPROC o_103 = nullptr; // XInputPowerOffController
-static FARPROC o_104 = nullptr; // XInputGetBaseBusInformation
-static FARPROC o_108 = nullptr; // XInputGetAudioDeviceIdsEx
+static FARPROC o_100 = nullptr;
+static FARPROC o_101 = nullptr;
+static FARPROC o_102 = nullptr;
+static FARPROC o_103 = nullptr;
+static FARPROC o_104 = nullptr;
+static FARPROC o_108 = nullptr;
 
-// ─── 2. Core Initialization (Binding to the real System32 file) ───
+// ─── 2. Core Initialization (Binding to real System32 DLL via SystemDllLoader) ───
 void LoadRealXInput() noexcept {
     std::call_once(g_xinputInitOnce, []() noexcept {
-        char sysDir[MAX_PATH] = {};
-        if (GetSystemDirectoryA(sysDir, MAX_PATH) > 0) {
-            char realPath[MAX_PATH] = {};
-            snprintf(realPath, sizeof(realPath), "%s\\xinput1_4.dll", sysDir);
+        g_hRealXInput = OST::Proxy::SystemDllLoader::Load(L"xinput1_4.dll");
+        if (g_hRealXInput) {
+            o_XInputGetState = reinterpret_cast<XInputGetState_t>(GetProcAddress(g_hRealXInput, "XInputGetState"));
+            o_XInputSetState = reinterpret_cast<XInputSetState_t>(GetProcAddress(g_hRealXInput, "XInputSetState"));
+            o_XInputGetCapabilities = reinterpret_cast<XInputGetCapabilities_t>(GetProcAddress(g_hRealXInput, "XInputGetCapabilities"));
+            o_XInputEnable = reinterpret_cast<XInputEnable_t>(GetProcAddress(g_hRealXInput, "XInputEnable"));
+            o_XInputGetAudioDeviceIds = reinterpret_cast<XInputGetAudioDeviceIds_t>(GetProcAddress(g_hRealXInput, "XInputGetAudioDeviceIds"));
+            o_XInputGetBatteryInformation = reinterpret_cast<XInputGetBatteryInformation_t>(GetProcAddress(g_hRealXInput, "XInputGetBatteryInformation"));
+            o_XInputGetKeystroke = reinterpret_cast<XInputGetKeystroke_t>(GetProcAddress(g_hRealXInput, "XInputGetKeystroke"));
 
-            g_hRealXInput = LoadLibraryA(realPath);
-            if (g_hRealXInput) {
-                // Load Standard API
-                o_XInputGetState = reinterpret_cast<XInputGetState_t>(GetProcAddress(g_hRealXInput, "XInputGetState"));
-                o_XInputSetState = reinterpret_cast<XInputSetState_t>(GetProcAddress(g_hRealXInput, "XInputSetState"));
-                o_XInputGetCapabilities = reinterpret_cast<XInputGetCapabilities_t>(GetProcAddress(g_hRealXInput, "XInputGetCapabilities"));
-                o_XInputEnable = reinterpret_cast<XInputEnable_t>(GetProcAddress(g_hRealXInput, "XInputEnable"));
-                o_XInputGetAudioDeviceIds = reinterpret_cast<XInputGetAudioDeviceIds_t>(GetProcAddress(g_hRealXInput, "XInputGetAudioDeviceIds"));
-                o_XInputGetBatteryInformation = reinterpret_cast<XInputGetBatteryInformation_t>(GetProcAddress(g_hRealXInput, "XInputGetBatteryInformation"));
-                o_XInputGetKeystroke = reinterpret_cast<XInputGetKeystroke_t>(GetProcAddress(g_hRealXInput, "XInputGetKeystroke"));
-
-                // Load Undocumented Ordinals
-                o_100 = GetProcAddress(g_hRealXInput, reinterpret_cast<LPCSTR>(100));
-                o_101 = GetProcAddress(g_hRealXInput, reinterpret_cast<LPCSTR>(101));
-                o_102 = GetProcAddress(g_hRealXInput, reinterpret_cast<LPCSTR>(102));
-                o_103 = GetProcAddress(g_hRealXInput, reinterpret_cast<LPCSTR>(103));
-                o_104 = GetProcAddress(g_hRealXInput, reinterpret_cast<LPCSTR>(104));
-                o_108 = GetProcAddress(g_hRealXInput, reinterpret_cast<LPCSTR>(108));
-            }
+            o_100 = GetProcAddress(g_hRealXInput, reinterpret_cast<LPCSTR>(100));
+            o_101 = GetProcAddress(g_hRealXInput, reinterpret_cast<LPCSTR>(101));
+            o_102 = GetProcAddress(g_hRealXInput, reinterpret_cast<LPCSTR>(102));
+            o_103 = GetProcAddress(g_hRealXInput, reinterpret_cast<LPCSTR>(103));
+            o_104 = GetProcAddress(g_hRealXInput, reinterpret_cast<LPCSTR>(104));
+            o_108 = GetProcAddress(g_hRealXInput, reinterpret_cast<LPCSTR>(108));
         }
     });
 }
 
-// ─── 3. Native Exports (Safely passing data to the game) ──────────
+// ─── 3. Native Exports (Safely passing calls to the system DLL) ──
 extern "C" {
-    // Standard Functions
     DWORD WINAPI XInputGetState(DWORD dwUserIndex, void* pState) {
         if (!g_hRealXInput) LoadRealXInput();
         return o_XInputGetState ? o_XInputGetState(dwUserIndex, pState) : ERROR_DEVICE_NOT_CONNECTED;
@@ -96,7 +85,7 @@ extern "C" {
         return o_XInputGetKeystroke ? o_XInputGetKeystroke(dwUserIndex, dwReserved, pKeystroke) : ERROR_DEVICE_NOT_CONNECTED;
     }
 
-    // Undocumented Ordinal Wrappers
+    // Undocumented Ordinals
     DWORD WINAPI XInputOrdinal100(DWORD a1, void* a2) {
         if (!g_hRealXInput) LoadRealXInput();
         return o_100 ? ((DWORD(WINAPI*)(DWORD, void*))o_100)(a1, a2) : ERROR_DEVICE_NOT_CONNECTED;
@@ -123,24 +112,11 @@ extern "C" {
     }
 }
 
-// ─── 4. OpenSteamTool Injection ───────────────────────────────────
-BOOL OpenSteamToolLoad() {
-    char exePath[MAX_PATH];
-    if (GetModuleFileNameA(NULL, exePath, MAX_PATH)) {
-        const char* exeName = strrchr(exePath, '\\');
-        exeName = exeName ? exeName + 1 : exePath;
-        if (_stricmp(exeName, "steam.exe") != 0) return TRUE;
-    }
-    return LoadLibraryA("OpenSteamTool.dll") != NULL;
-}
-
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, PVOID pvReserved) {
-    switch (dwReason) {
-    case DLL_PROCESS_ATTACH:
-        DisableThreadLibraryCalls(hModule);
+// ─── 4. DllMain with Unified ProxyBootstrap ───────────────────────
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, PVOID /*pvReserved*/) {
+    if (dwReason == DLL_PROCESS_ATTACH) {
         LoadRealXInput();
-        if (!OpenSteamToolLoad()) return FALSE;
-        break;
+        return OST::Proxy::Bootstrap::OnAttach(hModule);
     }
     return TRUE;
 }
