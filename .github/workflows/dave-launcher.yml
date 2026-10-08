@@ -1,0 +1,30 @@
+name: Dave native offline launcher
+on:
+  workflow_dispatch:
+  push:
+    branches: [diag-dlc-offline]
+    paths:
+      - 'tools/DaveLauncher/**'
+      - '.github/workflows/dave-launcher.yml'
+permissions:
+  contents: read
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test standalone launcher
+        shell: pwsh
+        run: ./tools/DaveLauncher/build.ps1 -Test
+      - name: Package only distributable files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path package | Out-Null
+          Copy-Item build-dave-launcher/DaveLauncher.exe, build-dave-launcher/DaveLauncher.json, tools/DaveLauncher/README.zh.md package/
+          Get-ChildItem package -File | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLowerInvariant())  $([IO.Path]::GetFileName($_.Path))" } | Set-Content package/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DaveLauncher-${{ github.sha }}
+          path: package/
+          retention-days: 30
+          if-no-files-found: error

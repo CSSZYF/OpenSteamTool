@@ -1,0 +1,5 @@
+{
+  "ExpectedDlcs": [2677020, 2841140, 3543180, 4158580, 4394810],
+  "ReadyTimeoutSeconds": 180,
+  "TitleSettleSeconds": 10
+}
