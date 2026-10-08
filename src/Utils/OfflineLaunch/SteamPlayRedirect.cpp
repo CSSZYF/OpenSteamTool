@@ -60,6 +60,12 @@ bool HasOfflineArgument(const std::wstring& commandLine) {
     bool found = false;
     // CUser_SpawnProcess receives a complete command line including argv[0].
     for (int index = 1; index < count; ++index) {
+        // Unity consumes the next token as a log path even when it looks like
+        // a switch. Match the helper's parser before deciding to intercept.
+        if (_wcsicmp(arguments[index], L"-logFile") == 0) {
+            if (index + 1 < count) ++index;
+            continue;
+        }
         if (_wcsicmp(arguments[index], L"-offline") == 0) {
             found = true;
             break;
@@ -140,7 +146,6 @@ void TryRedirect(OSTPlatform::Trap::Context& context, AppId_t appId,
         }
         recognized = true;
         // Simultaneous app-id remapping is not a supported offline workflow.
-        // The helper checks its inherited Steam environment independently too.
         if (context.Argument(5) == 0) {
             BlockRecognized(context, "missing game identity");
             return;

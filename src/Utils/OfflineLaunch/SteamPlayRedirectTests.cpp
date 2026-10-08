@@ -49,7 +49,7 @@ struct Launch {
     std::string executable = "D:\\Games\\DaveTheDiver.exe";
     std::string command = "\"D:\\Games\\DaveTheDiver.exe\" -offline";
     std::string workingDirectory = "D:\\Games";
-    CGameID gameId;
+    CGameID gameId{};
     std::array<uint64_t, 6> registers{};
     OSTPlatform::Trap::Context context{&registers};
     Launch() { gameId.SetAppID(1868140); Reset(); }
@@ -79,6 +79,9 @@ void TestPureHelpers() {
     Check(!HasOfflineArgument(L"DaveTheDiver.exe -offline=no"), "equals-suffix is not a flag");
     Check(!HasOfflineArgument(L"DaveTheDiver.exe \"notes -offline\""), "quoted argument substring is not a flag");
     Check(!HasOfflineArgument(L"DaveTheDiver.exe -offline-extra"), "hyphen-suffix is not a flag");
+    Check(!HasOfflineArgument(L"DaveTheDiver.exe -logFile -offline"), "log path token is not an offline switch");
+    Check(!HasOfflineArgument(L"DaveTheDiver.exe -logFile=-offline"), "equals log path is not an offline switch");
+    Check(HasOfflineArgument(L"DaveTheDiver.exe -logFile -offline -offline"), "real offline switch following log path recognized");
     Check(HasOfflineArgument(L"DaveTheDiver.exe -offline"), "exact flag recognized");
     Check(HasOfflineArgument(L"DaveTheDiver.exe \"-OFFLINE\""), "quoted case-insensitive flag recognized");
     Check(HasOfflineArgument(L"DaveTheDiver.exe\t-offline\t-windowed"), "tab separated flag recognized");
@@ -111,6 +114,9 @@ void TestRedirects(const std::filesystem::path& fixture) {
     normal.command = "\"D:\\Games\\DaveTheDiver.exe\" -offline=no";
     normal.Redirect();
     Check(normal.Unchanged(), "similar flag stays untouched");
+    normal.command = "\"D:\\Games\\DaveTheDiver.exe\" -logFile -offline";
+    normal.Redirect();
+    Check(normal.Unchanged(), "log file named offline cannot intercept original Play");
     normal.command = "\"D:\\Games\\DaveTheDiver.exe\" -offline";
     normal.Redirect(42);
     Check(normal.Unchanged(), "unrelated app stays untouched");
@@ -152,6 +158,11 @@ void TestRedirects(const std::filesystem::path& fixture) {
     remapped.gameId.SetAppID(480);
     remapped.Redirect();
     Check(remapped.Blocked(), "conflicting app identity cannot launch game online");
+
+    Launch nonApp;
+    nonApp.gameId.m_gameID.m_nType = CGameID::k_EGameIDTypeShortcut;
+    nonApp.Redirect();
+    Check(nonApp.Blocked(), "non-app game identity cannot launch game online");
 
     std::filesystem::remove(helper);
     Launch missing;
