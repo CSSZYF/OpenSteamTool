@@ -1536,10 +1536,18 @@ namespace {
         case k_EMsgClientStoreUserStats:              // 820
         case k_EMsgClientStoreUserStats2: {          // 5466
             AppId_t appId = 0;
-            if (pBody && cbBody >= 9 && pBody[0] == 0x09) {
-                uint64 gameId = 0;
-                std::memcpy(&gameId, pBody + 1, sizeof(gameId));
-                appId = static_cast<AppId_t>(gameId & 0xFFFFFFFF);
+            if (pBody && cbBody > 0) {
+                if (eMsg == k_EMsgClientStoreUserStats) {
+                    CMsgClientStoreUserStats msg;
+                    if (msg.ParseFromArray(pBody, static_cast<int>(cbBody)) && msg.has_game_id()) {
+                        appId = static_cast<AppId_t>(msg.game_id() & 0xFFFFFFFF);
+                    }
+                } else {
+                    CMsgClientStoreUserStats2 msg2;
+                    if (msg2.ParseFromArray(pBody, static_cast<int>(cbBody)) && msg2.has_game_id()) {
+                        appId = static_cast<AppId_t>(msg2.game_id() & 0xFFFFFFFF);
+                    }
+                }
             }
             if (appId == 0) {
                 appId = Hooks_NetPacket_RichPresence::g_PlayingAppId.load(std::memory_order_relaxed);
