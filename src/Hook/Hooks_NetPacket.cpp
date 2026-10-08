@@ -21,6 +21,10 @@
 
 #include "steam_messages.pb.h"
 
+namespace Hooks_Package {
+    void RefreshInjectedLicense();
+}
+
 // ════════════════════════════════════════════════════════════════
 //  Shared infrastructure
 // ════════════════════════════════════════════════════════════════
@@ -1639,6 +1643,7 @@ namespace {
         // this message never arrives, which is why the manual offline trick works.
         case k_EMsgClientLicenseList:                     // 780
             LOG_NETPACKET_INFO("DIAG LicenseList(780) received cbBody={} — server license refresh (may clobber injected package 0)", cbBody);
+            Hooks_Package::RefreshInjectedLicense();
             return;
         // ==== END DIAGNOSTIC ====
 
