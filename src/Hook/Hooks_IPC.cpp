@@ -9,10 +9,13 @@
 #include "Utils/SteamMetadata/IPCLoader.h"
 
 #include <algorithm>
+#include <cstring>
 
 namespace {
 
     RESOLVE_FUNC(GetPipeClient, CPipeClient*, void* pEngine, HSteamPipe hSteamPipe);
+
+    constexpr uint32 kFuncHash_BIsDlcInstalled = 0xCDBD8C70;
 
     static CPipeClient* GetPipe(void* pServer, HSteamPipe hSteamPipe) {
         return oGetPipeClient ? oGetPipeClient(pServer, hSteamPipe) : nullptr;
@@ -68,10 +71,6 @@ namespace {
         PipeManager::OnHandshake(pipe);
     }
 
-    // IClientAppManager::BIsDlcInstalled(appId, dlcAppId) -> bool. Wire funcHash observed
-    // from the game's IPC call; stable across Steam versions (derived from the method ABI).
-    constexpr uint32 kFuncHash_BIsDlcInstalled = 0xCDBD8C70;
-
     HOOK_FUNC(IPCProcessMessage, bool, void* pServer, HSteamPipe hSteamPipe,
               CUtlBuffer* pRead, CUtlBuffer* pWrite)
     {
@@ -110,43 +109,42 @@ namespace {
                 }
             }
 
-            // ==== FIX: force injected DLC to "installed" online (family-shared base game) ====
-            // The game asks IClientAppManager::BIsDlcInstalled(appId, dlcAppId). ONLINE, for a
-            // borrowed (family-shared) base game, Steam answers false for DLC the lender does not
-            // own — even though OST owns them locally via package 0. Force true so the DLC is
-            // recognized while staying online (no offline-mode dance needed).
+            // Steam's online family-sharing state can make the client answer
+            // BIsDlcInstalled(false) for an injected DLC even though the local
+            // package and depot configuration contain that DLC. Change only
+            // this game-facing boolean, only when both AppIDs belong to the
+            // active Lua configuration. All other ownership and network calls
+            // continue through the original implementation unchanged.
             if (call.interfaceID() == EIPCInterface::IClientAppManager &&
                 call.funcHash() == kFuncHash_BIsDlcInstalled &&
-                call.body().size() >= 8) {
-                uint32 dlcAppId = 0;
-                memcpy(&dlcAppId, call.body().data() + 4, 4);
-                if (dlcAppId != 0 && LuaConfig::HasDepot(dlcAppId, false)) {
-                    const bool result = oIPCProcessMessage(pServer, hSteamPipe, pRead, pWrite);
+                call.body().size() >= sizeof(uint32) * 2) {
+                AppId_t appId = 0;
+                AppId_t dlcAppId = 0;
+                std::memcpy(&appId, call.body().data(), sizeof(appId));
+                std::memcpy(&dlcAppId, call.body().data() + sizeof(appId), sizeof(dlcAppId));
 
-                    // DIAG: dump the raw response bytes so we learn the exact wire layout
-                    // of the bool return (result header + body), then force it.
-                    auto hexDump = [](CUtlBuffer* b) {
-                        std::string s;
-                        if (b && b->Base()) {
-                            int n = b->m_Put > 16 ? 16 : b->m_Put;
-                            for (int i = 0; i < n; ++i)
-                                s += std::format("{:02X} ", static_cast<unsigned>(b->Base()[i]));
-                        }
-                        return s;
-                    };
-                    const std::string before = hexDump(pWrite);
-                    IPCMessages::IClientAppManager::BIsDlcInstalledResp resp{pWrite};
-                    const bool okv = resp.ok();
-                    const bool rv  = resp.returnValue();
-                    resp.set_returnValue(true);                 // force via facade (unconditional)
-                    if (pWrite && pWrite->Base() && pWrite->m_Put >= 2) {
-                        pWrite->Base()[0] = 0x0B;               // EIPCResult::OK
-                        pWrite->Base()[pWrite->m_Put - 1] = 1;  // last byte = bool true (raw belt-and-suspenders)
+                const AppId_t activeAppId = Hooks_Misc::ResolveAppId();
+                const bool scopedToActiveGame = activeAppId != 0
+                    ? appId == activeAppId
+                    : LuaConfig::HasDepot(appId, false);
+                const bool injectedDlc = dlcAppId != 0 &&
+                                         LuaConfig::HasDepot(dlcAppId, false) &&
+                                         !LuaConfig::IsOwned(dlcAppId);
+                if (scopedToActiveGame && injectedDlc) {
+                    const bool originalResult = oIPCProcessMessage(pServer, hSteamPipe, pRead, pWrite);
+                    IPCMessages::IClientAppManager::BIsDlcInstalledResp response{pWrite};
+                    if (!response.ok()) {
+                        LOG_IPC_WARN("BIsDlcInstalled: malformed response for app={} dlc={} put={}",
+                                     appId, dlcAppId, pWrite ? pWrite->m_Put : -1);
+                        return originalResult;
                     }
-                    LOG_IPC_INFO("DLCFIXPROBE dlc={} put={} ok={} retval={} before=[{}] after=[{}]",
-                                 dlcAppId, (pWrite ? pWrite->m_Put : -1), okv, rv,
-                                 before, hexDump(pWrite));
-                    return result;
+
+                    const bool before = response.returnValue();
+                    response.set_result(EIPCResult::OK);
+                    response.set_returnValue(true);
+                    LOG_IPC_INFO("BIsDlcInstalled: app={} dlc={} original={} forced=true put={}",
+                                 appId, dlcAppId, before, pWrite ? pWrite->m_Put : -1);
+                    return originalResult;
                 }
             }
 

@@ -11,6 +11,7 @@
 #include <string>
 #include <format>
 #include <ostream>
+#include <cstring>
 
 template<typename T>
 struct CUtlMemory{

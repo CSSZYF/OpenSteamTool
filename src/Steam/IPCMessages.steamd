@@ -148,8 +148,9 @@ interface IClientUtils {
 }
 
 interface IClientAppManager {
-    // Per-DLC ownership/installed gate the game queries at runtime.
-    // funcHash 0xCDBD8C70 on this interface (observed on the wire).
+    // Game-side DLC presence check. The online family-sharing path can report
+    // false for a Lua-injected DLC even after the local package has been
+    // populated by OpenSteamTool. Hash observed on the wire: 0xCDBD8C70.
     bool BIsDlcInstalled(
         in uint32 unAppID,
         in uint32 unDlcAppID
