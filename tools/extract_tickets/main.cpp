@@ -275,6 +275,20 @@ int Run(int argc, char** argv) {
             forceEticket = true;
         } else if (arg == "--worker") {
             workerMode = true;
+        } else if (arg == "--appid") {
+            if (i + 1 < argc) {
+                cliAppId = ParseAppId(argv[++i]);
+                if (!cliAppId) {
+                    std::cerr << TR_FMT(MsgKey::ErrInvalidAppIdCli, argv[i]) << "\n";
+                    return 1;
+                }
+            }
+        } else if (arg.starts_with("--appid=")) {
+            cliAppId = ParseAppId(arg.substr(8));
+            if (!cliAppId) {
+                std::cerr << TR_FMT(MsgKey::ErrInvalidAppIdCli, arg.substr(8)) << "\n";
+                return 1;
+            }
         } else if (!cliAppId) {
             cliAppId = ParseAppId(arg);
             if (!cliAppId) {

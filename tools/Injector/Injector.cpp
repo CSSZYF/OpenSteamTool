@@ -1,5 +1,11 @@
 #include "Injector.h"
 
+#if __has_include(<OSTPlatform/SteamLocator.hpp>)
+#include <OSTPlatform/SteamLocator.hpp>
+#else
+#include "../../src/OSTPlatform/include/OSTPlatform/SteamLocator.hpp"
+#endif
+
 #include <tlhelp32.h>
 #include <iostream>
 #include <fstream>
@@ -137,38 +143,11 @@ namespace {
         }
     }
 
-    // Query Steam installation executable from Windows Registry with full fallback chain
+    // Query Steam installation executable with 5-tier fast short-circuit detection
     std::optional<std::filesystem::path> QuerySteamRegistryPath() {
-        wchar_t buffer[1024] = { 0 };
-        DWORD size = sizeof(buffer);
-
-        // 1. Primary: HKCU SteamExe (contains direct path to steam.exe)
-        if (RegGetValueW(HKEY_CURRENT_USER, L"SOFTWARE\\Valve\\Steam", L"SteamExe",
-                         RRF_RT_REG_SZ, nullptr, buffer, &size) == ERROR_SUCCESS && buffer[0] != L'\0') {
-            return std::filesystem::path(buffer);
+        if (auto dir = OSTPlatform::SteamLocator::ResolvePath()) {
+            return *dir / "steam.exe";
         }
-
-        // 2. Fallback: HKCU SteamPath (contains Steam install directory)
-        size = sizeof(buffer);
-        if (RegGetValueW(HKEY_CURRENT_USER, L"SOFTWARE\\Valve\\Steam", L"SteamPath",
-                         RRF_RT_REG_SZ, nullptr, buffer, &size) == ERROR_SUCCESS && buffer[0] != L'\0') {
-            return std::filesystem::path(buffer) / "steam.exe";
-        }
-
-        // 3. Fallback: HKLM 64-bit redirection registry key (InstallPath)
-        size = sizeof(buffer);
-        if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Valve\\Steam", L"InstallPath",
-                         RRF_RT_REG_SZ, nullptr, buffer, &size) == ERROR_SUCCESS && buffer[0] != L'\0') {
-            return std::filesystem::path(buffer) / "steam.exe";
-        }
-
-        // 4. Fallback: HKLM native key (InstallPath)
-        size = sizeof(buffer);
-        if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Valve\\Steam", L"InstallPath",
-                         RRF_RT_REG_SZ, nullptr, buffer, &size) == ERROR_SUCCESS && buffer[0] != L'\0') {
-            return std::filesystem::path(buffer) / "steam.exe";
-        }
-
         return std::nullopt;
     }
 
