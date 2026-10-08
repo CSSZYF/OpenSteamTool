@@ -494,3 +494,39 @@ enum EDisplayStatus {
     k_EDisplayStatusDownloadFailed = 38;
     k_EDisplayStatusUpdateFailed = 39;
 }
+
+
+// ============================================================
+// CMsgClientStoreUserStats (eMsg 820) & CMsgClientStoreUserStats2 (eMsg 5466)
+// ============================================================
+
+message CMsgClientStoreUserStats_Stat {
+    optional uint32 stat_id = 1;
+    optional uint32 stat_value = 2;
+}
+
+message CMsgClientStoreUserStats {
+    optional fixed64 game_id = 1;
+    optional bool explicit_reset = 2;
+    repeated .CMsgClientStoreUserStats_Stat stats_to_store = 3;
+}
+
+message CMsgClientStoreUserStats2 {
+    optional fixed64 game_id = 1;
+    optional fixed64 settor_steam_id = 2;
+    repeated .CMsgClientStoreUserStats_Stat stats_to_store = 3;
+    optional uint32 crc_stats = 4;
+}
+
+// ============================================================
+// CMsgClientSharedLibraryLockStatus
+// ============================================================
+
+message CMsgClientSharedLibraryLockStatus {
+    message LockedLibrary {
+        optional uint32 owner_id = 1;
+        optional uint32 locked_by = 2;
+    }
+    repeated .CMsgClientSharedLibraryLockStatus.LockedLibrary locked_libraries = 1;
+    optional uint32 own_library_locked_by = 2;
+}
