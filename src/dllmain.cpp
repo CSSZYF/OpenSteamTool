@@ -19,6 +19,21 @@
 #include <thread>
 #include <windows.h>
 
+namespace {
+    bool g_steamHostAccepted = false;
+
+    bool IsSteamHostProcess() {
+        wchar_t path[32768] = {};
+        const DWORD length = GetModuleFileNameW(nullptr, path, ARRAYSIZE(path));
+        if (length == 0 || length >= ARRAYSIZE(path)) return false;
+        const wchar_t* name = path;
+        for (DWORD i = 0; i < length; ++i) {
+            if (path[i] == L'\\' || path[i] == L'/') name = path + i + 1;
+        }
+        return CompareStringOrdinal(name, -1, L"steam.exe", -1, TRUE) == CSTR_EQUAL;
+    }
+}
+
 // Prepare key runtime paths.
 // Portable: Steam components (steamclient64.dll, steamui.dll, etc.) are located
 // in Steam's real installation directory, while configuration and Lua scripts can be
@@ -248,7 +263,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, PVOID pvReserved)
 {
     if (dwReason == DLL_PROCESS_ATTACH)
     {
-        DisableThreadLibraryCalls(hModule);
+        // Static CRT builds require thread attach/detach notifications.
+        // Defense in depth if an external loader loads us in a helper.
+        // This guard runs after CRT initialization and is not an R6016 fix.
+        if (!IsSteamHostProcess()) return TRUE;
+        g_steamHostAccepted = true;
 
         // Keep this module pinned so explicit FreeLibrary cannot unload code
         // while hooks and worker threads may still reference it.
@@ -265,6 +284,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, PVOID pvReserved)
     }
     else if (dwReason == DLL_PROCESS_DETACH)
     {
+        if (!g_steamHostAccepted) return TRUE;
         g_HooksInstalled.store(false);
         g_IsDiversionActive.store(false);
         // During process termination (pvReserved != nullptr), OS terminates all threads

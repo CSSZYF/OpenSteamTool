@@ -302,20 +302,6 @@ namespace Hooks_Package {
                           queuedRemovalCount, removals.size() - queuedRemovalCount);
     }
 
-    void RefreshInjectedLicense() {
-        // LicenseList can replace the PackageInfo object and clear package 0.
-        // Make the next initialization resolve the current object again, then
-        // reinsert all configured AppIDs before the game caches DLC state.
-        g_pInjectedPackageInfo.store(nullptr, std::memory_order_release);
-        g_licenseInitialized.store(false, std::memory_order_release);
-        g_licenseRefreshPending.store(false, std::memory_order_release);
-        if (!TryInitFakeLicenseOnce()) {
-            LOG_PACKAGE_WARN("RefreshInjectedLicense: package 0 was not ready after LicenseList refresh");
-        } else {
-            LOG_PACKAGE_INFO("RefreshInjectedLicense: rebuilt injected package after server license refresh");
-        }
-    }
-
     bool IsAppTrulyOwned(AppId_t appId) {
         if (appId == 0 || appId == k_uAppIdInvalid) return false;
         if (LuaConfig::IsOwned(appId)) return true;

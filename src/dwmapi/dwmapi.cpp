@@ -132,7 +132,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, PVOID pvReserved)
     {
     case DLL_PROCESS_ATTACH:
         {
-            DisableThreadLibraryCalls(hModule);
+            // Static CRT builds require thread attach/detach notifications.
             if ( !OpenSteamToolLoad() )
                 return FALSE;
             break;

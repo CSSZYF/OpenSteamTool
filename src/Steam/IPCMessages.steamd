@@ -148,9 +148,8 @@ interface IClientUtils {
 }
 
 interface IClientAppManager {
-    // Game-side DLC presence check. The online family-sharing path can report
-    // false for a Lua-injected DLC even after the local package has been
-    // populated by OpenSteamTool. Hash observed on the wire: 0xCDBD8C70.
+    // DLC presence query observed on this Steam build (hash 0xCDBD8C70).
+    // Its result does not describe the game's separate server validation.
     bool BIsDlcInstalled(
         in uint32 unAppID,
         in uint32 unDlcAppID

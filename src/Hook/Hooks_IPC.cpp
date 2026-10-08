@@ -109,12 +109,8 @@ namespace {
                 }
             }
 
-            // Steam's online family-sharing state can make the client answer
-            // BIsDlcInstalled(false) for an injected DLC even though the local
-            // package and depot configuration contain that DLC. Change only
-            // this game-facing boolean, only when both AppIDs belong to the
-            // active Lua configuration. All other ownership and network calls
-            // continue through the original implementation unchanged.
+            // Observe Dave's DLC query without changing transport status or
+            // the installed flag. The game performs a separate server check.
             if (call.interfaceID() == EIPCInterface::IClientAppManager &&
                 call.funcHash() == kFuncHash_BIsDlcInstalled &&
                 call.body().size() >= sizeof(uint32) * 2) {
@@ -123,14 +119,9 @@ namespace {
                 std::memcpy(&appId, call.body().data(), sizeof(appId));
                 std::memcpy(&dlcAppId, call.body().data() + sizeof(appId), sizeof(dlcAppId));
 
-                const AppId_t activeAppId = Hooks_Misc::ResolveAppId();
-                const bool scopedToActiveGame = activeAppId != 0
-                    ? appId == activeAppId
-                    : LuaConfig::HasDepot(appId, false);
-                const bool injectedDlc = dlcAppId != 0 &&
-                                         LuaConfig::HasDepot(dlcAppId, false) &&
-                                         !LuaConfig::IsOwned(dlcAppId);
-                if (scopedToActiveGame && injectedDlc) {
+                if (appId == 1868140 && dlcAppId != 0) {
+                    const CPipeClient* pipe = GetPipe(pServer, hSteamPipe);
+                    const uint32 callerPid = pipe ? pipe->m_clientPID : 0;
                     const bool originalResult = oIPCProcessMessage(pServer, hSteamPipe, pRead, pWrite);
                     IPCMessages::IClientAppManager::BIsDlcInstalledResp response{pWrite};
                     if (!response.ok()) {
@@ -139,11 +130,10 @@ namespace {
                         return originalResult;
                     }
 
-                    const bool before = response.returnValue();
-                    response.set_result(EIPCResult::OK);
-                    response.set_returnValue(true);
-                    LOG_IPC_INFO("BIsDlcInstalled: app={} dlc={} original={} forced=true put={}",
-                                 appId, dlcAppId, before, pWrite ? pWrite->m_Put : -1);
+                    LOG_IPC_INFO("BIsDlcInstalled observation: app={} dlc={} pid={} pipe={} transport={} status={} installed={} put={}",
+                                 appId, dlcAppId, callerPid, hSteamPipe, originalResult,
+                                 static_cast<uint32>(response.result()), response.returnValue(),
+                                 pWrite ? pWrite->m_Put : -1);
                     return originalResult;
                 }
             }
