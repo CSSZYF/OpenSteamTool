@@ -109,6 +109,8 @@ namespace DaveLauncher
                 catch (OperationCanceledException) { throw; }
                 catch (Exception) { }
                 if (state != null && state.ServicesReady) {
+                    if (steamPlay != null && (!state.Offline || state.Connected))
+                        throw new InvalidOperationException("Steam 开始按钮的离线预处理尚未完成，请等待界面就绪后重试。");
                     ValidateSteamPlayClient();
                     CheckNoGames();
                     Report("Steam 原生控制就绪。");

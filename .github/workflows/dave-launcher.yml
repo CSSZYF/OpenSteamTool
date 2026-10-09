@@ -20,7 +20,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path package | Out-Null
-          Copy-Item build-dave-launcher/DaveLauncher.exe, build-dave-launcher/DaveLauncher.json, tools/DaveLauncher/README.zh.md package/
+          Copy-Item build-dave-launcher/DaveLauncher.exe, build-dave-launcher/DaveLauncher.json, build-dave-launcher/SteamPlayGate.js, tools/DaveLauncher/README.zh.md package/
           Get-ChildItem package -File | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLowerInvariant())  $([IO.Path]::GetFileName($_.Path))" } | Set-Content package/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:

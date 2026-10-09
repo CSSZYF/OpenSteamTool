@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Globalization;
 using System.Linq;
 using System.Text;
 using System.Threading;
@@ -45,6 +46,12 @@ namespace DaveLauncher
         {
             string directory = AppDomain.CurrentDomain.BaseDirectory;
             string mode = args.Length == 0 ? "--launch" : args[0];
+            if (mode == "--watch-play") {
+                int steamPid;
+                if (args.Length != 2 || !Int32.TryParse(args[1], NumberStyles.None, CultureInfo.InvariantCulture, out steamPid) || steamPid <= 0)
+                    return 1;
+                return new SteamPlayWatcher(directory).RunAsync(steamPid).GetAwaiter().GetResult();
+            }
             bool probe = mode == "--status" || mode == "--preview";
             WindowsLaunchHost activeHost = null;
             Mutex mutex = null;
@@ -76,6 +83,7 @@ namespace DaveLauncher
             }
             catch (Exception error) {
                 ReleaseLaunchMutex(mutex, ref ownsMutex);
+                if (activeHost != null) { try { activeHost.Complete("stopped"); } catch (Exception) { } }
                 // Report only our own diagnostic message, never native UI objects or tickets.
                 string message = error is IOException || error is UnauthorizedAccessException
                     ? "读取或写入本地启动日志失败，请检查目录权限。" : error.Message;

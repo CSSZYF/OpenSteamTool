@@ -71,6 +71,25 @@ namespace DaveLauncher
             return ChangeModeAsync(false, cancellationToken);
         }
 
+        internal Task<Dictionary<string, object>> InstallPlayGateAsync(
+            string script, bool noRunningApps, CancellationToken cancellationToken)
+        {
+            if (String.IsNullOrWhiteSpace(script) || script.Length > 128 * 1024)
+                throw new InvalidOperationException("Steam 开始游戏控制脚本缺失或过大。");
+            string prerequisite = "window.__OSTOfflinePlayPrerequisite={noRunningApps:" +
+                (noRunningApps ? "true" : "false") + ",sampledAt:Date.now()};\n";
+            return EvaluateAsync(prerequisite + script, cancellationToken);
+        }
+
+        internal Task<Dictionary<string, object>> ReadGateErrorAsync(CancellationToken cancellationToken)
+        {
+            // Return only our own gate status, never Steam UI objects, account data or tickets.
+            const string expression = "(function(){var g=window.__OSTOfflinePlayGate;" +
+                "return {installed:!!g,error:g&&typeof g.lastError==='string'?g.lastError:''," +
+                "eventId:g&&typeof g.generation==='number'?g.generation:0};})()";
+            return EvaluateAsync(expression, cancellationToken);
+        }
+
         private async Task ChangeModeAsync(bool offline, CancellationToken cancellationToken)
         {
             string method = offline ? "GoOffline" : "GoOnline";
@@ -94,7 +113,7 @@ namespace DaveLauncher
                 throw new InvalidOperationException("Steam did not acknowledge the mode request.");
         }
 
-        private async Task<Dictionary<string, object>> EvaluateAsync(
+        internal async Task<Dictionary<string, object>> EvaluateAsync(
             string expression, CancellationToken cancellationToken)
         {
             using (CancellationTokenSource timeout =

@@ -8,6 +8,7 @@
 #include "Utils/Config/ConfigFileWatcher.h"
 #include "Utils/Config/LuaFileWatcher.h"
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
+#include "Utils/OfflineLaunch/SteamPlayWatcher.h"
 #include "Utils/SteamMetadata/IPCLoader.h"
 #include "Utils/SteamMetadata/PatternLoader.h"
 #include "Utils/SteamMetadata/SteamDiagnostics.h"
@@ -256,6 +257,7 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
     g_HooksInstalled.store(true);
     LOG_INFO("OpenSteamTool init complete ({})",
              g_IsDiversionActive.load() ? "Diversion active" : "Diversion bypassed, using original steamclient64");
+    SteamPlayWatcher::Start();
     return 0;
 }
 

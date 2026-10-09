@@ -124,6 +124,7 @@ add_library(OpenSteamTool SHARED
     Utils/CloudRedirect/CloudRedirectHost.cpp
     Utils/HookSupport/VehCommon.cpp
     Utils/OfflineLaunch/SteamPlayRedirect.cpp
+    Utils/OfflineLaunch/SteamPlayWatcher.cpp
     Utils/Logging/Log.cpp
     Utils/SteamMetadata/IPCLoader.cpp
     Utils/SteamMetadata/ManifestClient.cpp
