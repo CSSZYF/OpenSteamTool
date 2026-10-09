@@ -6,7 +6,17 @@
 
 ## 安装
 
-完整退出 Steam 后，部署包含此功能的 `OpenSteamTool.dll`；将对应的 `dave-launcher` 文件夹放在它旁边，其中包含 `DaveLauncher.exe`、`DaveLauncher.json` 和 `SteamPlayGate.js`。随后重启 Steam，待库界面就绪，并在戴夫启动选项中加入 `-offline`，无需使用独立快捷方式。
+正式发行包为 `OpenSteamTool-v1.4.8.14-dave.1-Release-x64.zip`，使用 Windows x64 Release 构建。更新前完整退出 Steam 和所有 Steam 应用，备份原有三个 DLL 及 `dave-launcher` 文件夹。
+
+将包内的 `OpenSteamTool.dll`、`dwmapi.dll`、`xinput1_4.dll` 放进 Steam 根目录，与 `steam.exe` 同级；把整个 `dave-launcher` 文件夹放在旁边，保留其中的 `DaveLauncher.exe`、`DaveLauncher.json` 和 `SteamPlayGate.js`。不要把这些 DLL 放进 Steam 的 `bin` 子目录。保留现有 Lua、用户 TOML 和 `opensteamtool` 配置；调整过的 `DaveLauncher.json` 应先备份，再合并配置。
+
+首次安装需在 Steam 根目录创建空文件 `.cef-enable-remote-debugging`，已有则保留。可使用以下 PowerShell 命令，把路径改成自己的 Steam 根目录：
+
+```powershell
+New-Item -ItemType File -Path (Join-Path '你的Steam目录' '.cef-enable-remote-debugging') -Force
+```
+
+这是 Steam 库界面的本地控制接口开关，不是 `-console` 参数。重启 Steam，等待库界面就绪，在“潜水员戴夫 → 属性 → 通用 → 启动选项”加入 `-offline`，随后直接点击原来的“开始游戏”。删除这个参数即可禁用本流程。
 
 后台准备组件随 Steam 启动和退出，不需要开机计划任务。它每两秒检查原生开始游戏接口是否已准备好，并在 UI 重载后重新接入；只有目标为戴夫且有精确 `-offline` 时才切模式。切换前要求最近六秒内确认没有其它 Steam 应用运行，状态不明时停止。此流程针对 Steam 库界面的原始“开始游戏”调用；其它直接启动 EXE 或绕过该界面的启动方式不在本次验证范围。
 
@@ -16,7 +26,7 @@
 
 - Windows x64，系统已有 .NET Framework 4.8。
 - 已安装 Steam 和戴夫（AppID 1868140），并有可用的 Steam 登录缓存。
-- 本机 Steam 已启用 `.cef-enable-remote-debugging`，控制端口仅监听 `127.0.0.1:8080`。本机已经存在这个设置；启动器不会自动修改登录配置或防火墙。
+- Steam 已启用 `.cef-enable-remote-debugging`，控制端口仅监听 `127.0.0.1:8080`。启动器不会自动修改登录配置或防火墙。
 - 戴夫及其它 Steam 应用已退出。Steam 本身可运行；若已退出，启动器会先启动 Steam。
 
 这会暂时让整个 Steam 进入离线模式。完成初始化后会恢复在线，好友运行状态由 Steam 自己更新。
@@ -38,17 +48,23 @@
 
 如果游戏未启动或已退出，启动器会尝试恢复原来的在线状态。如果游戏仍运行或是否启动尚不确定，它会保留离线状态并报错，避免初始化中途上线。
 
-需要主动恢复时，运行 `dave-launcher/DaveLauncher.exe --online`。该入口不验证游戏初始化，适合你明确决定恢复时使用。后台组件等待游戏退出时已释放流程互斥锁，不会阻止明确的恢复操作。
+需要主动恢复时，在 PowerShell 运行以下命令，先改成自己的 Steam 路径：
 
-诊断文件位于程序旁的 `sessions/`、`last-run.json` 和 `last-error.txt`。`--preview` 只检查前置条件，`--status` 只查询状态；二者写 `last-probe.json`，不会覆盖最近启动记录。游戏原始日志可能包含本机数据，请勿随意上传整个 sessions 目录。
+```powershell
+& '你的Steam目录\dave-launcher\DaveLauncher.exe' --online
+```
+
+该入口不验证游戏初始化，适合你明确决定恢复时使用。后台组件等待游戏退出时已释放流程互斥锁，不会阻止明确的恢复操作。
+
+Release 构建关闭 OpenSteamTool 核心的 Debug 日志，仍保留初始化判断所需的游戏会话日志和简要运行记录，位于程序旁的 `sessions/`、`last-run.json` 和 `last-error.txt`。`--preview` 只检查前置条件，`--status` 只查询状态；二者写 `last-probe.json`，不会覆盖最近启动记录。游戏原始日志可能包含本机数据，请勿随意上传整个 sessions 目录。
 
 ## 验证记录
 
-2026-10-09 在本机实测：07:09:27 离线模式与断开连接确认，07:09:28 绑定游戏 PID，07:09:48 观察到五项 DLC 检查及标题初始化，07:09:58 请求原生上线，07:10:03 确认后台连接恢复，游戏仍运行。用户确认离线启动后主菜单不再显示购买 DLC 提示。没有替换游戏文件或编辑 Steam 登录配置。
+已有原始 Steam 库按钮调用链实测覆盖：确认 Steam 离线、绑定本轮游戏进程、完成五项 DLC 检查和原生离线票据路径、等待标题初始化、恢复后台连接，以及退出游戏后清除 Steam 的运行标记。用户确认离线启动后主菜单不再显示购买 DLC 提示。已有验证针对戴夫 `v1.0.6.2113.steam` 和 Steam Build ID `1788652215`，不能据此保证未来版本仍适用。
 
-46 项 C# 自动化测试覆盖编排顺序、异常恢复、旧日志隔离、DLC 检查缺项、退出检测、真实 Unity 协程堆栈、Windows 参数引用和恢复互斥锁。另有 108 项原生检查，以及 16 项 JavaScript 测试验证原始开始调用前的模式切换、超时和重复点击。
+170 项自动化检查包括 46 项 C# 测试、108 项原生检查和 16 项 JavaScript 测试，覆盖编排顺序、异常恢复、旧日志隔离、DLC 检查缺项、退出检测、Unity 协程堆栈、Windows 参数引用、恢复互斥锁，以及开始调用前的模式切换、超时和重复点击。
 
-2026-10-09 原始库按钮调用链实测：08:12:49 Steam 正常创建后台组件及其戴夫子进程，五项本地检查和原生离线票据路径完成；08:13:21 Steam 恢复后台连接。08:14:52 游戏、后台启动组件和游戏崩溃报告器均正常退出，Steam 的 `Running` 标记恢复为 0，后台准备组件继续随 Steam 待命。
+此适配版基于上游 `mmxlyo/OpenSteamTool` 的 `322d1d8`，另含本仓库的戴夫适配与稳定性修正，不包含当前 `main` 的全部上游更新。本功能自动执行 Steam 的原生离线/在线流程，不下载 DLC，也不修改服务端授权校验结果。
 
 ## 构建
 
@@ -58,4 +74,4 @@
 ./tools/DaveLauncher/build.ps1 -Test
 ```
 
-系统 C# 编译器直接生成独立 EXE，无 NuGet 或额外运行库下载。构建结果默认位于 `build-dave-launcher/`。Steam 原按钮接入还需要对应版本的 OpenSteamTool 核心，通过诊断 MSVC 工作流构建；完整产物同时包含核心 DLL 和后台组件。直接运行 EXE 的独立启动模式仍保留，但不是原按钮接入方式。
+系统 C# 编译器直接生成独立 EXE，无 NuGet 或额外运行库下载。构建结果默认位于 `build-dave-launcher/`。Steam 原按钮接入还需要对应版本的 OpenSteamTool 核心，通过 MSVC 工作流构建；完整产物同时包含核心 DLL 和后台组件。直接运行 EXE 的独立启动模式仍保留，但不是原按钮接入方式。

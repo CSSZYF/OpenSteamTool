@@ -1,90 +1,118 @@
-name: Build
-run-name: ${{ github.event.inputs.version }} Build
+name: Build Release
+run-name: Release ${{ inputs.version }}
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. v1.0.0)"
+        description: 'Release version (for example v1.4.8.14-dave.1)'
         required: true
-        default: ""
+        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Configure
-        run: cmake -S src -B build -G "Ninja Multi-Config" -DOPENSTEAMTOOL_VERSION="${{ github.event.inputs.version }}"
+      - name: Validate version and release notes
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_VERSION -cnotmatch '^v[0-9][0-9A-Za-z._-]{0,59}$') { throw 'Invalid release version' }
+          if (-not (Test-Path "docs/releases/$env:RELEASE_VERSION.md")) { throw 'Release notes are required' }
 
-      - name: Build Release
+      - name: Configure Release version
+        shell: pwsh
+        run: cmake -S src -B build -G "Ninja Multi-Config" "-DOPENSTEAMTOOL_VERSION=$env:RELEASE_VERSION"
+
+      - name: Build Release only
         run: cmake --build build --config Release
 
-      - name: Build Debug
-        run: cmake --build build --config Debug
+      - name: Build companion and test native launch sequence
+        shell: pwsh
+        run: |
+          ./tools/DaveLauncher/build.ps1 -Test -OutputDirectory build/Release/dave-launcher
+          cl /nologo /std:c++20 /EHsc /utf-8 /MT /DNOMINMAX /DOST_STEAMPLAY_REDIRECT_TEST /Isrc /Isrc/OSTPlatform /Ibuild/generated src/Utils/OfflineLaunch/SteamPlayRedirectTests.cpp src/OSTPlatform/Encoding.cpp /Fe:build/SteamPlayRedirectTests.exe shell32.lib crypt32.lib
+          if ($LASTEXITCODE -ne 0) { throw 'Native test build failed' }
+          ./build/SteamPlayRedirectTests.exe "$PWD/build"
+          if ($LASTEXITCODE -ne 0) { throw 'Native tests failed' }
+
+      - name: Verify Release binary and host guard
+        shell: pwsh
+        run: |
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class ReleaseHostCheck {
+            [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+            public static extern IntPtr LoadLibraryW(string path);
+            [DllImport("kernel32.dll", SetLastError = true)]
+            public static extern bool FreeLibrary(IntPtr module);
+            [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+            public static extern IntPtr GetModuleHandleW(string name);
+          }
+          '@
+          foreach ($file in 'OpenSteamTool.dll', 'dwmapi.dll', 'xinput1_4.dll', 'ost-Injector.exe') {
+            $path = (Resolve-Path "build/Release/$file").Path
+            $imports = (& dumpbin /imports $path | Out-String)
+            if ($LASTEXITCODE -ne 0) { throw "Cannot inspect $file" }
+            if ($imports -match '(?im)\b(ucrtbased|vcruntime\d+d|msvcp\d+d)\.dll\b') { throw "Debug CRT dependency in $file" }
+          }
+          $dll = (Resolve-Path 'build/Release/OpenSteamTool.dll').Path
+          $bytes = [IO.File]::ReadAllBytes($dll)
+          $text = [Text.Encoding]::ASCII.GetString($bytes)
+          if (-not $text.Contains($env:RELEASE_VERSION)) { throw 'Release identity missing' }
+          if ($text.Contains('BIsDlcInstalled observation:')) { throw 'Debug observation logging was not removed' }
+          $module = [ReleaseHostCheck]::LoadLibraryW($dll)
+          if ($module -eq [IntPtr]::Zero) { throw "Load failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+          Start-Sleep -Seconds 1
+          if (Test-Path 'build/Release/opensteamtool') { throw 'Unexpected runtime initialization outside Steam' }
+          if (-not [ReleaseHostCheck]::FreeLibrary($module)) { throw 'Unload failed' }
+          if ([ReleaseHostCheck]::GetModuleHandleW($dll) -ne [IntPtr]::Zero) { throw 'Core was pinned outside Steam' }
+
+      - name: Package runtime files and Chinese instructions
+        shell: pwsh
+        run: |
+          $stage = Join-Path $PWD 'release-package'
+          $assets = Join-Path $PWD 'release-assets'
+          New-Item -ItemType Directory -Path "$stage/dave-launcher", $assets -Force | Out-Null
+          foreach ($file in 'OpenSteamTool.dll','dwmapi.dll','xinput1_4.dll','ost-Injector.exe','CreateAutoInjectTask.bat','DeleteAutoInjectTask.bat') {
+            Copy-Item -LiteralPath "build/Release/$file" -Destination $stage
+          }
+          foreach ($file in 'DaveLauncher.exe','DaveLauncher.json','SteamPlayGate.js') {
+            Copy-Item -LiteralPath "build/Release/dave-launcher/$file" -Destination "$stage/dave-launcher"
+          }
+          Copy-Item tools/DaveLauncher/README.zh.md "$stage/dave-launcher/README.zh.md"
+          Copy-Item "docs/releases/$env:RELEASE_VERSION.md" "$stage/README-Dave.zh.md"
+          Copy-Item LICENSE, opensteamtool.example.toml $stage
+          [ordered]@{
+            version = $env:RELEASE_VERSION
+            configuration = 'Release'
+            commit = '${{ github.sha }}'
+            sourceBranch = '${{ github.ref_name }}'
+            upstreamBase = '322d1d871c956d162107665a352438ca9e4a2833'
+            supportedGame = 1868140
+          } | ConvertTo-Json | Set-Content "$stage/BUILD-INFO.json" -Encoding utf8
+          Get-ChildItem $stage -Recurse -File | Sort-Object FullName | ForEach-Object {
+            $relative = $_.FullName.Substring($stage.Length + 1).Replace('\','/')
+            "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $relative"
+          } | Set-Content "$stage/FILES-SHA256SUMS.txt" -Encoding ascii
+          $unwanted = Get-ChildItem $stage -Recurse -File | Where-Object { $_.Extension -in '.pdb','.ilk','.obj','.lib','.exp','.log' -or $_.Name -match 'Tests|config\.ini' }
+          if ($unwanted) { throw 'Non-distributable files found in package' }
+          $zipName = "OpenSteamTool-$env:RELEASE_VERSION-Release-x64.zip"
+          7z a "$assets/$zipName" "$stage/*" -mx=7
+          if ($LASTEXITCODE -ne 0) { throw 'Packaging failed' }
+          "$((Get-FileHash -LiteralPath "$assets/$zipName" -Algorithm SHA256).Hash.ToLowerInvariant())  $zipName" | Set-Content "$assets/SHA256SUMS.txt" -Encoding ascii
 
       - uses: actions/upload-artifact@v4
         with:
-          name: OpenSteamTool-Release
-          path: build/Release/
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: OpenSteamTool-Debug
-          path: build/Debug/
-
-      - name: Generate changelog
-        id: changelog
-        shell: bash
-        run: |
-          {
-            echo 'changelog<<EOF'
-            git log -1 --pretty=format:"- %s%n%b"
-            echo ''
-            echo 'EOF'
-          } >> $GITHUB_OUTPUT
-
-      - name: Create tag
-        run: |
-          git tag ${{ github.event.inputs.version }}
-          git push origin ${{ github.event.inputs.version }}
-
-      - name: Package Release
-        run: 7z a OpenSteamTool-${{ github.event.inputs.version }}-Release.zip ".\build\Release\*" -mx5
-
-      - name: Package Debug
-        run: 7z a OpenSteamTool-${{ github.event.inputs.version }}-Debug.zip ".\build\Debug\*" -mx5
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.version }}
-          body: |
-            ## Changes
-
-            ${{ steps.changelog.outputs.changelog }}
-
-            ## **extract_tickets Build / Release:** [OpenSteamTool Actions Workflow](https://github.com/mmxlyo/OpenSteamTool/actions/workflows/tools.yml)
-
-            ## Installation
-
-            Download `OpenSteamTool-${{ github.event.inputs.version }}-Release.zip` (or the `-Debug` variant if you need logging to `<steam>/opensteamtool directory`).
-
-            ### Method 1: Portable Mode (Recommended, ost-Injector)
-            1. Extract the zip to any standalone folder outside the Steam directory.
-            2. Place your Lua unlock scripts in `config/lua/` inside that folder.
-            3. Run `ost-Injector.exe` to launch/inject into Steam, or run `CreateAutoInjectTask.bat` to set up background auto-injection on system startup.
-            *(No files are placed in or modify your Steam directory!)*
-
-            ### Method 2: Standard Mode (DLL Hijacking)
-            1. Extract and copy `dwmapi.dll`, `xinput1_4.dll` and `OpenSteamTool.dll` directly to your Steam root directory (e.g. `C:\Program Files (x86)\Steam`).
-            2. Create a Lua config directory (`C:\Program Files (x86)\Steam\config\lua`) and place your Lua scripts there. **NOT** `config\stplug-in`!
-          files: |
-            OpenSteamTool-${{ github.event.inputs.version }}-Release.zip
-            OpenSteamTool-${{ github.event.inputs.version }}-Debug.zip
-
+          name: OpenSteamTool-${{ inputs.version }}-Release-x64
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 30
